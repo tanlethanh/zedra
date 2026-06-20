@@ -248,7 +248,7 @@ pub const FS_DOCS_TREE_MAX_VISITED_ENTRIES: u32 = 10_000;
 // Serde helper for [u8; 64] (serde supports arrays only up to size 32 by default)
 // ---------------------------------------------------------------------------
 
-mod bytes64 {
+pub(crate) mod bytes64 {
     use serde::{Deserializer, Serializer};
 
     pub fn serialize<S: Serializer>(val: &[u8; 64], s: S) -> Result<S::Ok, S::Error> {

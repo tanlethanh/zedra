@@ -479,6 +479,60 @@ If a breaking change is unavoidable:
 - New variants may fail on old binaries; do not assume forwards compatibility across arbitrary versions.
 - Keep deployment pairs synchronized when introducing enum variants.
 
+### 7.4 Multi-ALPN Backward Compatibility
+
+Status: implemented. The host serves both `zedra/rpc/3` and `zedra/rpc/2`.
+
+A `ZEDRA_ALPN` bump strands shipped apps on the old ALPN (§2.4) until App Store
+review clears the new build, so the host keeps serving the previous version.
+This is a scoped exception to the "host does not tailor responses per client"
+rule, and it **recurs on every bump** (v4 keeps v3, …; a chain if review windows
+overlap). The `v2`→`v3` delta is response-only — requests are append-only and the
+`v2` request set is a prefix of `v3`'s, so the auth handshake is unchanged.
+
+How it works:
+
+- **Advertise both ALPNs** in `iroh_listener.rs`
+  (`.alpns(vec![ZEDRA_ALPN, ZEDRA_ALPN_V2])`).
+- **`read_zedra_message(conn)` is the only version seam** — it reads
+  `conn.alpn()`, decodes with the matching schema, and for a legacy ALPN calls
+  `into_live()` to lift the request into `ZedraMessage`. Auth and dispatch then
+  run one version-agnostic path; no version flag is threaded through.
+- **`proto_v2.rs`** freezes `ZedraProtoV2`/`ZEDRA_ALPN_V2` and only the diverged
+  types; byte-identical messages reuse `crate::proto` (pinned by roundtrip
+  tests). `into_live` rebuilds byte-identical variants via
+  `(m.inner, m.tx, m.rx).into()` and wraps diverged senders with
+  `with_map`/`with_filter_map` (running `From<live> for frozen`); diverged
+  requests lift `From<frozen> for live`.
+
+Behavioral degradation for `v2` clients (all non-fatal): agent `live`/`provider`/
+`counters`/`flags` fields removed at `v3` come back empty; `Pi`/`Hermes` agents
+and the `v3`-only `HostEvent` variants are filtered out (an unknown discriminant
+would be undecodable and kill the stream, §2.4).
+
+Exit: drop a frozen module + its `alpns(...)` entry once that version's traffic
+(tracked via the telemetry ALPN field) hits zero; record under §11. This is a
+stopgap, not a substitute for the forward-compatible encodings in issue #140.
+
+#### Adding the next version (recipe)
+
+1. Before bumping `ZEDRA_ALPN`, snapshot the outgoing schema from the pre-bump
+   commit into `proto_v{N}.rs`; freeze its enum, `ZEDRA_ALPN_V{N}`, and the
+   diverged types only.
+2. Diff old vs new by **transitive closure**, not struct decls — an unchanged
+   decl can hide a diverged nested type (this caused two v2 regressions:
+   `TermCreateV2` and the agent-session subtree).
+3. Implement `into_live`, add a `read_zedra_message` arm + an `alpns(...)` entry.
+4. Filter values unrepresentable on old clients (new enum variants/kinds) out of
+   frozen responses rather than emitting an undecodable discriminant.
+
+Frozen types `#[derive(Default)]` so synthesized defaults stay one line. Notable
+irpc facts: `Connection::alpn()` gives the negotiated value post-handshake;
+`Sender::with_map`/`with_filter_map` is the re-encode seam (`Receiver` has none,
+so `TermAttach`'s `rx` reuses the byte-identical `proto::TermInput`);
+`WithChannels` fields are public, so `into_live` re-tags a message across services
+without touching irpc internals.
+
 ---
 
 ## 8) Error Handling Conventions
@@ -540,6 +594,16 @@ Any protocol-layer change must include all applicable steps:
 ---
 
 ## 11) Protocol Changelog
+
+### 2026-06-20
+
+- Implemented §7.4 Multi-ALPN Backward Compatibility: the host serves both
+  `zedra/rpc/3` and `zedra/rpc/2` so shipped apps survive an App Store review
+  delay. New `crates/zedra-rpc/src/proto_v2.rs` freezes the old schema and lifts
+  legacy requests into the live `ZedraMessage` via `into_live`; one auth+dispatch
+  path serves both. `v2` clients get empty agent `live` fields and have
+  `Pi`/`Hermes` + the `v3`-only `HostEvent` variants filtered out. Response-only
+  delta; stopgap pending issue #140.
 
 ### 2026-06-11
 

@@ -26,6 +26,9 @@ use crate::session_registry::{
 };
 use crate::utils;
 use anyhow::Result;
+use iroh::endpoint::ConnectionError;
+use irpc::rpc::{RemoteService, MAX_MESSAGE_SIZE};
+use irpc::util::AsyncReadVarintExt;
 use nucleo_matcher::pattern::{CaseMatching, Normalization, Pattern};
 use nucleo_matcher::{Config, Matcher, Utf32Str};
 use std::collections::HashMap;
@@ -36,7 +39,77 @@ use std::sync::atomic::Ordering;
 use std::sync::Arc;
 use std::time::{SystemTime, UNIX_EPOCH};
 use zedra_rpc::proto::*;
+use zedra_rpc::proto_v2::{ZedraProtoV2, ZEDRA_ALPN_V2};
 use zedra_telemetry::Event;
+
+/// Log a decode failure with the leading discriminant varint (the RPC's index in
+/// `ZedraProto`/`ZedraProtoV2`) and a payload preview.
+fn log_decode_failure(alpn: &[u8], buf: &[u8], err: &postcard::Error) {
+    let variant_index = postcard::take_from_bytes::<u32>(buf).map(|(v, _)| v).ok();
+    let preview_len = buf.len().min(32);
+    tracing::warn!(
+        "ignoring undecodable request: variant_index={variant_index:?} alpn={} \
+         payload_len={} payload_prefix={:02x?} error={err}",
+        String::from_utf8_lossy(alpn),
+        buf.len(),
+        &buf[..preview_len],
+    );
+}
+
+/// Read one request, decoding with the negotiated version (`zedra/rpc/2` lifts to
+/// the live message). Mirrors `irpc_iroh::read_request` but decodes locally so a
+/// failure can name the RPC (see `log_decode_failure`).
+async fn read_zedra_message(
+    conn: &iroh::endpoint::Connection,
+) -> std::io::Result<Option<ZedraMessage>> {
+    use std::io;
+
+    // The negotiated ALPN is the only version seam; keep it local to decoding.
+    let is_v2 = conn.alpn() == ZEDRA_ALPN_V2;
+
+    let (send, mut recv) = match conn.accept_bi().await {
+        Ok(pair) => pair,
+        // Remote closed the connection cleanly (error code 0).
+        Err(ConnectionError::ApplicationClosed(cause)) if cause.error_code.into_inner() == 0 => {
+            return Ok(None);
+        }
+        Err(cause) => return Err(cause.into()),
+    };
+
+    let size = recv
+        .read_varint_u64()
+        .await?
+        .ok_or_else(|| io::Error::new(io::ErrorKind::UnexpectedEof, "failed to read size"))?;
+    if size > MAX_MESSAGE_SIZE {
+        conn.close(1u32.into(), b"request exceeded max message size");
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            "request exceeded max message size",
+        ));
+    }
+    let mut buf = vec![0u8; size as usize];
+    recv.read_exact(&mut buf)
+        .await
+        .map_err(|e| io::Error::new(io::ErrorKind::UnexpectedEof, e))?;
+
+    if is_v2 {
+        match postcard::from_bytes::<ZedraProtoV2>(&buf) {
+            Ok(proto) => Ok(Some(proto.with_remote_channels(recv, send).into_live())),
+            Err(e) => {
+                log_decode_failure(conn.alpn(), &buf, &e);
+                Err(io::Error::new(io::ErrorKind::InvalidData, e))
+            }
+        }
+    } else {
+        match postcard::from_bytes::<ZedraProto>(&buf) {
+            Ok(proto) => Ok(Some(proto.with_remote_channels(recv, send))),
+            Err(e) => {
+                log_decode_failure(conn.alpn(), &buf, &e);
+                Err(io::Error::new(io::ErrorKind::InvalidData, e))
+            }
+        }
+    }
+}
 
 struct HostEnvInfo {
     hostname: String,
@@ -968,7 +1041,11 @@ pub async fn handle_connection(
     state: Arc<DaemonState>,
 ) -> Result<()> {
     let remote = conn.remote_id();
-    tracing::info!("connection from {}", remote.fmt_short());
+    tracing::info!(
+        "connection from {} (alpn={})",
+        remote.fmt_short(),
+        String::from_utf8_lossy(conn.alpn()),
+    );
 
     // Auth phase: returns (session, client_pubkey, is_new_client) or closes connection
     let auth_start = std::time::Instant::now();
@@ -1090,7 +1167,7 @@ pub async fn handle_connection(
     // extended struct) as per-stream, not connection-level: breaking here
     // would brick every other in-flight RPC on the same QUIC connection.
     loop {
-        match irpc_iroh::read_request::<ZedraProto>(&conn).await {
+        match read_zedra_message(&conn).await {
             Ok(Some(msg)) => {
                 let s = session.clone();
                 let st = state.clone();
@@ -1105,7 +1182,7 @@ pub async fn handle_connection(
             }
             Ok(None) => break,
             Err(e) if e.kind() == std::io::ErrorKind::InvalidData => {
-                tracing::warn!("ignoring undecodable request: {}", e);
+                // Detailed per-variant log already emitted in read_zedra_message.
                 continue;
             }
             Err(e) => {
@@ -1189,7 +1266,7 @@ async fn auth_phase(
     bool,
     AuthTiming,
 )> {
-    let first = irpc_iroh::read_request::<ZedraProto>(conn).await?;
+    let first = read_zedra_message(conn).await?;
 
     match first {
         Some(ZedraMessage::Register(msg)) => {
@@ -1212,7 +1289,7 @@ async fn auth_phase(
             if !ok {
                 anyhow::bail!("register rejected");
             }
-            let connect_msg = irpc_iroh::read_request::<ZedraProto>(conn).await?;
+            let connect_msg = read_zedra_message(conn).await?;
             match connect_msg {
                 Some(ZedraMessage::Connect(msg)) => {
                     // is_new_client = true: came through the Register path
@@ -1477,7 +1554,7 @@ async fn finish_auth(
     u64,
 )> {
     let prove_start = std::time::Instant::now();
-    let prove_msg = irpc_iroh::read_request::<ZedraProto>(conn).await?;
+    let prove_msg = read_zedra_message(conn).await?;
 
     let msg = match prove_msg {
         Some(ZedraMessage::AuthProve(m)) => m,
