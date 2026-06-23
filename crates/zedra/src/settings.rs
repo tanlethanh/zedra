@@ -2,7 +2,7 @@ use std::path::PathBuf;
 
 use gpui::{App, Context, Entity, EventEmitter, Global, WeakEntity};
 use serde::{Deserialize, Serialize};
-use tracing::{debug, warn};
+use tracing::{info, warn};
 
 use crate::theme::{ThemeBundle, ThemePreference};
 
@@ -14,6 +14,9 @@ struct AppSettings {
     /// Set when the user picks a theme in Settings; `None` follows the system on next launch.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     theme_preference: Option<ThemePreference>,
+    /// Opt-out flag for anonymous telemetry. `None`/absent = enabled (default-on).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    telemetry_enabled: Option<bool>,
 }
 
 pub enum ThemeStateEvent {
@@ -67,7 +70,7 @@ impl ThemeState {
         match read_settings() {
             Ok(settings) => settings.theme_preference.unwrap_or_default(),
             Err(err) => {
-                debug!(err = %err, "settings: using default theme preference");
+                info!(err = %err, "[debug:settings] using default theme preference");
                 ThemePreference::default()
             }
         }
@@ -143,6 +146,26 @@ fn write_settings(settings: &AppSettings) -> Result<(), String> {
     let path = settings_path().ok_or_else(|| "settings path unavailable".to_string())?;
     let contents = serde_json::to_string_pretty(settings).map_err(|e| e.to_string())?;
     std::fs::write(path, contents).map_err(|e| e.to_string())
+}
+
+/// Whether anonymous telemetry is enabled. Absent/unreadable settings default to
+/// enabled (opt-out model), matching the persisted `None` case.
+pub fn read_telemetry_enabled() -> bool {
+    match read_settings() {
+        Ok(settings) => settings.telemetry_enabled.unwrap_or(true),
+        Err(err) => {
+            info!(err = %err, "[debug:settings] using default telemetry preference");
+            true
+        }
+    }
+}
+
+pub fn write_telemetry_enabled(enabled: bool) {
+    let mut settings = read_settings().unwrap_or_default();
+    settings.telemetry_enabled = Some(enabled);
+    if let Err(err) = write_settings(&settings) {
+        warn!(err = %err, "settings: failed to save telemetry preference");
+    }
 }
 
 #[cfg(test)]

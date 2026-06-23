@@ -15,7 +15,7 @@ use gpui_ios::IosPlatform;
 
 use crate::{
     ZedraAssets, app, install_panic_hook, native_presentation, platform_bridge,
-    sheet_host_view::SheetHostView,
+    sheet_host_view::SheetHostView, telemetry,
 };
 
 thread_local! {
@@ -180,6 +180,9 @@ pub extern "C" fn zedra_launch_gpui() {
     install_panic_hook();
 
     platform_bridge::set_bridge(super::bridge::IosBridge);
+
+    // Apply the persisted telemetry opt-out before the first AppOpen event.
+    telemetry::apply_persisted_optout();
 
     tracing::info!("Zedra iOS: Creating GPUI application with IosPlatform");
 

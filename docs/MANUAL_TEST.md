@@ -185,7 +185,23 @@ Verifies a `zedra/rpc/3` host still serves a pre-bump app.
 4. Open a non-markdown file, a markdown file, a git diff, a terminal, and the managed-agent view as the main workspace view
 5. Tap terminal file links for both a source file and a markdown file so the native custom sheet opens
 6. Expected: manual `screen_view` events include `screen_name` and `screen_class` for `Home`, `Settings`, `Quick Actions`, `Workspace Connecting`, `Workspace Editor`, `Workspace Markdown`, `Workspace Git Diff`, `Workspace Terminal`, each drawer tab, `Custom Sheet Editor`, and `Custom Sheet Markdown`
-7. Expected: native automatic rows such as `UIViewController`, `CustomSheetViewController`, `UIAlertController`, and `ZedraQRScannerVC` on iOS or Android activity rows on Android are still present because native Firebase screen reporting remains enabled
+7. Expected: no native automatic screen rows (e.g. `UIViewController`, `CustomSheetViewController`, Android activity rows). Automatic screen reporting is disabled (`FIREBASE_ANALYTICS_COLLECTION_ENABLED`/`firebaseAutomaticScreenReportingEnabled` off) because the UI is GPUI, not native view controllers; screen tracking comes solely from the manual `screen_view` events above
+
+## 0d-Telemetry. Persisted Telemetry Opt-Out
+
+Use a `debug-telemetry` build so every event prints `[telemetry] >> <name>` to stderr
+(iOS: `./scripts/ios-log.sh`; Android: `./scripts/android-log.sh`).
+
+1. Fresh install (or clear app data), then launch. Expected: `[telemetry] >> app_open` appears
+   (default is opted-in), and `[debug:telemetry] applied persisted opt-out enabled=true`.
+2. Open Settings → Privacy and set "Share usage data" to **Off**. Expected: a selection haptic
+   fires and the toggle moves to Off.
+3. Fully quit and relaunch. Expected: **no** `[telemetry] >>` lines at all, including no
+   `app_open`, and `[debug:telemetry] applied persisted opt-out enabled=false`.
+4. Open Settings → Privacy and set "Share usage data" back to **On**, then relaunch.
+   Expected: `[telemetry] >> app_open` resumes and events fire again.
+5. Tap Settings → Privacy → "What we collect". Expected: the system browser opens
+   `zedra.dev/docs/telemetry`.
 
 ## 0e. Developer Native Selection
 

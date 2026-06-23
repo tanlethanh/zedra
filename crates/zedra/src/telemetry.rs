@@ -83,6 +83,17 @@ pub fn init() {
     let _ = zedra_telemetry::init(Box::new(FirebaseBackend));
 }
 
+/// Apply the persisted telemetry opt-out before the first event fires.
+///
+/// Firebase collection is default-off at SDK init (Info.plist / manifest), so an
+/// opted-in user must be explicitly turned back on. Must run after the platform
+/// bridge is set (needs the data directory) and before the first `AppOpen`.
+pub fn apply_persisted_optout() {
+    let enabled = crate::settings::read_telemetry_enabled();
+    zedra_telemetry::set_enabled(enabled);
+    tracing::info!(enabled, "[debug:telemetry] applied persisted opt-out");
+}
+
 // Re-export for convenience so existing call sites don't need to change imports.
 pub use zedra_telemetry::{
     is_enabled, record_error, record_panic, set_custom_key, set_enabled, set_user_id,

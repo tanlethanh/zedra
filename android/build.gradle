@@ -75,11 +75,14 @@ android {
             signingConfig = signingConfigs.debug
         }
         release {
+            // Firebase default-off: collection stays disabled until the user is
+            // confirmed opted-in at runtime via ZedraFirebase.setCollectionEnabled
+            // (telemetry::apply_persisted_optout).
             manifestPlaceholders = [
                 appLabel: "@string/app_name",
-                firebaseAnalyticsCollectionEnabled: "true",
-                firebaseCrashlyticsCollectionEnabled: "true",
-                firebaseAutomaticScreenReportingEnabled: "true",
+                firebaseAnalyticsCollectionEnabled: "false",
+                firebaseCrashlyticsCollectionEnabled: "false",
+                firebaseAutomaticScreenReportingEnabled: "false",
             ]
             ndk {
                 abiFilters 'arm64-v8a'

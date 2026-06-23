@@ -3,7 +3,6 @@ use gpui::{prelude::FluentBuilder as _, *};
 use futures::channel::oneshot;
 
 use crate::delta::{self, DeltaState};
-use crate::fonts;
 use crate::platform_bridge::{
     self, AlertButton, CustomSheetDetent, CustomSheetOptions, HapticFeedback,
 };
@@ -11,6 +10,9 @@ use crate::settings::ThemeState;
 use crate::sheet_demo_state::SheetDemoState;
 use crate::telemetry::view_telemetry;
 use crate::theme::{self, ThemePreference};
+use crate::{fonts, settings};
+
+const PRIVACY_DOCS_URL: &str = "https://zedra.dev/privacy";
 
 #[derive(Clone, Debug)]
 pub enum SettingsEvent {
@@ -68,6 +70,7 @@ pub struct SettingsView {
     delta_message: Option<String>,
     delta_message_target: DeltaMessageTarget,
     delta_busy: bool,
+    telemetry_enabled: bool,
     _delta_observe: Subscription,
 }
 
@@ -91,6 +94,7 @@ impl SettingsView {
             delta_message: None,
             delta_message_target: DeltaMessageTarget::Profile,
             delta_busy: false,
+            telemetry_enabled: settings::read_telemetry_enabled(),
             _delta_observe: observe,
         }
     }
@@ -393,6 +397,22 @@ impl SettingsView {
         });
     }
 
+    fn set_telemetry_enabled(&mut self, enabled: bool, cx: &mut Context<Self>) {
+        if self.telemetry_enabled == enabled {
+            return;
+        }
+        platform_bridge::trigger_haptic(HapticFeedback::SelectionChanged);
+        self.telemetry_enabled = enabled;
+        zedra_telemetry::set_enabled(enabled);
+        settings::write_telemetry_enabled(enabled);
+        cx.notify();
+    }
+
+    fn open_privacy_docs(&self) {
+        platform_bridge::trigger_haptic(HapticFeedback::ImpactLight);
+        platform_bridge::bridge().open_url(PRIVACY_DOCS_URL);
+    }
+
     fn show_test_alert(&self) {
         platform_bridge::trigger_haptic(HapticFeedback::ImpactLight);
         platform_bridge::show_alert(
@@ -491,6 +511,7 @@ impl Render for SettingsView {
             "Sign In"
         };
         let preference = self.theme_state.read(cx).preference();
+        let telemetry_enabled = self.telemetry_enabled;
 
         div()
             .id("settings-view")
@@ -606,6 +627,28 @@ impl Render for SettingsView {
                                     this.set_theme_preference(ThemePreference::Light, cx);
                                 }),
                             ))
+                            .child(section_header(cx, "Privacy"))
+                            .child(telemetry_toggle(
+                                cx,
+                                telemetry_enabled,
+                                cx.listener(|this, _event, _window, cx| {
+                                    this.set_telemetry_enabled(true, cx);
+                                }),
+                                cx.listener(|this, _event, _window, cx| {
+                                    this.set_telemetry_enabled(false, cx);
+                                }),
+                            ))
+                            .child(
+                                action_row(
+                                    cx,
+                                    "settings-privacy-docs",
+                                    "Privacy Policy",
+                                    "zedra.dev/privacy",
+                                )
+                                .on_press(cx.listener(|this, _event, _window, _cx| {
+                                    this.open_privacy_docs();
+                                })),
+                            )
                             .when(cfg!(debug_assertions), |section| {
                                 section
                                     .child(section_header(cx, "Developer"))
@@ -748,7 +791,7 @@ fn theme_toggle_segment(
 ) -> Stateful<Div> {
     let mut segment = div()
         .id(id)
-        .min_w(px(42.0))
+        .min_w(px(36.0))
         .h(px(24.0))
         .flex()
         .items_center()
@@ -770,6 +813,114 @@ fn theme_toggle_segment(
             } else {
                 theme::text_muted(cx)
             })),
+    )
+}
+
+/// Settings row toggling anonymous usage telemetry on or off.
+fn telemetry_toggle(
+    cx: &App,
+    enabled: bool,
+    on_enable: impl Fn(&PressEvent, &mut Window, &mut App) + 'static,
+    on_disable: impl Fn(&PressEvent, &mut Window, &mut App) + 'static,
+) -> impl IntoElement {
+    div()
+        .id("settings-telemetry-toggle")
+        .min_w_0()
+        .min_h(px(32.0))
+        .py(px(2.0))
+        .flex()
+        .flex_row()
+        .items_center()
+        .gap(px(theme::SPACING_MD))
+        .child(
+            div()
+                .flex_1()
+                .min_w_0()
+                .flex()
+                .flex_col()
+                .gap(px(3.0))
+                .overflow_hidden()
+                .child(
+                    div()
+                        .text_color(rgb(theme::text_secondary(cx)))
+                        .text_size(px(theme::FONT_BODY))
+                        .font_family(fonts::MONO_FONT_FAMILY)
+                        .font_weight(FontWeight::MEDIUM)
+                        .child("Share usage data"),
+                )
+                .child(
+                    div()
+                        .text_color(rgb(theme::text_muted(cx)))
+                        .text_size(px(theme::FONT_DETAIL))
+                        .font_family(fonts::MONO_FONT_FAMILY)
+                        .child("Allow collecting anonymous usage data"),
+                ),
+        )
+        .child(
+            div()
+                .flex_none()
+                .rounded(px(8.0))
+                .border_1()
+                .border_color(rgb(theme::border_default(cx)))
+                .bg(rgb(theme::bg_surface(cx)))
+                .flex()
+                .flex_row()
+                .child(telemetry_toggle_segment(
+                    cx,
+                    "settings-telemetry-on",
+                    "On",
+                    enabled,
+                    on_enable,
+                ))
+                .child(
+                    div()
+                        .w(px(1.0))
+                        .h(px(22.0))
+                        .bg(rgb(theme::border_subtle(cx))),
+                )
+                .child(telemetry_toggle_segment(
+                    cx,
+                    "settings-telemetry-off",
+                    "Off",
+                    !enabled,
+                    on_disable,
+                )),
+        )
+}
+
+fn telemetry_toggle_segment(
+    cx: &App,
+    id: &'static str,
+    label: &'static str,
+    selected: bool,
+    on_press: impl Fn(&PressEvent, &mut Window, &mut App) + 'static,
+) -> Stateful<Div> {
+    let mut segment = div()
+        .id(id)
+        .min_w(px(36.0))
+        .h(px(24.0))
+        .flex()
+        .items_center()
+        .justify_center()
+        .cursor_pointer()
+        .hit_slop(px(6.0))
+        .on_press(on_press);
+
+    if selected {
+        segment = segment.bg(rgb(theme::bg_card(cx)));
+    }
+
+    segment.child(
+        div()
+            .text_size(px(theme::FONT_DETAIL))
+            .font_family(fonts::MONO_FONT_FAMILY)
+            .font_weight(FontWeight::MEDIUM)
+            .text_color(rgb(if selected {
+                theme::text_primary(cx)
+            } else {
+                theme::text_muted(cx)
+            }))
+            .child(label),
     )
 }
 

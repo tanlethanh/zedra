@@ -244,7 +244,12 @@ func zedra_set_custom_key(_ key: UnsafePointer<CChar>?, _ value: UnsafePointer<C
 @_cdecl("zedra_set_collection_enabled")
 func zedra_set_collection_enabled(_ enabled: Int32) {
     guard ZedraFirebase.configureIfAvailable() else { return }
+    // Debug builds never collect, matching Android's BuildConfig.DEBUG guard.
+    #if DEBUG
+    let isEnabled = false
+    #else
     let isEnabled = enabled != 0
+    #endif
     Analytics.setAnalyticsCollectionEnabled(isEnabled)
     Crashlytics.crashlytics().setCrashlyticsCollectionEnabled(isEnabled)
 }

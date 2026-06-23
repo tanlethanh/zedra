@@ -44,6 +44,11 @@ targets:
       path: Zedra/Info.plist
       properties:
         NSSupportsLiveActivities: true
+        # Firebase default-off: nothing collects until the user is confirmed
+        # opted-in at runtime via zedra_set_collection_enabled
+        # (telemetry::apply_persisted_optout).
+        FIREBASE_ANALYTICS_COLLECTION_ENABLED: false
+        FirebaseCrashlyticsCollectionEnabled: false
         CFBundleURLTypes:
           - CFBundleURLSchemes: [zedra]
             CFBundleURLName: dev.zedra.app

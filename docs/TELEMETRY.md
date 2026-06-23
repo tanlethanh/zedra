@@ -38,11 +38,24 @@ zedra-telemetry (pure crate, no platform deps)
 Telemetry calls appear inline in app logic and RPC handlers. They add negligible
 overhead and never delay rendering, connection setup, or terminal I/O.
 
-### Runtime opt-out
+### Opt-out
 
-- **App**: `zedra_telemetry::set_enabled(false)` — flips an `AtomicBool`, all
-  subsequent `send()` calls become no-ops. Also disables Firebase SDK collection.
-- **Host**: `--no-telemetry` flag or `ZEDRA_TELEMETRY=0` env var.
+- **App (persisted)**: Settings → Privacy → "Share usage data" toggle. Stored as
+  `telemetry_enabled` in `settings.json` (`crate::settings`). Absent/`None` = enabled
+  (opt-out model). On launch, `crate::telemetry::apply_persisted_optout()` reads the
+  setting and calls `zedra_telemetry::set_enabled(...)` **after** the platform bridge is
+  set and **before** the first `AppOpen`, so an opted-out user emits no events at all.
+- **App (Firebase default-off)**: the Firebase SDK is configured to **not** auto-collect
+  at init — iOS `Info.plist`/`project.yml` (`FIREBASE_ANALYTICS_COLLECTION_ENABLED=NO`,
+  `FirebaseCrashlyticsCollectionEnabled=NO`) and Android manifest placeholders
+  (`firebase_analytics_collection_enabled=false`, `firebase_crashlytics_collection_enabled=false`,
+  even in release). `apply_persisted_optout()` re-enables collection at runtime only when
+  the user is opted-in, via `set_enabled(true)` → `set_collection_enabled(true)`.
+- **App (runtime)**: `zedra_telemetry::set_enabled(false)` flips an `AtomicBool`, all
+  subsequent `send()` calls become no-ops, and disables Firebase SDK collection. The
+  Settings toggle calls this plus `settings::write_telemetry_enabled(...)`.
+- **Host**: `--no-telemetry` flag or `ZEDRA_TELEMETRY=0` env var. `telemetry_disabled()`
+  gates `new_ga4()` before any event fires.
 
 ---
 

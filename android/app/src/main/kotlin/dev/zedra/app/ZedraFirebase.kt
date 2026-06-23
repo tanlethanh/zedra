@@ -12,7 +12,11 @@ object ZedraFirebase {
 
     @Volatile private var didInitialize = false
     @Volatile private var analytics: FirebaseAnalytics? = null
-    @Volatile private var collectionEnabled = !BuildConfig.DEBUG
+
+    // Default-off: collection stays disabled until the user is confirmed opted-in
+    // at runtime via setCollectionEnabled (telemetry::apply_persisted_optout).
+    // Debug builds never collect.
+    @Volatile private var collectionEnabled = false
 
     @JvmStatic
     fun initialize(context: Context) {
