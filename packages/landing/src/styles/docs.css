@@ -1,0 +1,265 @@
+/* Map Starlight tokens onto the landing page's dark/mono palette.
+   Palette mirrors ProseLayout.astro :root. The site is dark-only. */
+
+@import url("https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500;600&family=Lora:wght@400&display=swap");
+
+:root,
+:root[data-theme="dark"],
+:root[data-theme="light"] {
+  color-scheme: dark;
+
+  /* Fonts */
+  --sl-font: "IBM Plex Mono", "SF Mono", "Fira Code", monospace;
+  --sl-font-system: var(--sl-font);
+  --sl-font-system-mono: var(--sl-font);
+
+  /* Core surface + text */
+  --sl-color-bg: #090909;
+  --sl-color-bg-nav: #090909;
+  --sl-color-bg-sidebar: #090909;
+  --sl-color-bg-inline-code: rgba(255, 255, 255, 0.06);
+  --sl-color-text: #d6d6d6;
+  --sl-color-text-accent: #f3f4f6;
+  --sl-color-white: #f3f4f6;
+  --sl-color-black: #090909;
+
+  /* Gray ramp — light (1) → dark (6). Tuned to the landing tokens. */
+  --sl-color-gray-1: #f3f4f6;
+  --sl-color-gray-2: #d6d6d6;
+  --sl-color-gray-3: #8a8a90;
+  --sl-color-gray-4: #59595e;
+  --sl-color-gray-5: #2a2a2c;
+  --sl-color-gray-6: #161617;
+  --sl-color-gray-7: #111112;
+
+  /* Borders / dividers */
+  --sl-color-hairline: rgba(255, 255, 255, 0.08);
+  --sl-color-hairline-light: rgba(255, 255, 255, 0.08);
+  --sl-color-hairline-shade: rgba(255, 255, 255, 0.05);
+
+  /* Accent — muted neutral, no colored brand hue */
+  --sl-color-accent-low: #1f1f21;
+  --sl-color-accent: #f3f4f6;
+  --sl-color-accent-high: #f3f4f6;
+  --sl-color-text-invert: #090909;
+
+  /* Slightly smaller base text + tighter header. */
+  --sl-text-base: 0.875rem; /* 14px */
+  --sl-nav-pad-y: 0.55rem;
+}
+
+/* Much smaller page title; default is 4xl/5xl. */
+:root {
+  --sl-text-h1: var(--sl-text-3xl);
+}
+@media (min-width: 50rem) {
+  :root {
+    --sl-text-h1: var(--sl-text-3xl);
+    --sl-nav-height: 3.25rem;
+  }
+}
+
+/* Smaller section headings; default desktop h2 is 4xl. */
+:root {
+  --sl-text-h2: var(--sl-text-2xl);
+  --sl-text-h3: var(--sl-text-xl);
+}
+
+/* No divider between the page title and the content; tighten the gap the
+   removed border left behind (both panels add 1.5rem of vertical padding). */
+.content-panel + .content-panel {
+  border-top: none;
+  padding-top: 0;
+}
+
+/* Align the three columns' top edges: nudge the side rails down and pull the
+   page content up so the title lines up with the left nav and the TOC. */
+.sidebar-content {
+  padding-top: 1.75rem;
+}
+.right-sidebar-panel {
+  padding-top: 1.75rem;
+}
+.content-panel {
+  padding-top: 0.5rem;
+}
+
+/* Headings use Lora to match the landing logo/serif tone. */
+:root {
+  --sl-font-headings: "Lora", Georgia, serif;
+}
+
+.sl-markdown-content h1,
+.sl-markdown-content h2,
+.sl-markdown-content h3,
+.sl-markdown-content h4,
+.content-panel h1 {
+  font-family: var(--sl-font-headings);
+  font-weight: 400;
+  letter-spacing: -0.01em;
+}
+
+/* Page/site title in the header (override component reuses .logo styles). */
+.site-title {
+  font-family: var(--sl-font-headings);
+}
+
+/* Soften code blocks to the landing's panel surface. */
+.sl-markdown-content :not(pre) > code {
+  color: #f3f4f6;
+}
+
+.expressive-code,
+.sl-markdown-content pre {
+  border-radius: 8px;
+}
+
+/* Tabs + code as one bordered container: the tab strip sits at the top, the
+   code block fills flush below it on the same surface. */
+starlight-tabs {
+  border: 1px solid var(--sl-color-hairline);
+  border-radius: 8px;
+  overflow: hidden;
+  background-color: #0d0d0e;
+}
+starlight-tabs .tablist-wrapper {
+  padding: 0.25rem 0.75rem 0;
+}
+starlight-tabs [role="tablist"] {
+  border-bottom: 1px solid var(--sl-color-hairline);
+}
+/* Drop the gap so the panel is flush under the tabs. */
+starlight-tabs .tablist-wrapper ~ [role="tabpanel"] {
+  margin-top: 0;
+}
+starlight-tabs [role="tabpanel"] .expressive-code {
+  margin: 0;
+}
+/* Container already draws the border; drop the code block's own. */
+starlight-tabs [role="tabpanel"] .expressive-code pre {
+  border: none;
+}
+
+/* Prose body text: Starlight leaves this at the browser default (16px), so set
+   it from the base token. */
+.sl-markdown-content {
+  font-size: var(--sl-text-base);
+}
+
+/* Links in prose: underline on the muted hairline, like the landing. */
+.sl-markdown-content a:not(:where(.not-content *)) {
+  color: #f3f4f6;
+  text-underline-offset: 3px;
+}
+
+/* Left sidebar mirrors the right TOC: a continuous faint left rail, with a
+   bright accent bar + white text on the active item, dim text otherwise, and no
+   filled card. The rail is per-row, so spacing comes from row padding (not
+   margins) to keep the line unbroken. */
+.sidebar-content .large {
+  font-size: var(--sl-text-sm);
+  font-weight: 400;
+}
+
+.sidebar-content a,
+.sidebar-content summary {
+  border-inline-start: 2px solid var(--sl-color-hairline);
+  border-radius: 0;
+  color: var(--sl-color-gray-3);
+  padding-block: 0.45rem;
+}
+.sidebar-content a:hover,
+.sidebar-content a:focus,
+.sidebar-content summary:hover {
+  color: var(--sl-color-white);
+}
+
+/* Active item: bright accent bar + white text, no fill. */
+.sidebar-content a[aria-current="page"],
+.sidebar-content a[aria-current="page"]:hover,
+.sidebar-content a[aria-current="page"]:focus {
+  background-color: transparent;
+  color: var(--sl-color-white);
+  border-inline-start-color: var(--sl-color-white);
+}
+
+/* Keep the rail continuous: drop the inter-row margins. */
+.sidebar-content .top-level > li + li,
+.sidebar-content ul ul,
+.sidebar-content ul ul li + li {
+  margin-top: 0;
+}
+
+/* Sub-items: rail/accent aligned to the root, text kept indented for hierarchy. */
+.sidebar-content ul ul li {
+  margin-inline-start: 0;
+  border-inline-start: none;
+  padding-inline-start: 0;
+}
+.sidebar-content ul ul a {
+  padding-inline-start: 1.5rem;
+}
+
+/* Right TOC: pin to the rightmost edge at the same width as the left sidebar,
+   and give it a continuous left rail with a bright accent on the active item. */
+@media (min-width: 72rem) {
+  .right-sidebar {
+    inset-inline: auto 0;
+    width: var(--sl-sidebar-width);
+    /* Drop the panel's separate divider; the TOC rail is the only line. */
+    border-inline-start: none;
+  }
+  .right-sidebar-panel .sl-container {
+    width: calc(var(--sl-sidebar-width) - 2 * var(--sl-sidebar-pad-x));
+    max-width: none;
+  }
+}
+
+.right-sidebar-panel nav ul a {
+  border-inline-start: 2px solid var(--sl-color-hairline);
+  border-radius: 0;
+  /* Roomier rows to match the left nav's vertical rhythm. */
+  padding-block: 0.4rem;
+}
+.right-sidebar-panel nav ul a[aria-current="true"] {
+  border-inline-start-color: var(--sl-color-white);
+  color: var(--sl-color-text-accent);
+}
+
+/* "On this page" reads as a muted, non-selected nav item, not a bold heading. */
+.right-sidebar-panel h2 {
+  font-size: var(--sl-text-sm);
+  font-weight: 400;
+  color: var(--sl-color-gray-2);
+  margin-bottom: 0.75rem;
+}
+
+/* Header balance: center the search over the main content column.
+   Col 2 starts at the content's left edge but spans the TOC gutter too, so
+   pin the search box to the content width and center the button inside it. */
+@media (min-width: 50rem) {
+  .header > div:nth-child(2) {
+    justify-content: flex-start;
+  }
+  .header > div:nth-child(2) site-search {
+    display: flex;
+    justify-content: center;
+    width: min(var(--sl-content-width), 100%);
+  }
+}
+
+/* Social (GitHub/Discord) icons: small and dim. */
+.social-icons a {
+  color: var(--sl-color-gray-3);
+}
+.social-icons a:hover {
+  color: var(--sl-color-white);
+}
+.social-icons a svg {
+  width: 1.3rem;
+  height: 1.3rem;
+}
+/* Drop the trailing divider (it separated the now-removed theme toggle). */
+.social-icons::after {
+  display: none;
+}

@@ -1,0 +1,40 @@
+---
+title: Telemetry
+description: What anonymous usage data Zedra collects, why, and how to turn it off on mobile and the desktop daemon.
+---
+
+Zedra collects a small amount of anonymous usage data to catch crashes and improve connection reliability. It is opt-out, and it never includes your code.
+
+Zedra **never** collects code, terminal output, file contents, file paths, keystrokes, commands, usernames, hostnames, or IP addresses. Everything between your phone and desktop stays on the encrypted tunnel. See the [Privacy policy](/privacy) for the full guarantee.
+
+## What we collect
+
+Only opaque IDs, durations, counts, enum labels, and booleans: app and daemon lifecycle, connection and reconnect timing, latency and bandwidth samples, and terminal counts. Relay values are limited to known region labels (`sg1`, `us1`, `eu1`) or `custom`. No hostnames, IP addresses, geolocation, credentials, or sensitive access are sent.
+
+## Why we collect it
+
+- **Crash triage.** Anonymous crash reports show what's breaking, without seeing your work.
+- **Connection reliability.** Connection and latency events show where pairing, hole-punching, or relays are slow, so we can fix them.
+- **Feature usage.** Which app features and screens get used, so we can optimize the experience.
+
+## How to disable it
+
+### Mobile
+
+In the app, go to **Settings → Telemetry** and turn off **Share anonymous usage data**. Once off, no events are sent.
+
+### Desktop daemon
+
+Turn it off with a flag or an environment variable:
+
+```sh
+# Per run
+zedra start --no-telemetry
+
+# Or via environment variable
+ZEDRA_TELEMETRY=0 zedra start
+```
+
+Either turns telemetry off before any event is sent. Builds compiled without telemetry credentials send nothing.
+
+For the full data-handling guarantees, see the [Privacy policy](/privacy).

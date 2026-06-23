@@ -1,0 +1,44 @@
+---
+title: Connect your phone
+description: Pair the Zedra app with your desktop by scanning a QR code, and understand how the encrypted P2P tunnel works.
+---
+
+Once the daemon is running, pairing takes one scan.
+
+## Pair by scanning the QR code
+
+1. Run `zedra start --detach` in your project directory. It prints a QR code.
+2. Open the Zedra app and tap **Scan QR**.
+3. Point the camera at the QR code.
+
+That's it. The app remembers the pairing, so you only scan once per workspace.
+Each `zedra start` directory shows up as its own workspace in the app.
+
+The QR code carries your machine's public key and a one-time pairing secret —
+not your network address. Routing information is resolved fresh each time you
+connect, so the pairing keeps working even after your IP changes.
+
+## How the tunnel works
+
+Zedra opens an end-to-end encrypted connection (QUIC with TLS 1.3) between your
+phone and your desktop. There are two paths:
+
+- **Direct (preferred).** Your phone and desktop discover each other and punch a
+  direct path through your network. Traffic flows device-to-device with nothing
+  in between.
+- **Relay fallback.** When a direct path can't be established — for example
+  behind a symmetric NAT or strict firewall — traffic routes through a Zedra
+  relay instead. The relay only forwards encrypted packets; it can't decrypt or
+  inspect your code, terminal output, or files.
+
+Even while on a relay, Zedra keeps trying for a direct path in the background. If
+one opens up, the connection migrates onto it automatically.
+
+## Staying connected
+
+The app pings the daemon to track the connection and shows round-trip latency in
+the transport badge. If the network drops, it reconnects automatically with a
+short backoff. If your desktop restarts, re-run `zedra start` and the app
+reconnects on its own.
+
+If you can't connect at all, see [Troubleshooting](/docs/troubleshooting/).
