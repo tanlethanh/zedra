@@ -534,79 +534,35 @@ const canonicalUrl = "https://zedra.dev/";
       .phone-mockup {
         position: relative;
         width: 360px;
-        aspect-ratio: 390 / 844;
-        background: #1c1c1e;
-        border-radius: 50px;
-        box-shadow:
-          0 0 0 1px rgba(255, 255, 255, 0.12),
-          0 0 0 6px #1c1c1e,
-          0 0 0 7px rgba(255, 255, 255, 0.07),
-          0 40px 100px rgba(0, 0, 0, 0.7),
-          0 8px 24px rgba(0, 0, 0, 0.4);
+        aspect-ratio: 435 / 890;
+        filter: drop-shadow(0 40px 100px rgba(0, 0, 0, 0.7))
+          drop-shadow(0 8px 24px rgba(0, 0, 0, 0.4));
       }
 
-      .phone-btn {
+      /* device frame drawn by frame.png overlay (buttons, island, bezel) */
+      .phone-mockup::after {
+        content: "";
         position: absolute;
-        background: #2c2c2e;
-        border-radius: 2px;
-      }
-
-      .phone-btn-action {
-        left: -3px;
-        top: 14%;
-        width: 3px;
-        height: 5%;
-        border-radius: 2px 0 0 2px;
-      }
-
-      .phone-btn-vol-up {
-        left: -3px;
-        top: 22%;
-        width: 3px;
-        height: 8%;
-        border-radius: 2px 0 0 2px;
-      }
-
-      .phone-btn-vol-down {
-        left: -3px;
-        top: 32%;
-        width: 3px;
-        height: 8%;
-        border-radius: 2px 0 0 2px;
-      }
-
-      .phone-btn-power {
-        right: -3px;
-        top: 24%;
-        width: 3px;
-        height: 12%;
-        border-radius: 0 2px 2px 0;
+        inset: 0;
+        background: url("/frame.png") center / contain no-repeat;
+        opacity: 0.8;
+        pointer-events: none;
+        z-index: 10;
       }
 
       .phone-screen {
         position: absolute;
-        inset: 6px;
-        border-radius: 44px;
+        inset: 2.25% 5.52% 2.36% 5.29%;
+        border-radius: 7.8% / 3.8%;
         overflow: hidden;
         background: #000;
-      }
-
-      .phone-dynamic-island {
-        position: absolute;
-        top: 12px;
-        left: 50%;
-        transform: translateX(-50%);
-        width: 34%;
-        height: 3.8%;
-        background: #000;
-        border-radius: 20px;
-        z-index: 10;
       }
 
       .phone-screen video {
         width: 100%;
         height: 100%;
         object-fit: cover;
+        filter: contrast(1.01) saturate(1.3);
       }
 
       @media (max-width: 1024px) {
@@ -923,12 +879,7 @@ const canonicalUrl = "https://zedra.dev/";
 
         <aside class="right">
           <div class="phone-mockup" aria-label="Zedra app demo">
-            <div class="phone-btn phone-btn-action"></div>
-            <div class="phone-btn phone-btn-vol-up"></div>
-            <div class="phone-btn phone-btn-vol-down"></div>
-            <div class="phone-btn phone-btn-power"></div>
             <div class="phone-screen">
-              <div class="phone-dynamic-island"></div>
               <video src={demoVideo} autoplay muted loop playsinline></video>
             </div>
           </div>
