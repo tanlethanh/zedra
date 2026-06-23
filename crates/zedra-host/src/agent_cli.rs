@@ -386,6 +386,7 @@ fn scan_bench(args: AgentScanBenchArgs) -> Result<()> {
         AgentKind::OpenCode,
         AgentKind::Pi,
         AgentKind::Hermes,
+        AgentKind::Maki,
     ] {
         let started = Instant::now();
         let result = agent::scan_agent_sessions(kind, &workdir, args.limit);
@@ -458,6 +459,7 @@ fn scan_bench(args: AgentScanBenchArgs) -> Result<()> {
         AgentKind::OpenCode,
         AgentKind::Pi,
         AgentKind::Hermes,
+        AgentKind::Maki,
     ] {
         println!();
         if let Some(result) = sessions.get(&format!("{kind:?}")) {
@@ -494,17 +496,20 @@ async fn scan_usage(args: AgentScanCommonArgs) -> Result<()> {
         );
     } else {
         use zedra_rpc::proto::AgentKind::*;
-        for kind in [Claude, Codex, OpenCode, Pi, Hermes] {
+        for kind in [Claude, Codex, OpenCode, Pi, Hermes, Maki] {
             let label = match kind {
                 Claude => "Claude",
                 Codex => "Codex",
                 OpenCode => "OpenCode",
                 Pi => "Pi",
                 Hermes => "Hermes",
+                Maki => "Maki",
             };
             match snapshots.get(&kind) {
-                // Hermes has no remote usage/plan endpoint; absence is expected.
-                None if kind == Hermes => println!("{label}: local-only (no remote usage)"),
+                // Hermes/Maki have no remote usage/plan endpoint; absence is expected.
+                None if kind == Hermes || kind == Maki => {
+                    println!("{label}: local-only (no remote usage)")
+                }
                 None => println!("{label}: no credentials / fetch failed"),
                 Some(snap) => {
                     println!("{label}:");

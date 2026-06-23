@@ -17,6 +17,7 @@ pub enum Kind {
     Hermes,
     Junie,
     KiloCode,
+    Maki,
     OpenClaw,
     OpenCode,
     OpenHands,
@@ -42,6 +43,7 @@ impl Kind {
             Self::Hermes => Some("icons/hermesagent.svg"),
             Self::Junie => Some("icons/junie.svg"),
             Self::KiloCode => Some("icons/kilocode.svg"),
+            Self::Maki => Some("icons/maki.svg"),
             Self::OpenClaw => Some("icons/openclaw.svg"),
             Self::OpenCode => Some("icons/opencode.svg"),
             Self::OpenHands => Some("icons/openhands.svg"),
@@ -267,6 +269,7 @@ impl GenericPromptAgentAdapter {
             Kind::Hermes => "Hermes Agent",
             Kind::Junie => "Junie",
             Kind::KiloCode => "Kilo Code",
+            Kind::Maki => "Maki",
             Kind::OpenClaw => "OpenClaw",
             Kind::OpenCode => "OpenCode",
             Kind::OpenHands => "OpenHands",
@@ -292,6 +295,7 @@ impl GenericPromptAgentAdapter {
             Kind::Hermes => Some("AgentHermes"),
             Kind::Junie => Some("AgentJunie"),
             Kind::KiloCode => Some("AgentKiloCode"),
+            Kind::Maki => Some("AgentMaki"),
             Kind::OpenClaw => Some("AgentOpenClaw"),
             Kind::OpenCode => Some("AgentOpenCode"),
             Kind::OpenHands => Some("AgentOpenHands"),
@@ -474,6 +478,7 @@ pub fn make_adapter(kind: Kind) -> Box<dyn AgentAdapter> {
         | Kind::Hermes
         | Kind::Junie
         | Kind::KiloCode
+        | Kind::Maki
         | Kind::OpenClaw
         | Kind::OpenHands
         | Kind::Pi
@@ -534,6 +539,8 @@ pub fn detect(raw: &str) -> Kind {
         || low.contains("zen-cli")
     {
         Kind::Zencoder
+    } else if has_any(&words, &["maki"]) {
+        Kind::Maki
     } else if has_any(&words, &["gemini", "geminicli"]) {
         Kind::Gemini
     } else if has_any(&words, &["copilot", "githubcopilot"]) {
@@ -690,6 +697,7 @@ mod tests {
         Kind::Hermes,
         Kind::Junie,
         Kind::KiloCode,
+        Kind::Maki,
         Kind::OpenClaw,
         Kind::OpenCode,
         Kind::OpenHands,
@@ -721,6 +729,8 @@ mod tests {
         assert_eq!(detect("kilo"), Kind::KiloCode);
         assert_eq!(detect("kilo-code"), Kind::KiloCode);
         assert_eq!(detect("kilocode"), Kind::KiloCode);
+        assert_eq!(detect("maki"), Kind::Maki);
+        assert_eq!(detect("maki --resume ses"), Kind::Maki);
         assert_eq!(detect("open-claw"), Kind::OpenClaw);
         assert_eq!(detect("openclaw tui"), Kind::OpenClaw);
         assert_eq!(detect("open-code run"), Kind::OpenCode);

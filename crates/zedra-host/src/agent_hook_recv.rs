@@ -403,6 +403,22 @@ pub struct PiHookReceiver;
 
 pub struct HermesHookReceiver;
 
+pub struct MakiHookReceiver;
+
+// Maki has no lifecycle-hook vocabulary, so this receiver only forwards the raw
+// event to the connected client without an agent-state transition or push
+// notification. It exists to keep the hook dispatch exhaustive; in practice no
+// hook is ever delivered for Maki because `setup maki` installs nothing.
+impl HookReceiver for MakiHookReceiver {
+    async fn receive(&self, ctx: HookContext) -> Result<()> {
+        let event_name = agent_utils::payload_string(&ctx.payload, "hook_event_name")
+            .or_else(|| agent_utils::payload_string(&ctx.payload, "event"))
+            .unwrap_or_default();
+        self.push_rpc(AgentKind::Maki, &event_name, &ctx).await;
+        Ok(())
+    }
+}
+
 impl HookReceiver for HermesHookReceiver {
     async fn receive(&self, ctx: HookContext) -> Result<()> {
         // Hermes shell hooks pipe `hook_event_name` and place event-specific

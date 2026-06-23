@@ -55,6 +55,9 @@ pub fn setup_summary(kind: AgentKind, cli_available: bool, workdir: &Path) -> Ag
         AgentKind::Pi => (false, false, hooks_enabled() && pi_hooks_installed()),
         // Hermes has its own hook system, but Zedra doesn't install into it yet.
         AgentKind::Hermes => (false, false, false),
+        // Maki has no external lifecycle-hook mechanism, so Zedra installs
+        // nothing; session discovery and resume still work without hooks.
+        AgentKind::Maki => (false, false, false),
     };
     let state = if error.is_some() {
         AgentSetupState::Error

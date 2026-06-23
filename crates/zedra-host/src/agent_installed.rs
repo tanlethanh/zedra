@@ -124,6 +124,12 @@ const INSTALLED_AGENT_SPECS: &[InstalledAgentSpec] = &[
         icon_name: "AgentZencoder",
         programs: &["zencoder"],
     },
+    InstalledAgentSpec {
+        slug: "maki",
+        display_name: "Maki",
+        icon_name: "AgentMaki",
+        programs: &["maki"],
+    },
 ];
 
 pub fn list_installed_agents() -> AgentInstalledListResult {

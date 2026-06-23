@@ -215,6 +215,17 @@ Verifies a `zedra/rpc/3` host still serves a pre-bump app.
 2. From another shell on the host, run `zedra agent hook test --agent pi --event UserPromptSubmit --terminal-id <id>` then `... --event Stop --terminal-id <id>`
 3. Expected: the agent state transitions Running → Completed, and a `Pi completed` Delta notification fires when the app is backgrounded
 
+### Maki managed agent (no lifecycle hooks)
+
+1. Install maki (`curl -fsSL https://maki.sh/install.sh | sh`) and run at least one `maki` session in the workspace so a transcript exists under `$XDG_STATE_HOME/maki/sessions/` (or `~/.maki/sessions`)
+2. Open the workspace in Zedra and open the Agents panel
+3. Expected: a Maki card appears with the correct session count and Default model (from `config.toml` `[provider] default_model`) when set; setup state is NotConfigured because Maki exposes no lifecycle hooks
+4. Open the Maki session list: expected entries match the workspace's transcripts (filtered by `cwd`), newest first, with stored titles
+5. Tap a session: expected the host launches `maki --resume <id>` and the terminal binds to the Maki icon
+6. Run `zedra setup maki`: expected it confirms the CLI is present and notes that session discovery/resume are automatic while stop notifications are unavailable
+7. Start a `maki` session in a Zedra terminal and use Add to Chat / Ask from an editor selection: expected the Maki icon shows and fenced context is pasted without submitting
+8. Expected: no Delta notification fires on maki turn end (Maki has no hooks) — this is the intended limitation
+
 ## 0f-1. Agent Hook Notification Deeplink — App In Background
 
 Requires Delta sign-in, a registered push-enabled device, and hook setup

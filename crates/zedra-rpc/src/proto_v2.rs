@@ -431,7 +431,7 @@ fn managed_agent_kind(kind: proto::AgentKind) -> Option<ManagedAgentKind> {
         proto::AgentKind::Claude => Some(ManagedAgentKind::Claude),
         proto::AgentKind::Codex => Some(ManagedAgentKind::Codex),
         proto::AgentKind::OpenCode => Some(ManagedAgentKind::OpenCode),
-        proto::AgentKind::Pi | proto::AgentKind::Hermes => None,
+        proto::AgentKind::Pi | proto::AgentKind::Hermes | proto::AgentKind::Maki => None,
     }
 }
 

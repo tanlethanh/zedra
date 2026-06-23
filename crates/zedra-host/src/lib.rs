@@ -9,6 +9,7 @@ pub mod agent_codex;
 pub mod agent_hermes;
 pub mod agent_hook_recv;
 pub mod agent_installed;
+pub mod agent_maki;
 pub mod agent_opencode;
 pub mod agent_pi;
 pub mod agent_setup;

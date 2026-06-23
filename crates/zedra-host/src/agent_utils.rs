@@ -122,6 +122,7 @@ pub fn kind_slug(kind: AgentKind) -> &'static str {
         AgentKind::OpenCode => "opencode",
         AgentKind::Pi => "pi",
         AgentKind::Hermes => "hermes",
+        AgentKind::Maki => "maki",
     }
 }
 
@@ -136,6 +137,7 @@ pub fn display_name(kind: AgentKind) -> &'static str {
         AgentKind::OpenCode => "OpenCode",
         AgentKind::Pi => "Pi",
         AgentKind::Hermes => "Hermes",
+        AgentKind::Maki => "Maki",
     }
 }
 

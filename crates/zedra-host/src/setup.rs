@@ -46,6 +46,11 @@ pub enum SetupAgent {
         #[command(flatten)]
         action: SetupActionArgs,
     },
+    /// Maki — verifies the CLI; session discovery/resume work without hooks
+    Maki {
+        #[command(flatten)]
+        action: SetupActionArgs,
+    },
 }
 
 pub async fn run_all(_assume_yes: bool, full_bin_path: bool, no_quiet: bool) -> Result<()> {
@@ -56,6 +61,7 @@ pub async fn run_all(_assume_yes: bool, full_bin_path: bool, no_quiet: bool) -> 
         ("opencode", "OpenCode"),
         ("pi", "Pi"),
         ("hermes", "Hermes"),
+        ("maki", "Maki"),
     ];
     let mut found = false;
     for (program, name) in agents {
@@ -69,6 +75,7 @@ pub async fn run_all(_assume_yes: bool, full_bin_path: bool, no_quiet: bool) -> 
             "OpenCode" => setup_opencode_install(full_bin_path, quiet).await,
             "Pi" => setup_pi_install(full_bin_path),
             "Hermes" => setup_hermes_install(full_bin_path),
+            "Maki" => setup_maki_install(),
             _ => unreachable!(),
         };
         if let Err(e) = result {
@@ -101,6 +108,7 @@ pub async fn run(
         }
         SetupAgent::Pi { action } => setup_pi(action.into(), full_bin_path),
         SetupAgent::Hermes { action } => setup_hermes(action.into(), full_bin_path),
+        SetupAgent::Maki { action } => setup_maki(action.into()),
     }
 }
 
@@ -285,6 +293,29 @@ fn setup_pi_remove() -> Result<()> {
     println!();
     println!("pi setup removed.");
     println!("Restart any running pi session to apply the change.");
+    Ok(())
+}
+
+fn setup_maki(action: SetupAction) -> Result<()> {
+    match action {
+        SetupAction::Install => setup_maki_install(),
+        SetupAction::Remove => {
+            // Maki has no lifecycle-hook mechanism, so Zedra installs nothing;
+            // there is nothing to remove.
+            utils::println_section("Removing Maki setup");
+            println!("Nothing to remove: Zedra installs no hooks for Maki.");
+            Ok(())
+        }
+    }
+}
+
+fn setup_maki_install() -> Result<()> {
+    require_command("maki")?;
+    utils::println_section("Setting up Maki");
+    println!("Maki detected. Session history and resume are available automatically.");
+    println!(
+        "Maki does not yet expose lifecycle hooks, so session-stop notifications are unavailable."
+    );
     Ok(())
 }
 

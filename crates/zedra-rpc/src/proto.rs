@@ -225,7 +225,7 @@ pub enum ZedraProto {
 // ALPN protocol identifier
 // ---------------------------------------------------------------------------
 
-pub const ZEDRA_ALPN: &[u8] = b"zedra/rpc/3";
+pub const ZEDRA_ALPN: &[u8] = b"zedra/rpc/4";
 
 /// Default page size for `FsList` requests (host uses this when `limit == 0`).
 pub const FS_LIST_DEFAULT_LIMIT: u32 = 50;
@@ -1124,6 +1124,7 @@ pub enum AgentKind {
     OpenCode,
     Pi,
     Hermes,
+    Maki,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
