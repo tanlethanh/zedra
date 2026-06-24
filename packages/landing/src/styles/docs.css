@@ -163,7 +163,7 @@ starlight-tabs [role="tabpanel"] .expressive-code pre {
 
 .sidebar-content a,
 .sidebar-content summary {
-  border-inline-start: 2px solid var(--sl-color-hairline);
+  border-inline-start: 2px solid transparent;
   border-radius: 0;
   color: var(--sl-color-gray-3);
   padding-block: 0.45rem;
