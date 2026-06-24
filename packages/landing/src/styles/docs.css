@@ -1,7 +1,7 @@
 /* Map Starlight tokens onto the landing page's dark/mono palette.
    Palette mirrors ProseLayout.astro :root. The site is dark-only. */
 
-@import url("https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500;600&family=Lora:wght@400&display=swap");
+@import "https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500;600&family=Lora:wght@400&display=swap";
 
 :root,
 :root[data-theme="dark"],
@@ -86,7 +86,7 @@
 
 /* Headings use Lora to match the landing logo/serif tone. */
 :root {
-  --sl-font-headings: "Lora", Georgia, serif;
+  --sl-font-headings: "Lora", georgia, serif;
 }
 
 .sl-markdown-content h1,

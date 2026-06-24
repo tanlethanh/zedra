@@ -1,7 +1,7 @@
+// @ts-check
 import sitemap from "@astrojs/sitemap";
 import starlight from "@astrojs/starlight";
 import vercel from "@astrojs/vercel";
-// @ts-check
 import { defineConfig } from "astro/config";
 
 // Open external links in a new tab; internal (/...) links stay in place.
@@ -73,6 +73,8 @@ export default defineConfig({
       sidebar: [
         { label: "Why Zedra?", slug: "docs" },
         { label: "Installation", slug: "docs/installation" },
+        { label: "Connecting", slug: "docs/connecting" },
+        { label: "AI agents", slug: "docs/ai-agents" },
         { label: "Troubleshooting", slug: "docs/troubleshooting" },
         {
           label: "References",

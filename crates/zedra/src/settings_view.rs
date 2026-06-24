@@ -12,7 +12,7 @@ use crate::telemetry::view_telemetry;
 use crate::theme::{self, ThemePreference};
 use crate::{fonts, settings};
 
-const PRIVACY_DOCS_URL: &str = "https://zedra.dev/privacy";
+const TELEMETRY_DOCS_URL: &str = "https://zedra.dev/docs/telemetry";
 
 #[derive(Clone, Debug)]
 pub enum SettingsEvent {
@@ -408,9 +408,9 @@ impl SettingsView {
         cx.notify();
     }
 
-    fn open_privacy_docs(&self) {
+    fn open_telemetry_docs(&self) {
         platform_bridge::trigger_haptic(HapticFeedback::ImpactLight);
-        platform_bridge::bridge().open_url(PRIVACY_DOCS_URL);
+        platform_bridge::bridge().open_url(TELEMETRY_DOCS_URL);
     }
 
     fn show_test_alert(&self) {
@@ -642,11 +642,11 @@ impl Render for SettingsView {
                                 action_row(
                                     cx,
                                     "settings-privacy-docs",
-                                    "Privacy Policy",
-                                    "zedra.dev/privacy",
+                                    "What we collect",
+                                    "zedra.dev/docs/telemetry",
                                 )
                                 .on_press(cx.listener(|this, _event, _window, _cx| {
-                                    this.open_privacy_docs();
+                                    this.open_telemetry_docs();
                                 })),
                             )
                             .when(cfg!(debug_assertions), |section| {
