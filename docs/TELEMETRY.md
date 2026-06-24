@@ -38,11 +38,54 @@ zedra-telemetry (pure crate, no platform deps)
 Telemetry calls appear inline in app logic and RPC handlers. They add negligible
 overhead and never delay rendering, connection setup, or terminal I/O.
 
-### Runtime opt-out
+### Opt-out
 
-- **App**: `zedra_telemetry::set_enabled(false)` — flips an `AtomicBool`, all
-  subsequent `send()` calls become no-ops. Also disables Firebase SDK collection.
-- **Host**: `--no-telemetry` flag or `ZEDRA_TELEMETRY=0` env var.
+- **App (persisted)**: Settings → Privacy → "Share usage data" toggle. Stored as
+  `telemetry_enabled` in `settings.json` (`crate::settings`). Absent/`None` = enabled
+  (opt-out model). On launch, `crate::telemetry::apply_persisted_optout()` reads the
+  setting and calls `zedra_telemetry::set_enabled(...)` **after** the platform bridge is
+  set and **before** the first `AppOpen`, so an opted-out user emits no events at all.
+- **App (Firebase default-off)**: the Firebase SDK is configured to **not** auto-collect
+  at init — iOS `Info.plist`/`project.yml` (`FIREBASE_ANALYTICS_COLLECTION_ENABLED=NO`,
+  `FirebaseCrashlyticsCollectionEnabled=NO`) and Android manifest placeholders
+  (`firebase_analytics_collection_enabled=false`, `firebase_crashlytics_collection_enabled=false`,
+  even in release). `apply_persisted_optout()` re-enables collection at runtime only when
+  the user is opted-in, via `set_enabled(true)` → `set_collection_enabled(true)`.
+- **App (runtime)**: `zedra_telemetry::set_enabled(false)` flips an `AtomicBool`, all
+  subsequent telemetry operations become no-ops, and disables Firebase SDK collection.
+  The Settings toggle updates the single persisted preference through
+  `settings::set_telemetry_enabled(...)`.
+- **Host (runtime)**: `--no-telemetry` flag or `ZEDRA_TELEMETRY=0` env var.
+  `telemetry_disabled()` gates `new_ga4()` before any event fires.
+
+### Exclude telemetry completely when building from source
+
+For the desktop host daemon, use the explicit `no-telemetry` feature:
+
+```sh
+# Desktop host daemon: removes GA4 code, credentials, and send paths.
+cargo build --release -p zedra-host --features no-telemetry
+```
+
+For mobile, use a supported run script with `--no-telemetry`:
+
+```sh
+# iOS simulator or connected device: compiles out Firebase and builds, installs, and launches the app.
+./scripts/run-ios.sh sim --no-telemetry
+./scripts/run-ios.sh device --no-telemetry
+
+# Android connected device: compiles out Firebase and builds, installs, and launches the app.
+./scripts/run-android.sh device --no-telemetry
+```
+
+The run scripts forward the flag to both the Rust and native app builds. Calling
+`build-ios.sh` or `build-android.sh` alone produces only Rust artifacts; using one
+before a separate Xcode or Gradle app build is not a supported opt-out workflow.
+
+The mobile build keeps the Privacy row visible as a muted, disabled Off control
+with a build-disabled explanation. It does not initialize or call Firebase Analytics
+or Crashlytics. Android also omits those dependencies; Firebase Messaging remains
+available for Delta push notifications.
 
 ---
 
@@ -140,9 +183,8 @@ Firebase is integrated via CocoaPods. Key files:
 | `crates/zedra/src/telemetry.rs` | `FirebaseBackend` — registers with `zedra_telemetry` |
 
 Manual GPUI logical screen views are emitted as Firebase `screen_view` events
-with `screen_name` and `screen_class`. Native automatic screen reporting remains
-enabled, so UIKit rows such as alerts, QR scanner, and custom sheet controllers
-can still appear beside logical Zedra rows in Firebase reports.
+with `screen_name` and `screen_class`. Native automatic screen reporting is disabled
+on both platforms because GPUI, not native view controllers, owns Zedra's screens.
 
 **Build**: `pod install` in `ios/`, then build via `.xcworkspace`.
 Debug builds can run without `ios/Zedra/GoogleService-Info.plist`; Firebase

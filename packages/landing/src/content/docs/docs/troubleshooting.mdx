@@ -1,0 +1,33 @@
+---
+title: Troubleshooting
+description: Fix connection failures, high latency, and relay issues when pairing Zedra with your desktop.
+---
+
+Most connection problems come down to your network. Zedra prefers a direct device-to-device path and falls back to a relay when it can't get one.
+
+## Can't connect at all
+
+Work through these in order:
+
+- **Is the daemon running?** `zedra start` must be active in the project directory. If the machine restarted, run it again.
+- **Re-scan the QR code.** A one-time QR expires after about 10 minutes and is consumed on first pairing. Generate a fresh one with `zedra qr` (or restart the daemon) and scan again.
+- **Check network access.** Both devices must be online; pairing resolves your machine's current address over the network.
+
+## Symmetric NAT or CGNAT
+
+Symmetric NAT and carrier-grade NAT (CGNAT), common on home and mobile networks, block hole-punching, so a direct path isn't always possible. When that happens Zedra routes through a relay automatically; the connection still works, just relayed rather than direct.
+
+Nothing to do on your end. For the mechanics, see [how NAT traversal works](https://tailscale.com/blog/how-nat-traversal-works).
+
+## High latency or slow terminals
+
+Latency depends on whether you're on a direct path or a relay, and on relay distance:
+
+- **Relay distance.** Zedra picks the lowest-latency relay automatically, but a far region means higher round-trip times. Relays run in several regions (Singapore, Vietnam, US East, EU Central).
+- **Relay vs. direct.** A relayed connection shares one path across all terminal streams, so a heavy burst in one terminal can briefly slow another. A direct path keeps them independent. Zedra keeps trying to upgrade in the background; when it succeeds, the connection migrates automatically and latency drops.
+
+For persistent high latency, reach out on [GitHub](https://github.com/tanlethanh/zedra/issues) with your rough region and whether the transport badge shows a direct or relayed connection.
+
+## Connection drops and reconnects
+
+Zedra reconnects automatically after a network change or brief drop, with a short backoff. If it gives up, tap **Retry** in the app. If the host is gone for good, long-press the workspace and remove it.

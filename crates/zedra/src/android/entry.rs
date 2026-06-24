@@ -22,7 +22,7 @@ use jni::JNIEnv;
 use jni::objects::JClass;
 
 use crate::android::bridge::AndroidBridge;
-use crate::{app, install_panic_hook, platform_bridge};
+use crate::{app, platform_bridge};
 
 thread_local! {
     /// Kept alive so the GPUI runtime survives across Choreographer ticks.
@@ -38,8 +38,6 @@ pub extern "system" fn Java_dev_zedra_app_MainActivity_zedraLaunchGpui(
 ) {
     super::jni::init_logging();
     crate::telemetry::init();
-    install_panic_hook();
-
     tracing::info!("Zedra Android: creating GPUI application with AndroidPlatform");
 
     let platform: Rc<dyn Platform> = gpui_android::create_platform();

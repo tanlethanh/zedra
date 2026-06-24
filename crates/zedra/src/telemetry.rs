@@ -3,14 +3,16 @@
 // Call `init()` once at app startup (before any events fire).
 // After init, all crates can use `zedra_telemetry::send(Event::...)` etc.
 
-#[cfg(target_os = "android")]
+#[cfg(all(target_os = "android", not(feature = "no-telemetry")))]
 use crate::android::telemetry as android_telemetry;
-#[cfg(target_os = "ios")]
+#[cfg(all(target_os = "ios", not(feature = "no-telemetry")))]
 use crate::ios::telemetry as ios_telemetry;
 
 /// Platform-specific Firebase backend that implements TelemetryBackend.
+#[cfg(not(feature = "no-telemetry"))]
 struct FirebaseBackend;
 
+#[cfg(not(feature = "no-telemetry"))]
 impl zedra_telemetry::TelemetryBackend for FirebaseBackend {
     fn send(&self, event: &zedra_telemetry::Event) {
         let name = event.name();
@@ -79,9 +81,31 @@ impl zedra_telemetry::TelemetryBackend for FirebaseBackend {
 
 /// Register the Firebase backend with the shared telemetry crate.
 /// Call once at app startup before any events fire.
+#[cfg(not(feature = "no-telemetry"))]
 pub fn init() {
     let _ = zedra_telemetry::init(Box::new(FirebaseBackend));
 }
+
+/// Disable the global dispatcher when telemetry was compiled out.
+#[cfg(feature = "no-telemetry")]
+pub fn init() {
+    zedra_telemetry::set_enabled(false);
+}
+
+/// Apply the persisted telemetry opt-out before the first event fires.
+///
+/// Firebase collection is default-off at SDK init (Info.plist / manifest), so an
+/// opted-in user must be explicitly turned back on. Must run after the platform
+/// bridge is set (needs the data directory) and before the first `AppOpen`.
+#[cfg(not(feature = "no-telemetry"))]
+pub fn apply_persisted_optout() {
+    let enabled = crate::settings::read_telemetry_enabled();
+    zedra_telemetry::set_enabled(enabled);
+    tracing::info!(enabled, "[debug:telemetry] applied persisted opt-out");
+}
+
+#[cfg(feature = "no-telemetry")]
+pub fn apply_persisted_optout() {}
 
 // Re-export for convenience so existing call sites don't need to change imports.
 pub use zedra_telemetry::{

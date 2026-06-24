@@ -10,6 +10,8 @@ crate-type = ["cdylib", "staticlib"]
 [features]
 android-platform = []
 ios-platform = []
+# Compile the Firebase Analytics and Crashlytics backend out of mobile builds.
+no-telemetry = []
 # Log every telemetry event to stderr/logcat. Never enable in production builds.
 debug-telemetry = []
 # Set log level to Debug (default is Info). Enables verbose iroh/quinn logs and tracing subscriber.

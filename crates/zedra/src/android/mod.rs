@@ -4,6 +4,7 @@ pub mod entry;
 /// QR scanner, deeplinks). Framework-level JNI lives in `gpui_android`.
 pub mod jni;
 pub mod sheet;
+#[cfg(not(feature = "no-telemetry"))]
 pub mod telemetry;
 
 // Legacy JNI stubs (kept for ABI compatibility with existing Java code).

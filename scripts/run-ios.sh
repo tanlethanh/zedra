@@ -10,7 +10,7 @@ BUNDLE_ID_DEBUG="dev.zedra.app.debug"
 BUNDLE_ID_RELEASE="dev.zedra.app"
 
 usage() {
-    echo "Usage: $0 [sim|device|open] [--no-build] [--release] [--preview] [--debug] [--device-id <UDID>] [--select-device] [--launch-url <URL>]"
+    echo "Usage: $0 [sim|device|open] [--no-build] [--release] [--preview] [--debug] [--no-telemetry] [--device-id <UDID>] [--select-device] [--launch-url <URL>]"
     echo ""
     echo "  sim        Build and run on iOS Simulator (default)"
     echo "  device     Build and install on connected device"
@@ -19,6 +19,7 @@ usage() {
     echo "  --no-build              Skip build, just install and launch (uses last build)"
     echo "  --release               Use release profile (default is debug)"
     echo "  --preview               Enable preview feature flag"
+    echo "  --no-telemetry          Compile Firebase Analytics and Crashlytics out"
     echo "  --device-id <UDID>      Target a specific device by UDID (skips selection)"
     echo "  --select-device         Ignore saved device preference and re-prompt"
     echo "  --launch-url <URL>      Open the app with a deep link URL (e.g. zedra://...)"
@@ -91,6 +92,7 @@ XCODE_CONFIGURATION="Debug"
 BUNDLE_ID="$BUNDLE_ID_DEBUG"
 REQUESTED_RELEASE=false
 REQUESTED_DEBUG=false
+NO_TELEMETRY=false
 FORCED_DEVICE_ID=""
 SELECT_DEVICE=false
 LAUNCH_URL=""
@@ -190,6 +192,10 @@ while [ $i -lt ${#args[@]} ]; do
             BUILD_FLAGS="$BUILD_FLAGS --debug"
             REQUESTED_DEBUG=true
             ;;
+        --no-telemetry)
+            BUILD_FLAGS="$BUILD_FLAGS --no-telemetry"
+            NO_TELEMETRY=true
+            ;;
         --release)
             BUILD_FLAGS="$BUILD_FLAGS --release"
             XCODE_CONFIGURATION="Release"
@@ -217,6 +223,14 @@ done
 if [ "$REQUESTED_RELEASE" = true ] && [ "$REQUESTED_DEBUG" = true ]; then
     echo "Error: --debug cannot be combined with --release for iOS builds." >&2
     exit 1
+fi
+
+XCODE_FEATURE_FLAGS=()
+if [ "$NO_TELEMETRY" = true ]; then
+    XCODE_FEATURE_FLAGS=(
+        "ZEDRA_NO_TELEMETRY=1"
+        'SWIFT_ACTIVE_COMPILATION_CONDITIONS=$(inherited) ZEDRA_NO_TELEMETRY'
+    )
 fi
 
 case "$MODE" in
@@ -276,6 +290,7 @@ for runtime, devices in data['devices'].items():
                 -scheme "$SCHEME" \
                 -configuration "$XCODE_CONFIGURATION" \
                 -destination "id=$BOOTED_ID" \
+                "${XCODE_FEATURE_FLAGS[@]+"${XCODE_FEATURE_FLAGS[@]}"}" \
                 -quiet
 
             # Find the built .app
@@ -402,6 +417,7 @@ for runtime, devices in data['devices'].items():
                 -destination "id=$DEVICE_ID" \
                 -allowProvisioningUpdates \
                 IPHONEOS_DEPLOYMENT_TARGET="$IPHONEOS_DEPLOYMENT_TARGET" \
+                "${XCODE_FEATURE_FLAGS[@]+"${XCODE_FEATURE_FLAGS[@]}"}" \
                 -quiet
 
             # Find the built .app

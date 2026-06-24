@@ -5,6 +5,7 @@ set -e
 FEATURES="--features android-platform"
 PROFILE="--release"
 TARGETS=""
+NO_TELEMETRY=false
 OUTPUT_DIR="./android/app/libs"
 STAGING_DIR="$(mktemp -d "${TMPDIR:-/tmp}/zedra-android-libs.XXXXXX")"
 trap 'rm -rf "$STAGING_DIR"' EXIT
@@ -42,6 +43,11 @@ for arg in "$@"; do
             FEATURES="$FEATURES,debug-telemetry"
             echo "Debug telemetry enabled (events logged to logcat)"
             ;;
+        --no-telemetry)
+            FEATURES="$FEATURES,no-telemetry"
+            NO_TELEMETRY=true
+            echo "Mobile telemetry compiled out"
+            ;;
         --devtool)
             FEATURES="$FEATURES,devtool"
             echo "Devtool enabled: in-app HTTP server on 127.0.0.1:9777"
@@ -51,6 +57,11 @@ for arg in "$@"; do
             ;;
     esac
 done
+
+if [ "$NO_TELEMETRY" = true ] && [[ "$FEATURES" == *"debug-telemetry"* ]]; then
+    echo "Error: --no-telemetry cannot be combined with --debug-telemetry." >&2
+    exit 1
+fi
 
 # Release builds ship arm64 only; debug builds keep all development ABIs unless
 # a target is specified explicitly.

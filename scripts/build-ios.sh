@@ -17,6 +17,7 @@ DEBUG_FEATURES=false
 PREVIEW=false
 DEBUG_TELEMETRY=false
 DEBUG_LOGS=false
+NO_TELEMETRY=false
 # By default build both targets so the xcframework works on sim and device.
 # Pass --sim or --device to only build one (faster incremental builds).
 BUILD_SIM=true
@@ -32,6 +33,10 @@ for arg in "$@"; do
             FEATURES="$FEATURES,debug-telemetry"
             DEBUG_FEATURES=true
             DEBUG_TELEMETRY=true
+            ;;
+        --no-telemetry)
+            FEATURES="$FEATURES,no-telemetry"
+            NO_TELEMETRY=true
             ;;
         --debug)
             FEATURES="$FEATURES,debug-logs"
@@ -57,9 +62,15 @@ if [ "$RELEASE" = true ] && [ "$DEBUG_FEATURES" = true ]; then
     exit 1
 fi
 
+if [ "$NO_TELEMETRY" = true ] && [ "$DEBUG_TELEMETRY" = true ]; then
+    echo "ERROR: --no-telemetry cannot be combined with --debug-telemetry." >&2
+    exit 1
+fi
+
 [ "$PREVIEW" = true ] && echo "Preview mode enabled"
 [ "$DEBUG_TELEMETRY" = true ] && echo "Debug telemetry enabled (events logged to console)"
 [ "$DEBUG_LOGS" = true ] && echo "Debug logs enabled (verbose iroh/quinn output)"
+[ "$NO_TELEMETRY" = true ] && echo "Mobile telemetry compiled out"
 [ "$RELEASE" = true ] && echo "Release mode enabled"
 
 # Use the deployment target passed in from run-ios.sh (which detects the

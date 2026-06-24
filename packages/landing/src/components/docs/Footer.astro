@@ -1,0 +1,72 @@
+---
+import EditLink from "virtual:starlight/components/EditLink";
+import LastUpdated from "virtual:starlight/components/LastUpdated";
+import Pagination from "virtual:starlight/components/Pagination";
+---
+
+<footer class="sl-flex">
+  <div class="meta sl-flex">
+    <EditLink />
+    <LastUpdated />
+  </div>
+  <Pagination />
+
+  <div class="site-footer">
+    <div class="footer-links">
+      <a class="footer-link" href="/">Home</a>
+      <a
+        class="footer-link"
+        href="https://github.com/tanlethanh/zedra"
+        target="_blank"
+        rel="noopener noreferrer">GitHub</a
+      >
+    </div>
+    <span class="footer-copy">&copy; 2026 Tan Le</span>
+  </div>
+</footer>
+
+<style>
+  footer {
+    flex-direction: column;
+    gap: 1.5rem;
+  }
+  .meta {
+    gap: 0.75rem 3rem;
+    justify-content: space-between;
+    flex-wrap: wrap;
+    margin-top: 3rem;
+    font-size: var(--sl-text-sm);
+    color: var(--sl-color-gray-3);
+  }
+  .meta > :global(p:only-child) {
+    margin-inline-start: auto;
+  }
+
+  .site-footer {
+    margin-top: 1rem;
+    padding-top: 24px;
+    border-top: 1px solid var(--sl-color-hairline);
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    flex-wrap: wrap;
+    gap: 12px;
+  }
+  .footer-links {
+    display: flex;
+    gap: 24px;
+  }
+  .footer-link {
+    color: var(--sl-color-gray-4);
+    font-size: 0.82rem;
+    text-decoration: none;
+    transition: color 0.15s;
+  }
+  .footer-link:hover {
+    color: var(--sl-color-text-accent);
+  }
+  .footer-copy {
+    color: var(--sl-color-gray-4);
+    font-size: 0.82rem;
+  }
+</style>

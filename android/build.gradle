@@ -11,10 +11,14 @@ buildscript {
     }
 }
 
+def noTelemetry = project.hasProperty('noTelemetry')
+
 apply plugin: 'com.android.application'
 apply plugin: 'org.jetbrains.kotlin.android'
 apply plugin: 'com.google.gms.google-services'
-apply plugin: 'com.google.firebase.crashlytics'
+if (!noTelemetry) {
+    apply plugin: 'com.google.firebase.crashlytics'
+}
 
 def requestedReleaseTask = gradle.startParameter.taskNames.any { it.toLowerCase().contains('release') }
 
@@ -75,11 +79,14 @@ android {
             signingConfig = signingConfigs.debug
         }
         release {
+            // Firebase default-off: collection stays disabled until the user is
+            // confirmed opted-in at runtime via ZedraFirebase.setCollectionEnabled
+            // (telemetry::apply_persisted_optout).
             manifestPlaceholders = [
                 appLabel: "@string/app_name",
-                firebaseAnalyticsCollectionEnabled: "true",
-                firebaseCrashlyticsCollectionEnabled: "true",
-                firebaseAutomaticScreenReportingEnabled: "true",
+                firebaseAnalyticsCollectionEnabled: "false",
+                firebaseCrashlyticsCollectionEnabled: "false",
+                firebaseAutomaticScreenReportingEnabled: "false",
             ]
             ndk {
                 abiFilters 'arm64-v8a'
@@ -87,7 +94,7 @@ android {
             signingConfig = signingConfigs.release
             proguardFiles getDefaultProguardFile('proguard-android.txt'), 'app/proguard-rules.pro'
             minifyEnabled = true
-            if (requestedReleaseTask) {
+            if (!noTelemetry && requestedReleaseTask) {
                 firebaseCrashlytics {
                     nativeSymbolUploadEnabled = true
                     unstrippedNativeLibsDir = file('build/zedra-unstripped-libs/release')
@@ -119,10 +126,19 @@ android {
                 // GpuiRuntimeController as Kotlin sources.
                 '../vendor/zed/crates/gpui_android/android/src/main/kotlin',
             ]
+            if (noTelemetry) {
+                kotlin.srcDirs += ['app/src/no-telemetry/kotlin']
+            }
             resources.srcDirs = ['app/src/main/resources']
             res.srcDirs = ['app/src/main/res']
             jniLibs.srcDirs = ['app/libs']
         }
+    }
+}
+
+tasks.withType(org.jetbrains.kotlin.gradle.tasks.KotlinCompile).configureEach {
+    if (noTelemetry) {
+        exclude { it.file == file('app/src/main/kotlin/dev/zedra/app/ZedraFirebase.kt') }
     }
 }
 
@@ -158,9 +174,11 @@ dependencies {
     implementation 'androidx.constraintlayout:constraintlayout:2.1.4'
 
     implementation platform('com.google.firebase:firebase-bom:34.13.0')
-    implementation 'com.google.firebase:firebase-analytics'
-    implementation 'com.google.firebase:firebase-crashlytics'
-    implementation 'com.google.firebase:firebase-crashlytics-ndk'
+    if (!noTelemetry) {
+        implementation 'com.google.firebase:firebase-analytics'
+        implementation 'com.google.firebase:firebase-crashlytics'
+        implementation 'com.google.firebase:firebase-crashlytics-ndk'
+    }
     implementation 'com.google.firebase:firebase-messaging'
 
     // CameraX for QR scanning
@@ -224,6 +242,10 @@ android.applicationVariants.configureEach { variant ->
             // -Ppreview: enable preview mode
             if (project.hasProperty('preview')) {
                 args << '--preview'
+            }
+
+            if (noTelemetry) {
+                args << '--no-telemetry'
             }
 
             // -PsingleTarget: auto-detect connected device ABI

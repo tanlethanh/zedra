@@ -12,9 +12,7 @@ use std::rc::Rc;
 use gpui::*;
 use gpui_ios::IosPlatform;
 
-use crate::{
-    app, install_panic_hook, native_presentation, platform_bridge, sheet_host_view::SheetHostView,
-};
+use crate::{app, native_presentation, platform_bridge, sheet_host_view::SheetHostView};
 
 thread_local! {
     /// Kept alive so window.refresh() can be called from zedra_ios_check_pending_frame.
@@ -175,8 +173,6 @@ pub extern "C" fn zedra_launch_gpui() {
     super::logger::IosLogger::init(log_level);
 
     crate::telemetry::init();
-    install_panic_hook();
-
     tracing::info!("Zedra iOS: Creating GPUI application with IosPlatform");
 
     let platform: Rc<dyn Platform> = Rc::new(IosPlatform::new());

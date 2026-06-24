@@ -62,6 +62,10 @@ if [ -n "${ZEDRA_IOS_BUILD_FLAGS:-}" ]; then
     build_flags+=("${extra_flags[@]}")
 fi
 
+if [ "${ZEDRA_NO_TELEMETRY:-}" = "1" ]; then
+    build_flags+=("--no-telemetry")
+fi
+
 echo "==> Building Rust for Xcode ($configuration, $platform, IPHONEOS_DEPLOYMENT_TARGET=${IPHONEOS_DEPLOYMENT_TARGET:-unset})"
 cd "$REPO_ROOT"
 command=("$REPO_ROOT/scripts/build-ios.sh")

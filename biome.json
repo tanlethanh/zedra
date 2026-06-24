@@ -6,7 +6,7 @@
     "useIgnoreFile": true
   },
   "files": {
-    "ignore": ["node_modules", "dist", ".astro", "vendor"]
+    "ignore": ["node_modules", "dist", ".astro", ".vercel", "vendor"]
   },
   "formatter": {
     "enabled": true,

@@ -4,13 +4,14 @@ set -euo pipefail
 cd "$(dirname "$0")/.."
 
 usage() {
-    echo "Usage: $0 [--release|--debug] [--preview] [--target <ABI>]"
+    echo "Usage: $0 [--release|--debug] [--preview] [--no-telemetry] [--target <ABI>]"
     echo ""
     echo "Builds the Android Rust library, APK, and Android App Bundle."
     echo ""
     echo "  --release       Build the release variant (default)"
     echo "  --debug         Build the debug variant and Rust debug profile"
     echo "  --preview       Enable the Rust preview feature"
+    echo "  --no-telemetry  Compile Firebase Analytics and Crashlytics out"
     echo "  --target <ABI>  Build a single Rust/NDK ABI (default: all configured ABIs)"
     echo ""
     echo "Examples:"
@@ -22,6 +23,7 @@ usage() {
 REQUESTED_RELEASE=false
 REQUESTED_DEBUG=false
 TARGET_ABI=""
+NO_TELEMETRY=false
 RUST_FLAGS=()
 
 while [ $# -gt 0 ]; do
@@ -37,6 +39,10 @@ while [ $# -gt 0 ]; do
             ;;
         --preview)
             RUST_FLAGS+=(--preview)
+            ;;
+        --no-telemetry)
+            NO_TELEMETRY=true
+            RUST_FLAGS+=(--no-telemetry)
             ;;
         --target)
             shift
@@ -108,9 +114,11 @@ else
 fi
 
 echo "==> Building Android APK and App Bundle ($BUILD_TYPE)..."
+GRADLE_FLAGS=()
+[ "$NO_TELEMETRY" = true ] && GRADLE_FLAGS+=(-PnoTelemetry)
 (
     cd android
-    ./gradlew ":assemble${VARIANT}" ":bundle${VARIANT}" -x "buildRustLib${VARIANT}"
+    ./gradlew "${GRADLE_FLAGS[@]+"${GRADLE_FLAGS[@]}"}" ":assemble${VARIANT}" ":bundle${VARIANT}" -x "buildRustLib${VARIANT}"
 )
 
 APK_PATH="$(find_output "android/build/outputs/apk/$BUILD_TYPE" "*.apk")"

@@ -1,0 +1,69 @@
+---
+title: Installation
+description: Install the Zedra desktop daemon, get the mobile app, and pair the two.
+---
+
+import { Tabs, TabItem } from "@astrojs/starlight/components";
+
+Zedra has two parts: a desktop daemon on the machine with your code, and a mobile app that connects to it. Install both, then pair once.
+
+## 1. Install the desktop CLI
+
+<Tabs>
+  <TabItem label="macOS / Linux">
+
+```sh
+curl -fsSL zedra.dev/install.sh | sh
+```
+
+  </TabItem>
+  <TabItem label="Windows">
+
+```powershell
+powershell -c "irm zedra.dev/install.ps1 | iex"
+```
+
+  </TabItem>
+</Tabs>
+
+## 2. Set up your agents
+
+`zedra setup` installs the hooks that handle connection and notifications. With no argument it sets up every detected agent; name one to set up just that agent:
+
+```sh
+zedra setup          # all detected agents
+zedra setup claude   # one agent (claude, codex, opencode, pi, hermes)
+```
+
+## 3. Start the daemon
+
+Run the daemon in each project directory you want to reach; each is its own workspace.
+
+```sh
+zedra start            # foreground, prints the pairing QR
+zedra start --detach   # background, writes the QR to daemon.log
+```
+
+In foreground, press `r` to regenerate the QR. In background, reprint it with `zedra qr --workdir <path>`.
+
+## 4. Install the app
+
+**iOS**
+
+- [App Store](https://apps.apple.com/vn/app/zedra-code-from-anywhere/id6760534630)
+- [TestFlight beta](https://testflight.apple.com/join/1EWe2kRH)
+
+**Android**
+
+- Closed beta. Join via the [Google Group](https://groups.google.com/g/zedra-beta)
+
+## 5. Pair your phone
+
+1. Open the app and tap **Scan QR**.
+2. Point the camera at the QR code.
+
+Pairing is a one-time step per workspace, so you scan once per directory. The QR carries your machine's public key and a one-time secret (not your network address), so the connection persists across reconnects, even after your IP changes.
+
+## Next
+
+- [Troubleshooting](/docs/troubleshooting/) if a connection fails.

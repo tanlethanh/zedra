@@ -14,16 +14,6 @@
 			<key>orderHint</key>
 			<integer>0</integer>
 		</dict>
-		<key>ZedraRustFFI.xcscheme_^#shared#^_</key>
-		<dict>
-			<key>orderHint</key>
-			<integer>38</integer>
-		</dict>
-		<key>ZedraTaskWidget.xcscheme_^#shared#^_</key>
-		<dict>
-			<key>orderHint</key>
-			<integer>37</integer>
-		</dict>
 	</dict>
 </dict>
 </plist>

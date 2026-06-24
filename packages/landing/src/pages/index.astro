@@ -113,9 +113,9 @@ const socialLinks = [
 
 const demoVideo = "/zedra-demo-17-06.mp4";
 
-const pageTitle = "Zedra — Mobile remote editor. Code from anywhere.";
+const pageTitle = "Zedra — Remote control for AI coding agents";
 const pageDescription =
-  "Zedra is a mobile code editor for your desktop workspace. Browse files, read code, review git diffs, run terminals, and control AI coding agents over an encrypted P2P tunnel.";
+  "Zedra is a remote control for AI coding agents with terminal, editor, markdown, and git. Pair by QR for a direct, secure tunnel. No VPN or port forwarding.";
 const canonicalUrl = "https://zedra.dev/";
 ---
 
@@ -146,8 +146,8 @@ const canonicalUrl = "https://zedra.dev/";
     <meta name="twitter:title" content={pageTitle} />
     <meta name="twitter:description" content={pageDescription} />
     <meta name="twitter:image" content="https://zedra.dev/OG.png" />
-    <meta name="twitter:image:alt" content="Zedra — remote coding on mobile" />
-    <meta property="og:image:alt" content="Zedra — remote coding on mobile" />
+    <meta name="twitter:image:alt" content="Zedra: remote control for AI coding agents" />
+    <meta property="og:image:alt" content="Zedra: remote control for AI coding agents" />
     <link rel="canonical" href={canonicalUrl} />
     <link rel="icon" href="/favicon.ico" sizes="32x32" />
     <link rel="icon" type="image/svg+xml" href="/favicon.svg" />
@@ -197,13 +197,13 @@ const canonicalUrl = "https://zedra.dev/";
       }
 
       body {
-        padding: 32px;
+        padding: 32px 32px 0px;
       }
 
       .page {
         max-width: 1280px;
         margin: 0 auto;
-        min-height: calc(100vh - 64px);
+        min-height: calc(100vh - 32px);
         display: grid;
         grid-template-rows: 1fr auto;
         gap: 32px;
@@ -215,30 +215,20 @@ const canonicalUrl = "https://zedra.dev/";
         gap: 16px;
         color: var(--text);
         text-decoration: none;
-        font-size: 2.1rem;
+        font-size: 28px;
         font-weight: 400;
         letter-spacing: 0.02em;
         font-family: "Lora", Georgia, serif;
       }
 
       .logo-icon {
-        width: 36px;
-        height: 46px;
+        width: 32px;
+        height: 40px;
         flex-shrink: 0;
       }
 
       .logo span {
         color: var(--green);
-      }
-
-      .placeholder-link {
-        color: var(--muted);
-        text-decoration: none;
-        transition: color 0.18s ease;
-      }
-
-      .placeholder-link:hover {
-        color: var(--text);
       }
 
       .hero {
@@ -254,6 +244,7 @@ const canonicalUrl = "https://zedra.dev/";
         flex-direction: column;
         justify-content: center;
         gap: 40px;
+        max-width: 600px;
       }
 
       .hero-copy {
@@ -269,7 +260,7 @@ const canonicalUrl = "https://zedra.dev/";
       h1 {
         margin: 0;
         max-width: 10ch;
-        font-size: clamp(3rem, 6vw, 5.5rem);
+        font-size: 72px;
         line-height: 0.96;
         letter-spacing: -0.05em;
       }
@@ -278,13 +269,16 @@ const canonicalUrl = "https://zedra.dev/";
         margin: 0;
         max-width: 620px;
         color: var(--muted);
-        font-size: 1.05rem;
+        font-size: 16px;
         line-height: 1.75;
       }
 
       .install-widget {
-        display: grid;
+        display: flex;
+        flex-direction: column;
         gap: 12px;
+        height: 100%;
+        max-height: 380px;
       }
 
       .tab-input {
@@ -309,7 +303,7 @@ const canonicalUrl = "https://zedra.dev/";
         gap: 10px;
         overflow-x: auto;
         overflow-y: hidden;
-        padding: 8px 14px 0;
+        padding: 4px 14px 0;
         scrollbar-width: none;
         -webkit-overflow-scrolling: touch;
       }
@@ -328,7 +322,7 @@ const canonicalUrl = "https://zedra.dev/";
         border-bottom: 1px solid transparent;
         background: transparent;
         color: var(--muted);
-        font-size: 0.78rem;
+        font-size: 12px;
         white-space: nowrap;
         cursor: pointer;
         transition:
@@ -358,8 +352,8 @@ const canonicalUrl = "https://zedra.dev/";
       .terminal-code {
         display: grid;
         gap: 10px;
-        font-size: 0.9rem;
-        line-height: 1.6;
+        font-size: 14px;
+        line-height: 1.4;
       }
 
       .install-block {
@@ -427,15 +421,15 @@ const canonicalUrl = "https://zedra.dev/";
 
       .download-actions {
         display: flex;
-        gap: 16px;
+        gap: 12px;
       }
 
       .store-btn {
         display: inline-flex;
         align-items: center;
-        gap: 12px;
+        gap: 10px;
         width: 200px;
-        padding: 12px 14px;
+        padding: 9px 12px;
         border-radius: 8px;
         border: 1px solid var(--border);
         background: rgba(255, 255, 255, 0.02);
@@ -449,30 +443,22 @@ const canonicalUrl = "https://zedra.dev/";
         border-color: var(--border-strong);
       }
 
-      .store-btn.secondary {
-        color: var(--muted);
-      }
-
       :global(.store-icon) {
-        width: 24px;
-        height: 24px;
+        width: 20px;
+        height: 20px;
         flex-shrink: 0;
       }
 
       .store-copy {
         display: grid;
         gap: 2px;
-        font-size: 0.78rem;
+        font-size: 14px;
         color: var(--muted);
       }
 
       .store-copy strong {
-        font-size: 0.92rem;
+        font-size: 14px;
         color: var(--text);
-      }
-
-      .store-btn.secondary .store-copy strong {
-        color: var(--muted);
       }
 
       @media (max-width: 480px) {
@@ -488,11 +474,6 @@ const canonicalUrl = "https://zedra.dev/";
       }
 
       /* --- social links --- */
-
-      .ph-badge {
-        display: inline-block;
-        line-height: 0;
-      }
 
       .social-links {
         display: flex;
@@ -533,80 +514,36 @@ const canonicalUrl = "https://zedra.dev/";
 
       .phone-mockup {
         position: relative;
-        width: 360px;
-        aspect-ratio: 390 / 844;
-        background: #1c1c1e;
-        border-radius: 50px;
-        box-shadow:
-          0 0 0 1px rgba(255, 255, 255, 0.12),
-          0 0 0 6px #1c1c1e,
-          0 0 0 7px rgba(255, 255, 255, 0.07),
-          0 40px 100px rgba(0, 0, 0, 0.7),
-          0 8px 24px rgba(0, 0, 0, 0.4);
+        width: 380px;
+        aspect-ratio: 435 / 890;
+        filter: drop-shadow(0 40px 100px rgba(0, 0, 0, 0.7))
+          drop-shadow(0 8px 24px rgba(0, 0, 0, 0.4));
       }
 
-      .phone-btn {
+      /* device frame drawn by frame.png overlay (buttons, island, bezel) */
+      .phone-mockup::after {
+        content: "";
         position: absolute;
-        background: #2c2c2e;
-        border-radius: 2px;
-      }
-
-      .phone-btn-action {
-        left: -3px;
-        top: 14%;
-        width: 3px;
-        height: 5%;
-        border-radius: 2px 0 0 2px;
-      }
-
-      .phone-btn-vol-up {
-        left: -3px;
-        top: 22%;
-        width: 3px;
-        height: 8%;
-        border-radius: 2px 0 0 2px;
-      }
-
-      .phone-btn-vol-down {
-        left: -3px;
-        top: 32%;
-        width: 3px;
-        height: 8%;
-        border-radius: 2px 0 0 2px;
-      }
-
-      .phone-btn-power {
-        right: -3px;
-        top: 24%;
-        width: 3px;
-        height: 12%;
-        border-radius: 0 2px 2px 0;
+        inset: 0;
+        background: url("/frame.png") center / contain no-repeat;
+        opacity: 0.8;
+        pointer-events: none;
+        z-index: 10;
       }
 
       .phone-screen {
         position: absolute;
-        inset: 6px;
-        border-radius: 44px;
+        inset: 2.25% 5.52% 2.36% 5.29%;
+        border-radius: 7.8% / 3.8%;
         overflow: hidden;
         background: #000;
-      }
-
-      .phone-dynamic-island {
-        position: absolute;
-        top: 12px;
-        left: 50%;
-        transform: translateX(-50%);
-        width: 34%;
-        height: 3.8%;
-        background: #000;
-        border-radius: 20px;
-        z-index: 10;
       }
 
       .phone-screen video {
         width: 100%;
         height: 100%;
         object-fit: cover;
+        filter: contrast(1.05) saturate(1.2);
       }
 
       @media (max-width: 1024px) {
@@ -614,8 +551,8 @@ const canonicalUrl = "https://zedra.dev/";
           grid-template-columns: 1fr;
         }
 
-        .phone-mockup {
-          width: 280px;
+        .hero .left {
+          margin: auto;
         }
       }
 
@@ -623,7 +560,7 @@ const canonicalUrl = "https://zedra.dev/";
         display: flex;
         align-items: center;
         justify-content: space-between;
-        padding: 24px 0 8px;
+        padding: 14px 0 20px;
         border-top: 1px solid var(--border);
       }
 
@@ -636,7 +573,7 @@ const canonicalUrl = "https://zedra.dev/";
       footer a {
         color: var(--muted);
         text-decoration: none;
-        font-size: 0.78rem;
+        font-size: 14px;
         transition: color 0.18s;
       }
 
@@ -663,23 +600,15 @@ const canonicalUrl = "https://zedra.dev/";
           min-height: 180px;
         }
 
-        .tab-list {
-          gap: 8px;
-          padding-inline: 12px;
-        }
-
         .tab-label {
           gap: 6px;
-          font-size: 0.76rem;
-        }
-
-        .demo-card {
-          padding: 20px;
-          border-radius: 22px;
+          font-size: 12px;
+          min-width: 40px;
+          justify-content: center;
         }
 
         .logo {
-          font-size: 1.4rem;
+          font-size: 22px;
         }
 
         .logo-icon {
@@ -688,7 +617,7 @@ const canonicalUrl = "https://zedra.dev/";
         }
 
         .description {
-          font-size: 0.85rem;
+          font-size: 14px;
           line-height: 1.65;
         }
 
@@ -701,11 +630,11 @@ const canonicalUrl = "https://zedra.dev/";
         }
 
         .store-copy strong {
-          font-size: 0.82rem;
+          font-size: 13px;
         }
 
         .store-copy span {
-          font-size: 0.72rem;
+          font-size: 12px;
         }
 
         .store-btn {
@@ -735,15 +664,11 @@ const canonicalUrl = "https://zedra.dev/";
 
         .phone-mockup {
           width: min(400px, 90vw);
+          height: auto;
         }
 
         .tab-label-text {
           display: none;
-        }
-
-        .tab-label {
-          min-width: 40px;
-          justify-content: center;
         }
 
         .tab-panels {
@@ -756,7 +681,7 @@ const canonicalUrl = "https://zedra.dev/";
         }
 
         .terminal-code {
-          font-size: 0.76rem;
+          font-size: 12px;
         }
 
         .copy-btn {
@@ -764,7 +689,7 @@ const canonicalUrl = "https://zedra.dev/";
         }
 
         h1 {
-          font-size: clamp(2.2rem, 12vw, 3.5rem);
+          font-size: clamp(35px, 12vw, 56px);
         }
       }
 
@@ -779,7 +704,7 @@ const canonicalUrl = "https://zedra.dev/";
   <body>
     <div class="page">
       <main class="hero">
-        <section class="left">
+        <section id="hero-main-content" class="left">
           <div class="hero-copy">
             <a class="logo" href="/">
               <svg
@@ -803,9 +728,7 @@ const canonicalUrl = "https://zedra.dev/";
             <div class="hero-intro">
               <h1>Code from anywhere.</h1>
               <p class="description">
-                Mobile code editor for your desktop workspace. Browse files,
-                read code, review git diffs, run terminals, and control AI
-                coding agents over an encrypted P2P tunnel.
+                Remote control for AI coding agents with terminal, editor, markdown, and git. Pair by QR for a direct, secure tunnel. No VPN or port forwarding.
               </p>
             </div>
           </div>
@@ -923,12 +846,7 @@ const canonicalUrl = "https://zedra.dev/";
 
         <aside class="right">
           <div class="phone-mockup" aria-label="Zedra app demo">
-            <div class="phone-btn phone-btn-action"></div>
-            <div class="phone-btn phone-btn-vol-up"></div>
-            <div class="phone-btn phone-btn-vol-down"></div>
-            <div class="phone-btn phone-btn-power"></div>
             <div class="phone-screen">
-              <div class="phone-dynamic-island"></div>
               <video src={demoVideo} autoplay muted loop playsinline></video>
             </div>
           </div>
@@ -953,7 +871,8 @@ const canonicalUrl = "https://zedra.dev/";
         </div>
 
         <nav aria-label="Site links">
-          <a href="/privacy">Privacy Policy</a>
+          <a href="/docs">Docs</a>
+          <a href="/privacy">Privacy</a>
           <a href="/support">Support</a>
         </nav>
       </footer>

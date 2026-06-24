@@ -12,6 +12,13 @@ path = "src/lib.rs"
 name = "zedra"
 path = "src/main.rs"
 
+[features]
+default = ["telemetry"]
+# Anonymous usage/crash telemetry via GA4 (on by default).
+telemetry = []
+# Explicitly compile telemetry out, even though it is enabled by default.
+no-telemetry = []
+
 [dependencies]
 # Async runtime
 tokio = { version = "1", features = ["full"] }

@@ -470,6 +470,11 @@ pub fn init_platform_app(
     bridge: impl platform_bridge::PlatformBridge,
 ) -> std::rc::Rc<AppCell> {
     platform_bridge::set_bridge(bridge);
+
+    // App construction records AppOpen, so finalize the telemetry gate first.
+    crate::telemetry::apply_persisted_optout();
+    crate::install_panic_hook();
+
     let app_cell = App::new_app(
         platform,
         std::sync::Arc::new(crate::ZedraAssets),

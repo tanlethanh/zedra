@@ -770,10 +770,9 @@ fn relay_host(relay: &str) -> &str {
 /// or spawn it onto a background executor (e.g. `tokio::spawn`). This
 /// ensures telemetry never delays app logic, rendering, or RPC handling.
 ///
-/// Crash-related methods (`record_error`, `record_panic`) are separate
-/// because they have different gating (panics always sent) and platform APIs.
-/// `record_panic` is the one exception — it MAY block briefly to ensure the
-/// event is flushed before the process aborts.
+/// `record_panic` is the one exception that MAY block briefly to ensure the
+/// event is flushed before the process aborts. Every telemetry operation still
+/// honors the shared `ENABLED` gate.
 pub trait TelemetryBackend: Send + Sync + 'static {
     /// Send a typed telemetry event to the backend.
     /// **Must be non-blocking** — queue or spawn, never do synchronous I/O.
@@ -782,7 +781,7 @@ pub trait TelemetryBackend: Send + Sync + 'static {
     /// Record a non-fatal error (Crashlytics / GA4 non-fatal).
     fn record_error(&self, _message: &str, _file: &str, _line: u32) {}
 
-    /// Record a panic. Always sent regardless of enabled/disabled state.
+    /// Record a panic.
     fn record_panic(&self, _message: &str, _location: &str) {}
 
     /// Associate events/crashes with a user or session identity.
@@ -852,8 +851,11 @@ pub fn record_error_at(message: &str, file: &str, line: u32) {
     }
 }
 
-/// Record a panic. Always sent regardless of enabled/disabled state.
+/// Record a panic. No-op if telemetry is disabled or no backend is registered.
 pub fn record_panic(message: &str, location: &str) {
+    if !ENABLED.load(Ordering::Relaxed) {
+        return;
+    }
     if let Some(b) = BACKEND.get() {
         b.record_panic(message, location);
     }
@@ -861,6 +863,9 @@ pub fn record_panic(message: &str, location: &str) {
 
 /// Associate subsequent events and crashes with a session/user identity.
 pub fn set_user_id(id: &str) {
+    if !ENABLED.load(Ordering::Relaxed) {
+        return;
+    }
     if let Some(b) = BACKEND.get() {
         b.set_user_id(id);
     }
@@ -868,6 +873,9 @@ pub fn set_user_id(id: &str) {
 
 /// Set a custom key-value pair for crash reports.
 pub fn set_custom_key(key: &str, value: &str) {
+    if !ENABLED.load(Ordering::Relaxed) {
+        return;
+    }
     if let Some(b) = BACKEND.get() {
         b.set_custom_key(key, value);
     }
