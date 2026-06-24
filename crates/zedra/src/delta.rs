@@ -1,11 +1,9 @@
 use std::collections::HashMap;
-use std::future::Future;
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
 use anyhow::{Context as _, Result, bail};
 use base64::{Engine as _, engine::general_purpose::STANDARD_NO_PAD};
-use futures::channel::oneshot;
 use gpui::{Context, EventEmitter};
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
@@ -382,21 +380,6 @@ impl EventEmitter<DeltaStateEvent> for DeltaState {}
 
 fn default_base_url() -> String {
     DEFAULT_BASE_URL.to_string()
-}
-
-/// Run a Delta network operation on the session (Tokio) runtime and await the
-/// result on the caller's executor. Delta's HTTP client requires a Tokio
-/// reactor, so async ops cannot run directly on the GPUI executor.
-pub async fn offload<T>(fut: impl Future<Output = Result<T>> + Send + 'static) -> Result<T>
-where
-    T: Send + 'static,
-{
-    let (tx, rx) = oneshot::channel();
-    zedra_session::session_runtime().spawn(async move {
-        let _ = tx.send(fut.await);
-    });
-    rx.await
-        .map_err(|_| anyhow::anyhow!("Delta runtime task was dropped"))?
 }
 
 /// Clear all signed-in state, preserving the configured base URL. Persists to

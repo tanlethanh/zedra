@@ -4,8 +4,6 @@ use tokio::sync::mpsc;
 use tracing::*;
 use zedra_rpc::proto::{TermAttachReq, TermInput, TermOutput, ZedraProto};
 
-use crate::session_runtime;
-
 /// Keep track of created terminals.
 #[derive(Clone)]
 pub struct RemoteTerminal(Arc<RemoteTerminalInner>);
@@ -242,9 +240,13 @@ impl RemoteTerminal {
         self.0.last_seq.store(seq, Ordering::Release);
     }
 
+    /// `runtime` is the Tokio handle the input/output pump tasks spawn onto.
+    /// Passed explicitly because `attach_remote` may be awaited from the GPUI
+    /// thread (terminal create / agent resume), which has no ambient runtime.
     pub async fn attach_remote(
         &self,
         client: &irpc::Client<ZedraProto>,
+        runtime: &tokio::runtime::Handle,
     ) -> Result<(), anyhow::Error> {
         let term_id = self.id();
         let Some(generation) = self.0.begin_attach()? else {
@@ -288,7 +290,7 @@ impl RemoteTerminal {
         }
 
         let terminal_inner = self.0.clone();
-        let input_task = session_runtime().spawn(async move {
+        let input_task = runtime.spawn(async move {
             while let Some(data) = input_rx.recv().await {
                 if let Err(e) = irpc_input_tx.send(TermInput { data }).await {
                     info!("failed to send input: {:?}", e);
@@ -299,7 +301,7 @@ impl RemoteTerminal {
         });
 
         let terminal_inner = self.0.clone();
-        let output_task = session_runtime().spawn(async move {
+        let output_task = runtime.spawn(async move {
             loop {
                 match irpc_output_rx.recv().await {
                     Ok(Some(output)) => {

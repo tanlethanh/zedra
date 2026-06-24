@@ -584,8 +584,26 @@ or beyond.
 4. Keep waiting
 5. Background the app, then bring it back to the foreground while the badge is still `Idle`
 6. Expected: reconnect starts immediately on resume (`Idle` -> `Reconnecting` -> `Connected` or `Disconnected`), without waiting for the idle loop to time out
-7. Restore network before reconnect exhausts
-8. Expected: badge returns from `Idle` to `Connected` before or during reconnect recovery
+7. Repeat with a shorter background interval where the badge still shows `Connected`
+8. Expected: foreground resume probes liveness; if the host is unreachable, reconnect starts instead of leaving the active indicator stuck
+9. Restore network before reconnect exhausts
+10. Expected: badge returns from `Idle` or `Connected` to `Connected` during reconnect recovery
+
+## 5a.1. Foreground Resume Respects User Disconnect
+
+1. Connect via QR and wait for the session badge to show "Connected"
+2. Tap the Session Disconnect button (the intentional disconnect path, not backgrounding)
+3. Expected: badge goes to `Disconnected`/home and `SessionHandle::user_disconnect()` is set
+4. Background the app for a few seconds, then bring it back to the foreground
+5. Expected: the workspace is **not** resurrected — no liveness probe fires, no reconnect/restart starts, and the home/disconnected state remains
+6. Tap the workspace again to reconnect explicitly and confirm recovery still works
+
+## 5a.2. Foreground Resume Skips Probe When Transport Already Gone
+
+1. Connect via QR and wait for "Connected"
+2. Background the app long enough that the iOS lifecycle takes the active QUIC connection (`close_transport_for_lifecycle`) without the phase advancing past `Connected`/`Idle`
+3. Bring the app back to the foreground
+4. Expected: resume does **not** spend ~`FOREGROUND_LIVENESS_TIMEOUT` (2s) probing the stale RPC client; reconnect/restart begins promptly because `active_connection_id()` is `None` while the phase still reads `Connected`/`Idle`
 
 ## 5b. Path Changes Do Not False Idle
 

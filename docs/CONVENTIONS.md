@@ -174,13 +174,13 @@ Keep Swift access control consistent across native bridge helper types and APIs.
 
 ## Async Runtime Selection
 
-Choose the executor based on which thread/context owns the work:
+The GPUI executor has no Tokio reactor. A future that drives the reactor on the calling thread panics (`there is no reactor running`) when polled inside `cx.spawn`. The runtime is owned by `gpui_tokio` (created in `app::init_platform_app` via `gpui_tokio::init`); `zedra-session` owns none and takes `Tokio::handle(cx)` at `Session::new`. With `use gpui_tokio::Tokio;`:
 
-- `cx.spawn(...)` or `cx.spawn_in(window, ...)` for UI-thread async work in GPUI.
-- `zedra_session::session_runtime().spawn(...)` for session/network tasks that must run on Tokio even when called from GPUI or other non-Tokio threads.
-- `tokio::spawn(...)` only when the current function is already guaranteed to run inside the session Tokio runtime and the task is not part of a reusable API that may also be called from GPUI.
-
-**Rule of thumb**: library/session-layer code should not assume the caller has entered a Tokio runtime. If it needs to spawn Tokio tasks internally, prefer `session_runtime()` over bare `tokio::spawn()`.
+- **Host RPC calls** (`SessionHandle` methods, incl. `tokio::join!` over them) — `.await` directly in `cx.spawn`. They're irpc oneshots; no reactor touched on the calling thread.
+- **Reactor-driving futures** (`tokio::time`, iroh I/O, Delta HTTP/`reqwest`) — wrap in `Tokio::spawn_result(cx, fut).await`. It folds `JoinError` into `anyhow`, so `match`/`?` is unchanged. Use `Tokio::spawn` for non-`Result` outputs (e.g. a `tokio::join!` tuple).
+- **Fire-and-forget** from a `'static` callback (no `cx`) or work that must outlive backgrounding (GPUI executor pauses) — `Tokio::handle(cx).spawn(...)`, captured before the closure. Not `Tokio::spawn`, whose join half rides the paused GPUI executor.
+- Pure GPUI awaits (`cx.background_executor().timer`, `cx.background_spawn`, channel `recv()`) — directly in `cx.spawn`.
+- Inside `zedra-session`, bare `tokio::spawn` only when already on a runtime-polled future (e.g. the `connect()` loop).
 
 ## GPUI Entities And Tasks
 

@@ -791,9 +791,9 @@ mod tests {
         assert_eq!(state.host_info, None);
     }
 
-    #[test]
-    fn sync_fields_ignores_network_only_session_snapshot_changes() {
-        let session = Session::new();
+    #[tokio::test]
+    async fn sync_fields_ignores_network_only_session_snapshot_changes() {
+        let session = Session::new(tokio::runtime::Handle::current());
         let mut session_state = SessionState::new();
         session_state.phase = ConnectPhase::Connected;
         session_state.snapshot.session_id = Some("session".into());
@@ -815,9 +815,9 @@ mod tests {
         assert!(!state.sync_fields_from_session(session.handle(), &session_state));
     }
 
-    #[test]
-    fn sync_fields_reports_workspace_phase_changes() {
-        let session = Session::new();
+    #[tokio::test]
+    async fn sync_fields_reports_workspace_phase_changes() {
+        let session = Session::new(tokio::runtime::Handle::current());
         let mut session_state = SessionState::new();
         session_state.phase = ConnectPhase::Connected;
         session_state.snapshot.session_id = Some("session".into());

@@ -1,6 +1,9 @@
-use std::sync::{
-    Arc, Mutex,
-    atomic::{AtomicBool, Ordering},
+use std::{
+    sync::{
+        Arc, Mutex,
+        atomic::{AtomicBool, Ordering},
+    },
+    time::{Duration, Instant, SystemTime, UNIX_EPOCH},
 };
 
 use anyhow::Result;
@@ -11,7 +14,7 @@ use irpc::{
 use zedra_rpc::proto::*;
 
 use crate::{
-    register_active_connection, signer::ClientSigner, terminal::RemoteTerminal,
+    ReconnectReason, register_active_connection, signer::ClientSigner, terminal::RemoteTerminal,
     unregister_active_connection,
 };
 
@@ -25,6 +28,7 @@ struct SessionHandleInner {
     signer: Mutex<Option<Arc<dyn ClientSigner>>>,
     session_token: Mutex<Option<[u8; 32]>>,
     pending_ticket: Mutex<Option<zedra_rpc::ZedraPairingTicket>>,
+    pending_reconnect_reason: Mutex<Option<ReconnectReason>>,
     rpc_client: Mutex<Option<irpc::Client<ZedraProto>>>,
     active_connection: Mutex<Option<iroh::endpoint::Connection>>,
     terminals: Mutex<Vec<RemoteTerminal>>,
@@ -33,6 +37,9 @@ struct SessionHandleInner {
     docs_tree_rpc_supported: AtomicBool,
     fs_search_rpc_supported: AtomicBool,
     set_app_state_rpc_supported: AtomicBool,
+    /// Runtime the terminal pump tasks spawn onto. Set by `Session::new` so
+    /// `attach_remote` works even when a method is awaited from the GPUI thread.
+    runtime: Mutex<Option<tokio::runtime::Handle>>,
 }
 
 impl Drop for SessionHandleInner {
@@ -61,6 +68,7 @@ impl SessionHandle {
             signer: Mutex::new(None),
             session_token: Mutex::new(None),
             pending_ticket: Mutex::new(None),
+            pending_reconnect_reason: Mutex::new(None),
             rpc_client: Mutex::new(None),
             active_connection: Mutex::new(None),
             terminals: Mutex::new(Vec::new()),
@@ -69,7 +77,23 @@ impl SessionHandle {
             docs_tree_rpc_supported: AtomicBool::new(true),
             fs_search_rpc_supported: AtomicBool::new(true),
             set_app_state_rpc_supported: AtomicBool::new(true),
+            runtime: Mutex::new(None),
         }))
+    }
+
+    pub fn set_runtime(&self, runtime: tokio::runtime::Handle) {
+        *self.0.runtime.lock().unwrap() = Some(runtime);
+    }
+
+    /// Runtime for terminal pump tasks. Errors if the handle was built outside
+    /// `Session::new` (e.g. a bare test handle) and never given a runtime.
+    fn runtime(&self) -> Result<tokio::runtime::Handle> {
+        self.0
+            .runtime
+            .lock()
+            .ok()
+            .and_then(|g| g.clone())
+            .ok_or_else(|| anyhow::anyhow!("session handle has no runtime"))
     }
 
     // ─── Credentials ─────────────────────────────────────────────────────────
@@ -104,6 +128,14 @@ impl SessionHandle {
 
     pub fn take_pending_ticket(&self) -> Option<zedra_rpc::ZedraPairingTicket> {
         self.0.pending_ticket.lock().ok()?.take()
+    }
+
+    pub fn set_pending_reconnect_reason(&self, reason: ReconnectReason) {
+        *self.0.pending_reconnect_reason.lock().unwrap() = Some(reason);
+    }
+
+    pub fn take_pending_reconnect_reason(&self) -> Option<ReconnectReason> {
+        self.0.pending_reconnect_reason.lock().ok()?.take()
     }
 
     pub fn set_session_token(&self, token: Option<[u8; 32]>) {
@@ -145,13 +177,23 @@ impl SessionHandle {
         }
     }
 
-    pub fn close_active_connection(&self, reason: &'static [u8]) {
+    pub fn active_connection_id(&self) -> Option<usize> {
+        self.0
+            .active_connection
+            .lock()
+            .ok()
+            .and_then(|active| active.as_ref().map(|conn| conn.stable_id()))
+    }
+
+    pub fn close_active_connection(&self, reason: &'static [u8]) -> bool {
         if let Ok(mut active) = self.0.active_connection.lock() {
             if let Some(conn) = active.take() {
                 unregister_active_connection(&conn);
                 conn.close(0u32.into(), reason);
+                return true;
             }
         }
+        false
     }
 
     pub fn clear_rpc_client(&self) {
@@ -184,6 +226,27 @@ impl SessionHandle {
         self.client()?.rpc(msg).await.map_err(map_rpc_error)
     }
 
+    pub async fn probe_liveness(&self, timeout: Duration) -> Result<Duration> {
+        let timestamp_ms = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_millis() as u64;
+        let sent_at = Instant::now();
+        let pong: PongResult = tokio::time::timeout(timeout, self.call(PingReq { timestamp_ms }))
+            .await
+            .map_err(|_| anyhow::anyhow!("liveness ping timed out after {:?}", timeout))??;
+
+        if pong.timestamp_ms != timestamp_ms {
+            return Err(anyhow::anyhow!(
+                "liveness ping timestamp mismatch: sent {}, got {}",
+                timestamp_ms,
+                pong.timestamp_ms
+            ));
+        }
+
+        Ok(sent_at.elapsed())
+    }
+
     pub fn user_disconnect(&self) -> bool {
         self.0.user_disconnect.load(Ordering::Acquire)
     }
@@ -194,6 +257,7 @@ impl SessionHandle {
 
     pub fn clear_session(&self) {
         self.set_user_disconnect(true);
+        self.take_pending_reconnect_reason();
         // Send CONNECTION_CLOSE before dropping RPC handles so the host can
         // release this client's active slot without waiting for QUIC idle expiry.
         self.close_active_connection(b"client disconnect");
@@ -607,7 +671,11 @@ impl SessionHandle {
         }
 
         let terminal = RemoteTerminal::new(result.id.clone());
-        if terminal.attach_remote(&client).await.is_ok() {
+        if terminal
+            .attach_remote(&client, &self.runtime()?)
+            .await
+            .is_ok()
+        {
             self.add_terminal(terminal);
             tracing::info!("Terminal created: {}", result.id);
             Ok(result.id)
@@ -731,7 +799,11 @@ impl SessionHandle {
         }
 
         let terminal = RemoteTerminal::new(result.terminal_id.clone());
-        if terminal.attach_remote(&client).await.is_ok() {
+        if terminal
+            .attach_remote(&client, &self.runtime()?)
+            .await
+            .is_ok()
+        {
             self.add_terminal(terminal);
             tracing::info!("Agent session resumed in terminal: {}", result.terminal_id);
             Ok(result.terminal_id)
@@ -970,6 +1042,19 @@ mod tests {
         assert!(!handle.reorder_terminals(&["term-a".to_string()]));
         assert!(!handle.reorder_terminals(&["term-a".to_string(), "missing".to_string()]));
         assert_eq!(handle.terminal_ids(), vec!["term-a", "term-b"]);
+    }
+
+    #[test]
+    fn reconnect_reason_can_be_stored_on_handle() {
+        let handle = SessionHandle::new();
+
+        assert_eq!(handle.take_pending_reconnect_reason(), None);
+        handle.set_pending_reconnect_reason(ReconnectReason::AppForegrounded);
+        assert_eq!(
+            handle.take_pending_reconnect_reason(),
+            Some(ReconnectReason::AppForegrounded)
+        );
+        assert_eq!(handle.take_pending_reconnect_reason(), None);
     }
 
     #[test]
