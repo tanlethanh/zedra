@@ -73,8 +73,6 @@ export default defineConfig({
       sidebar: [
         { label: "Why Zedra?", slug: "docs" },
         { label: "Installation", slug: "docs/installation" },
-        { label: "Connecting", slug: "docs/connecting" },
-        { label: "AI agents", slug: "docs/ai-agents" },
         { label: "Troubleshooting", slug: "docs/troubleshooting" },
         {
           label: "References",
