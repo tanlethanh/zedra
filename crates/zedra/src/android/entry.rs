@@ -16,14 +16,13 @@
 
 use std::cell::RefCell;
 use std::rc::Rc;
-use std::sync::Arc;
 
 use gpui::*;
 use jni::JNIEnv;
 use jni::objects::JClass;
 
 use crate::android::bridge::AndroidBridge;
-use crate::{ZedraAssets, app, install_panic_hook, platform_bridge, telemetry};
+use crate::{app, platform_bridge};
 
 thread_local! {
     /// Kept alive so the GPUI runtime survives across Choreographer ticks.
@@ -39,24 +38,10 @@ pub extern "system" fn Java_dev_zedra_app_MainActivity_zedraLaunchGpui(
 ) {
     super::jni::init_logging();
     crate::telemetry::init();
-
-    platform_bridge::set_bridge(AndroidBridge);
-
-    // Apply the persisted telemetry opt-out before the first AppOpen event.
-    telemetry::apply_persisted_optout();
-
-    // Install the panic hook only after the shared telemetry gate is final.
-    install_panic_hook();
-
     tracing::info!("Zedra Android: creating GPUI application with AndroidPlatform");
 
     let platform: Rc<dyn Platform> = gpui_android::create_platform();
-
-    let app_cell = App::new_app(
-        platform.clone(),
-        Arc::new(ZedraAssets),
-        Arc::new(http_client::BlockedHttpClient),
-    );
+    let app_cell = app::init_platform_app(platform.clone(), AndroidBridge);
 
     let app_cell_for_callback = app_cell.clone();
     platform.run(Box::new(move || {

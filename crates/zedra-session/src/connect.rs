@@ -671,8 +671,9 @@ impl Connector {
     ) -> Result<Vec<RemoteTerminal>, ConnectError> {
         let terminals = reconcile_synced_terminals(&sync.terminals, existing_terminals.as_deref());
 
+        let runtime = tokio::runtime::Handle::current();
         join_all(terminals.iter().map(async |t| {
-            if let Err(e) = t.attach_remote(client).await {
+            if let Err(e) = t.attach_remote(client, &runtime).await {
                 warn!("failed to attach terminal {}: {}", t.id(), e);
             }
         }))

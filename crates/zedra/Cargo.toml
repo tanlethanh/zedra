@@ -20,6 +20,7 @@ devtool = ["gpui_android/devtool"]
 
 [dependencies]
 gpui = { path = "../../vendor/zed/crates/gpui", default-features = false }
+gpui_tokio = { path = "../../vendor/zed/crates/gpui_tokio" }
 http_client = { path = "../../vendor/zed/crates/http_client" }
 anyhow.workspace = true
 tracing.workspace = true

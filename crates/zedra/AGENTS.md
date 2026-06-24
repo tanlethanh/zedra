@@ -32,6 +32,8 @@ Main mobile app crate. Owns GPUI application flow, workspace orchestration, plat
 - Use actions for decoupled commands that bubble through the view tree.
 - Preserve the drawer and sheet interaction patterns already established in `ui/drawer_host.rs`, `sheet_host_view.rs`, and `native_presentation.rs`.
 - Scroll containers still need explicit `.id(...)` plus constrained parent height. Follow the existing `size_full()` and `min_h_0()` patterns when editing nested layouts.
+- Async in `cx.spawn`: host RPC calls (`SessionHandle` methods, incl. `tokio::join!`) and pure GPUI awaits (`timer`, `background_spawn`, channel `recv()`) `.await` directly — RPC is an irpc oneshot, no reactor touched. Only reactor-driving futures (`tokio::time`, iroh I/O, Delta HTTP) need `Tokio::spawn_result(cx, fut).await` (`use gpui_tokio::Tokio;`; folds `JoinError` into `anyhow`); use `Tokio::spawn` for non-`Result` outputs. Runtime is created in `app::init_platform_app`; `zedra-session` owns none (takes `Tokio::handle(cx)` at `Session::new`). Full rules: `docs/CONVENTIONS.md` § Async Runtime Selection.
+- Fire-and-forget from a `'static` callback (no `cx`) or work that must outlive backgrounding (GPUI executor pauses): capture `Tokio::handle(cx)` and spawn on it directly, not `Tokio::spawn` (its join half rides the paused executor).
 
 ## Platform Rules
 

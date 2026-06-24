@@ -1,4 +1,5 @@
 use gpui::{prelude::FluentBuilder as _, *};
+use gpui_tokio::Tokio;
 
 use futures::channel::oneshot;
 
@@ -27,7 +28,9 @@ impl EventEmitter<SettingsEvent> for SettingsView {}
 pub fn reconcile_delta_on_launch<T: 'static>(delta_state: Entity<DeltaState>, cx: &mut Context<T>) {
     let snapshot = delta_state.read(cx).snapshot();
     cx.spawn(async move |_owner, cx| {
-        match delta::offload(delta::reconcile_mobile_node(snapshot.clone())).await {
+        match Tokio::spawn_result(cx, delta::reconcile_mobile_node(snapshot.clone()))
+            .await
+        {
             Ok((outcome, next)) => {
                 let applied = delta_state.update(cx, |state, cx| {
                     // Skip launch-time reconciliation if Delta state changed while it was in flight.
@@ -159,16 +162,18 @@ impl SettingsView {
             let snapshot = delta_state.read_with(cx, |state, _| state.snapshot());
             let result = match provider {
                 OAuthProvider::Google => {
-                    delta::offload(delta::sign_in_with_google(
-                        snapshot.clone(),
-                        id_token,
-                        email,
-                    ))
+                    Tokio::spawn_result(
+                        cx,
+                        delta::sign_in_with_google(snapshot.clone(), id_token, email),
+                    )
                     .await
                 }
                 OAuthProvider::Apple => {
-                    delta::offload(delta::sign_in_with_apple(snapshot.clone(), id_token, email))
-                        .await
+                    Tokio::spawn_result(
+                        cx,
+                        delta::sign_in_with_apple(snapshot.clone(), id_token, email),
+                    )
+                    .await
                 }
             };
             Self::apply_delta_result(
@@ -245,12 +250,15 @@ impl SettingsView {
                 cx.notify();
             });
             let snapshot = delta_state.read_with(cx, |state, _| state.snapshot());
-            let result = delta::offload(delta::register_push_token(
-                snapshot.clone(),
-                token.provider,
-                token.token,
-                token.environment,
-            ))
+            let result = Tokio::spawn_result(
+                cx,
+                delta::register_push_token(
+                    snapshot.clone(),
+                    token.provider,
+                    token.token,
+                    token.environment,
+                ),
+            )
             .await;
             Self::apply_delta_result(
                 &this,
