@@ -37,7 +37,7 @@ ZEDRA_TELEMETRY=0 zedra start
 
 Either turns telemetry off before any event is sent.
 
-### Exclude telemetry completely when building from source
+### Exclude telemetry when building from source
 
 Use the explicit `no-telemetry` feature for custom builds:
 
@@ -50,9 +50,6 @@ cargo build --release -p zedra-host --features no-telemetry
 ./scripts/build-android.sh --no-telemetry
 ```
 
-The mobile build keeps the Privacy row visible as a muted, disabled Off control
-with a build-disabled explanation. It does not initialize or call Firebase Analytics
-or Crashlytics. Android also omits those dependencies; Firebase Messaging remains
-available for Delta push notifications.
+Using `--no-telemetry` completely disables telemetry by excluding the telemetry backend and dependencies from the build.
 
 For the full data-handling guarantees, see the [Privacy policy](/privacy).
