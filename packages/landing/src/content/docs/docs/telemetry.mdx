@@ -21,7 +21,7 @@ Only opaque IDs, durations, counts, enum labels, and booleans: app and daemon li
 
 ### Mobile
 
-In the app, go to **Settings → Telemetry** and turn off **Share anonymous usage data**. Once off, no events are sent.
+In the app, go to **Settings → Privacy** and turn **Share usage data** off. The setting persists across launches; once off, no events are sent. A few generic events (app open, version, platform — no host data) may fire before you reach the toggle on first launch; everything after is suppressed.
 
 ### Desktop daemon
 
@@ -35,6 +35,14 @@ zedra start --no-telemetry
 ZEDRA_TELEMETRY=0 zedra start
 ```
 
-Either turns telemetry off before any event is sent. Builds compiled without telemetry credentials send nothing.
+Either turns telemetry off before any event is sent. Binaries you build yourself send nothing: telemetry credentials are baked in at compile time, so a daemon built without them has telemetry disabled with no flag required.
+
+To leave the code out of the build entirely, compile without the default `telemetry` feature:
+
+```sh
+cargo build -p zedra-host --no-default-features
+```
+
+The resulting daemon contains no analytics backend, credentials, or network calls — telemetry is gone at compile time, not just disabled at runtime.
 
 For the full data-handling guarantees, see the [Privacy policy](/privacy).

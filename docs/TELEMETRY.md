@@ -54,8 +54,12 @@ overhead and never delay rendering, connection setup, or terminal I/O.
 - **App (runtime)**: `zedra_telemetry::set_enabled(false)` flips an `AtomicBool`, all
   subsequent `send()` calls become no-ops, and disables Firebase SDK collection. The
   Settings toggle calls this plus `settings::write_telemetry_enabled(...)`.
-- **Host**: `--no-telemetry` flag or `ZEDRA_TELEMETRY=0` env var. `telemetry_disabled()`
-  gates `new_ga4()` before any event fires.
+- **Host (runtime)**: `--no-telemetry` flag or `ZEDRA_TELEMETRY=0` env var.
+  `telemetry_disabled()` gates `new_ga4()` before any event fires.
+- **Host (build-time)**: the `telemetry` cargo feature is on by default; build with
+  `cargo build -p zedra-host --no-default-features` to compile telemetry out entirely.
+  `ga4_stub.rs` replaces `ga4.rs`, so the GA4 backend, baked-in credentials
+  (`option_env!`), and HTTP send paths are excluded regardless of runtime flags.
 
 ---
 

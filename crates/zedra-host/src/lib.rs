@@ -18,6 +18,10 @@ pub mod client;
 pub mod delta;
 pub mod docs_tree;
 pub mod fs;
+#[cfg(feature = "telemetry")]
+pub mod ga4;
+#[cfg(not(feature = "telemetry"))]
+#[path = "ga4_stub.rs"]
 pub mod ga4;
 pub mod git;
 pub mod host_info;
