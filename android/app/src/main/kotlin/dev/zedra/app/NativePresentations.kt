@@ -455,7 +455,7 @@ object NativePresentations {
                 ViewGroup.LayoutParams.WRAP_CONTENT,
             ))
         }
-        AlertDialog.Builder(requireActivity())
+        MaterialAlertDialogBuilder(requireActivity())
             .apply {
                 if (!title.isNullOrBlank()) setTitle(title)
                 setView(container)
