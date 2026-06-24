@@ -697,6 +697,7 @@ fn managed_agent_command_hint(kind: AgentKind) -> &'static str {
         AgentKind::OpenCode => "opencode",
         AgentKind::Pi => "pi",
         AgentKind::Hermes => "hermes",
+        AgentKind::Maki => "maki",
     }
 }
 
@@ -857,6 +858,9 @@ impl Workspace {
                                 event_name.as_str(),
                                 "post_llm_call" | "pre_approval_request"
                             ),
+                            // Maki has no lifecycle hooks today; no events arrive
+                            // for it, so notifications are never emitted.
+                            AgentKind::Maki => false,
                         };
                         let in_foreground = platform_bridge::is_app_in_foreground();
                         tracing::info!(

@@ -47,6 +47,7 @@ pub fn managed_agent_icon(kind: AgentKind) -> &'static str {
         AgentKind::OpenCode => "icons/opencode.svg",
         AgentKind::Pi => "icons/pi.svg",
         AgentKind::Hermes => "icons/hermesagent.svg",
+        AgentKind::Maki => "icons/maki.svg",
     }
 }
 
@@ -57,6 +58,7 @@ pub fn kind_slug(kind: AgentKind) -> &'static str {
         AgentKind::OpenCode => "opencode",
         AgentKind::Pi => "pi",
         AgentKind::Hermes => "hermes",
+        AgentKind::Maki => "maki",
     }
 }
 
@@ -67,6 +69,7 @@ pub fn managed_agent_name(kind: AgentKind) -> &'static str {
         AgentKind::OpenCode => "OpenCode",
         AgentKind::Pi => "Pi",
         AgentKind::Hermes => "Hermes",
+        AgentKind::Maki => "Maki",
     }
 }
 

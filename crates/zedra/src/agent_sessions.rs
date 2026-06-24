@@ -49,12 +49,13 @@ impl AgentSessions {
 
         let handle = self.session_handle.clone();
         let task = cx.spawn(async move |this, cx| {
-            let (claude, codex, opencode, pi, hermes) = tokio::join!(
+            let (claude, codex, opencode, pi, hermes, maki) = tokio::join!(
                 handle.agent_sessions(AgentKind::Claude, refresh, 0),
                 handle.agent_sessions(AgentKind::Codex, refresh, 0),
                 handle.agent_sessions(AgentKind::OpenCode, refresh, 0),
                 handle.agent_sessions(AgentKind::Pi, refresh, 0),
                 handle.agent_sessions(AgentKind::Hermes, refresh, 0),
+                handle.agent_sessions(AgentKind::Maki, refresh, 0),
             );
             let mut sessions = Vec::new();
             let mut errors = Vec::new();
@@ -64,6 +65,7 @@ impl AgentSessions {
                 (AgentKind::OpenCode, opencode),
                 (AgentKind::Pi, pi),
                 (AgentKind::Hermes, hermes),
+                (AgentKind::Maki, maki),
             ] {
                 match result {
                     Ok(mut rows) => sessions.append(&mut rows),

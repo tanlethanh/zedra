@@ -3,6 +3,7 @@ use crate::agent_claude;
 use crate::agent_codex;
 use crate::agent_hermes;
 use crate::agent_installed;
+use crate::agent_maki;
 use crate::agent_opencode;
 use crate::agent_pi;
 use crate::agent_setup::setup_summary;
@@ -22,12 +23,13 @@ pub use crate::agent_utils::home_path;
 const AGENT_SESSION_DEFAULT_LIMIT: u32 = 50;
 const AGENT_SESSION_MAX_LIMIT: u32 = 200;
 
-pub const MANAGED_AGENT_KINDS: [AgentKind; 5] = [
+pub const MANAGED_AGENT_KINDS: [AgentKind; 6] = [
     AgentKind::Claude,
     AgentKind::Codex,
     AgentKind::OpenCode,
     AgentKind::Pi,
     AgentKind::Hermes,
+    AgentKind::Maki,
 ];
 
 pub fn default_agent_session_limit() -> usize {
@@ -209,6 +211,7 @@ pub fn managed_kind_from_slug(raw: &str) -> Option<AgentKind> {
         "opencode" | "open-code" | "open_code" => Some(AgentKind::OpenCode),
         "pi" => Some(AgentKind::Pi),
         "hermes" => Some(AgentKind::Hermes),
+        "maki" => Some(AgentKind::Maki),
         _ => None,
     }
 }
@@ -296,6 +299,7 @@ session_counts_from!(agent_claude::SessionCounts);
 session_counts_from!(agent_codex::SessionCounts);
 session_counts_from!(agent_pi::SessionCounts);
 session_counts_from!(agent_hermes::SessionCounts);
+session_counts_from!(agent_maki::SessionCounts);
 
 impl From<agent_opencode::SessionCounts> for SessionCounts {
     fn from(c: agent_opencode::SessionCounts) -> Self {
@@ -378,6 +382,7 @@ fn dispatch(kind: AgentKind) -> &'static dyn ManagedAgent {
         AgentKind::OpenCode => &OpenCodeAgent,
         AgentKind::Pi => &PiAgent,
         AgentKind::Hermes => &HermesAgent,
+        AgentKind::Maki => &MakiAgent,
     }
 }
 
@@ -525,6 +530,32 @@ impl ManagedAgent for HermesAgent {
     }
 }
 
+struct MakiAgent;
+impl ManagedAgent for MakiAgent {
+    fn kind(&self) -> AgentKind {
+        AgentKind::Maki
+    }
+    fn cli_available(&self, _workdir: &Path) -> bool {
+        agent_maki::cli_available()
+    }
+    fn session_counts(&self, ctx: &ScanCtx) -> Result<SessionCounts, String> {
+        Ok(agent_maki::session_counts(ctx.workdir)?.into())
+    }
+    fn sessions(
+        &self,
+        ctx: &ScanCtx,
+        limit: usize,
+    ) -> Result<(Vec<AgentSessionSummary>, usize), String> {
+        agent_maki::sessions(ctx.workdir, ctx.cli, limit)
+    }
+    fn account_fields(&self, workdir: &Path) -> Vec<AgentInfoField> {
+        agent_maki::account_fields(workdir)
+    }
+    fn resume_launch_command(&self, quoted: &str) -> String {
+        format!("maki --resume {quoted}")
+    }
+}
+
 fn sessions_for_kind_blocking(
     kind: AgentKind,
     workdir: &Path,
@@ -611,6 +642,7 @@ pub async fn scan_account_plans() -> HashMap<AgentKind, Vec<AgentInfoField>> {
     let opencode = tokio::task::spawn_blocking(agent_opencode::subscription_plan_fields);
     let pi = tokio::task::spawn_blocking(agent_pi::subscription_plan_fields);
     let hermes = tokio::task::spawn_blocking(agent_hermes::subscription_plan_fields);
+    let maki = tokio::task::spawn_blocking(agent_maki::subscription_plan_fields);
 
     let mut out = HashMap::new();
     if let Ok(Some(fields)) = claude.await {
@@ -627,6 +659,9 @@ pub async fn scan_account_plans() -> HashMap<AgentKind, Vec<AgentInfoField>> {
     }
     if let Ok(Some(fields)) = hermes.await {
         out.insert(AgentKind::Hermes, fields);
+    }
+    if let Ok(Some(fields)) = maki.await {
+        out.insert(AgentKind::Maki, fields);
     }
     out
 }
@@ -659,6 +694,7 @@ pub async fn scan_account_usage() -> HashMap<AgentKind, AgentUsageSnapshot> {
     let opencode = tokio::task::spawn_blocking(agent_opencode::fetch_account_usage);
     let pi = tokio::task::spawn_blocking(agent_pi::fetch_account_usage);
     let hermes = tokio::task::spawn_blocking(agent_hermes::fetch_account_usage);
+    let maki = tokio::task::spawn_blocking(agent_maki::fetch_account_usage);
 
     let mut out = HashMap::new();
     if let Ok(Some(snap)) = claude.await {
@@ -675,6 +711,9 @@ pub async fn scan_account_usage() -> HashMap<AgentKind, AgentUsageSnapshot> {
     }
     if let Ok(Some(snap)) = hermes.await {
         out.insert(AgentKind::Hermes, snap);
+    }
+    if let Ok(Some(snap)) = maki.await {
+        out.insert(AgentKind::Maki, snap);
     }
     out
 }
@@ -723,6 +762,10 @@ mod tests {
         assert_eq!(
             resume_launch_command(AgentKind::Pi, "abc-def").as_deref(),
             Some("pi --session abc-def")
+        );
+        assert_eq!(
+            resume_launch_command(AgentKind::Maki, "uuid-1").as_deref(),
+            Some("maki --resume uuid-1")
         );
     }
 
