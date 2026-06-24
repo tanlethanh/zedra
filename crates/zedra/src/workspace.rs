@@ -339,6 +339,24 @@ fn foreground_resume_action(phase: &ConnectPhase) -> ForegroundResumeAction {
     }
 }
 
+/// Foreground-resume step from the UI-thread snapshot. A user disconnect is never
+/// resurrected; a phase that still reads connected but lost its transport restarts
+/// rather than probe a stale RPC client.
+fn classify_foreground_resume(
+    phase: &ConnectPhase,
+    connection_id: Option<usize>,
+    user_disconnect: bool,
+) -> ForegroundResumeAction {
+    if user_disconnect {
+        return ForegroundResumeAction::Ignore;
+    }
+    let action = foreground_resume_action(phase);
+    if matches!(action, ForegroundResumeAction::ProbeLiveness) && connection_id.is_none() {
+        return ForegroundResumeAction::RestartConnection;
+    }
+    action
+}
+
 fn path_label(snap: &ConnectSnapshot) -> &'static str {
     if snap
         .transport
@@ -876,9 +894,8 @@ impl Workspace {
             }
         });
 
-        // Foreground resume needs an application-level proof of liveness. QUIC
-        // close/idle signals can lag after app suspension while the UI still
-        // shows the last connected phase.
+        // QUIC close/idle can lag after suspension, so foreground resume probes
+        // liveness at the application level rather than trusting the phase.
         let mut foreground_resume_rx = platform_bridge::subscribe_foreground_state();
         let foreground_resume_listener = cx.spawn_in(window, async move |ws, cx| {
             loop {
@@ -888,30 +905,30 @@ impl Workspace {
                             continue;
                         }
 
-                        let (phase, handle, connection_id) = match ws.update(cx, |ws, cx| {
-                            let handle = ws.session_handle().clone();
-                            (
-                                ws.session_state.read(cx).phase(),
-                                handle.clone(),
-                                handle.active_connection_id(),
-                            )
-                        }) {
-                            Ok(value) => value,
-                            Err(_) => break,
-                        };
+                        let (phase, handle, connection_id, user_disconnect) =
+                            match ws.update(cx, |ws, cx| {
+                                let handle = ws.session_handle().clone();
+                                (
+                                    ws.session_state.read(cx).phase(),
+                                    handle.clone(),
+                                    handle.active_connection_id(),
+                                    handle.user_disconnect(),
+                                )
+                            }) {
+                                Ok(value) => value,
+                                Err(_) => break,
+                            };
 
-                        match foreground_resume_action(&phase) {
+                        let action =
+                            classify_foreground_resume(&phase, connection_id, user_disconnect);
+
+                        match action {
                             ForegroundResumeAction::ProbeLiveness => {
                                 // probe_liveness uses tokio timers — must run on Tokio.
-                                let probe = Tokio::spawn(cx, async move {
+                                let result = Tokio::spawn_result(cx, async move {
                                     handle.probe_liveness(FOREGROUND_LIVENESS_TIMEOUT).await
-                                });
-                                let result = match probe.await {
-                                    Ok(result) => result,
-                                    Err(join_error) => Err(anyhow::anyhow!(
-                                        "liveness probe task failed: {join_error}"
-                                    )),
-                                };
+                                })
+                                .await;
                                 match result {
                                     Ok(rtt) => {
                                         info!(
@@ -939,20 +956,30 @@ impl Workspace {
                                                 return;
                                             }
 
-                                            if connection_id.is_some() {
-                                                ws.session.request_reconnect(
-                                                    ReconnectReason::AppForegrounded,
-                                                );
-                                            } else {
-                                                ws.restart_connection(cx);
+                                            // User may have disconnected mid-probe.
+                                            if ws.session_handle().user_disconnect() {
+                                                return;
                                             }
+
+                                            // ProbeLiveness implies a live transport (classify
+                                            // routes the no-transport case to RestartConnection).
+                                            ws.session.request_reconnect(
+                                                ReconnectReason::AppForegrounded,
+                                            );
                                         })
                                         .ok();
                                     }
                                 }
                             }
                             ForegroundResumeAction::RestartConnection => {
-                                ws.update(cx, |ws, cx| ws.restart_connection(cx)).ok();
+                                ws.update(cx, |ws, cx| {
+                                    // User may have disconnected before this update ran.
+                                    if ws.session_handle().user_disconnect() {
+                                        return;
+                                    }
+                                    ws.restart_connection(cx);
+                                })
+                                .ok();
                             }
                             ForegroundResumeAction::Ignore => {}
                         }
@@ -963,15 +990,14 @@ impl Workspace {
             }
         });
 
-        // Notify host on foreground changes (toggles RPC-only vs Delta push).
-        // Must run on the bare Tokio handle, not `Tokio::spawn`: the GPUI executor
-        // pauses on background — exactly when this listener needs to fire.
+        // Notify host on foreground changes (toggles RPC-only vs Delta push). Bare
+        // Tokio handle, not `Tokio::spawn`: the GPUI executor pauses on background,
+        // exactly when this must fire.
         let foreground_handle = session.handle().clone();
         let mut foreground_rx = platform_bridge::subscribe_foreground_state();
         let foreground_state_listener = Tokio::handle(cx).spawn(async move {
-            // Seed the host with the current app state so a workspace that
-            // starts while already backgrounded does not stay pinned to the
-            // default foreground=true state.
+            // Seed current state so a workspace started while backgrounded
+            // isn't pinned to the default foreground=true.
             foreground_handle
                 .notify_app_state(platform_bridge::is_app_in_foreground())
                 .await;
@@ -3101,6 +3127,67 @@ mod tests {
         );
         assert_eq!(
             foreground_resume_action(&ConnectPhase::Sync),
+            ForegroundResumeAction::Ignore
+        );
+    }
+
+    #[::core::prelude::v1::test]
+    fn classify_foreground_resume_ignores_user_disconnect() {
+        // A user-disconnected workspace must never be resurrected by a
+        // foreground event, even if the phase still reads Connected.
+        assert_eq!(
+            classify_foreground_resume(&ConnectPhase::Connected, Some(7), true),
+            ForegroundResumeAction::Ignore
+        );
+        assert_eq!(
+            classify_foreground_resume(
+                &ConnectPhase::Idle {
+                    idle_since: Instant::now()
+                },
+                None,
+                true
+            ),
+            ForegroundResumeAction::Ignore
+        );
+        assert_eq!(
+            classify_foreground_resume(&ConnectPhase::Disconnected, None, true),
+            ForegroundResumeAction::Ignore
+        );
+    }
+
+    #[::core::prelude::v1::test]
+    fn classify_foreground_resume_skips_probe_when_no_transport() {
+        // Lifecycle close took the active connection but the phase has not
+        // advanced yet; probing the stale RPC client only delays the restart.
+        assert_eq!(
+            classify_foreground_resume(&ConnectPhase::Connected, None, false),
+            ForegroundResumeAction::RestartConnection
+        );
+        assert_eq!(
+            classify_foreground_resume(
+                &ConnectPhase::Idle {
+                    idle_since: Instant::now()
+                },
+                None,
+                false,
+            ),
+            ForegroundResumeAction::RestartConnection
+        );
+        // With a live transport, the probe path is still chosen.
+        assert_eq!(
+            classify_foreground_resume(&ConnectPhase::Connected, Some(7), false),
+            ForegroundResumeAction::ProbeLiveness
+        );
+    }
+
+    #[::core::prelude::v1::test]
+    fn classify_foreground_resume_passes_through_restart_and_ignore() {
+        assert_eq!(
+            classify_foreground_resume(&ConnectPhase::Disconnected, None, false),
+            ForegroundResumeAction::RestartConnection
+        );
+        assert_eq!(
+            classify_foreground_resume(&ConnectPhase::Sync, Some(7), false),
             ForegroundResumeAction::Ignore
         );
     }
