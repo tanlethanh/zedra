@@ -13,6 +13,7 @@ use crate::theme::{self, ThemePreference};
 use crate::{fonts, settings};
 
 const TELEMETRY_DOCS_URL: &str = "https://zedra.dev/docs/telemetry";
+const PRIVACY_POLICY_URL: &str = "https://zedra.dev/privacy";
 
 #[derive(Clone, Debug)]
 pub enum SettingsEvent {
@@ -413,6 +414,11 @@ impl SettingsView {
         platform_bridge::bridge().open_url(TELEMETRY_DOCS_URL);
     }
 
+    fn open_privacy_policy(&self) {
+        platform_bridge::trigger_haptic(HapticFeedback::ImpactLight);
+        platform_bridge::bridge().open_url(PRIVACY_POLICY_URL);
+    }
+
     fn show_test_alert(&self) {
         platform_bridge::trigger_haptic(HapticFeedback::ImpactLight);
         platform_bridge::show_alert(
@@ -641,12 +647,23 @@ impl Render for SettingsView {
                             .child(
                                 action_row(
                                     cx,
-                                    "settings-privacy-docs",
-                                    "What we collect",
+                                    "settings-telemetry-docs",
+                                    "Telemetry docs",
                                     "zedra.dev/docs/telemetry",
                                 )
                                 .on_press(cx.listener(|this, _event, _window, _cx| {
                                     this.open_telemetry_docs();
+                                })),
+                            )
+                            .child(
+                                action_row(
+                                    cx,
+                                    "settings-privacy-docs",
+                                    "Privacy policy",
+                                    "zedra.dev/privacy",
+                                )
+                                .on_press(cx.listener(|this, _event, _window, _cx| {
+                                    this.open_privacy_policy();
                                 })),
                             )
                             .when(cfg!(debug_assertions), |section| {
@@ -823,6 +840,61 @@ fn telemetry_toggle(
     on_enable: impl Fn(&PressEvent, &mut Window, &mut App) + 'static,
     on_disable: impl Fn(&PressEvent, &mut Window, &mut App) + 'static,
 ) -> impl IntoElement {
+    let compiled_out = cfg!(feature = "no-telemetry");
+    let control = if compiled_out {
+        div()
+            .flex_none()
+            .rounded(px(8.0))
+            .border_1()
+            .border_color(rgb(theme::border_subtle(cx)))
+            .bg(rgb(theme::bg_surface(cx)))
+            .opacity(0.45)
+            .child(
+                div()
+                    .min_w(px(72.0))
+                    .h(px(24.0))
+                    .flex()
+                    .items_center()
+                    .justify_center()
+                    .text_size(px(theme::FONT_DETAIL))
+                    .font_family(fonts::MONO_FONT_FAMILY)
+                    .font_weight(FontWeight::MEDIUM)
+                    .text_color(rgb(theme::text_muted(cx)))
+                    .child("Off"),
+            )
+            .into_any_element()
+    } else {
+        div()
+            .flex_none()
+            .rounded(px(8.0))
+            .border_1()
+            .border_color(rgb(theme::border_default(cx)))
+            .bg(rgb(theme::bg_surface(cx)))
+            .flex()
+            .flex_row()
+            .child(telemetry_toggle_segment(
+                cx,
+                "settings-telemetry-on",
+                "On",
+                enabled,
+                on_enable,
+            ))
+            .child(
+                div()
+                    .w(px(1.0))
+                    .h(px(22.0))
+                    .bg(rgb(theme::border_subtle(cx))),
+            )
+            .child(telemetry_toggle_segment(
+                cx,
+                "settings-telemetry-off",
+                "Off",
+                !enabled,
+                on_disable,
+            ))
+            .into_any_element()
+    };
+
     div()
         .id("settings-telemetry-toggle")
         .min_w_0()
@@ -842,50 +914,29 @@ fn telemetry_toggle(
                 .overflow_hidden()
                 .child(
                     div()
-                        .text_color(rgb(theme::text_secondary(cx)))
+                        .text_color(rgb(if compiled_out {
+                            theme::text_muted(cx)
+                        } else {
+                            theme::text_secondary(cx)
+                        }))
                         .text_size(px(theme::FONT_BODY))
                         .font_family(fonts::MONO_FONT_FAMILY)
                         .font_weight(FontWeight::MEDIUM)
-                        .child("Share usage data"),
+                        .child("Telemetry metrics"),
                 )
                 .child(
                     div()
                         .text_color(rgb(theme::text_muted(cx)))
                         .text_size(px(theme::FONT_DETAIL))
                         .font_family(fonts::MONO_FONT_FAMILY)
-                        .child("Allow collecting anonymous usage data"),
+                        .child(if compiled_out {
+                            "Disabled by build flag"
+                        } else {
+                            "Send anonymous usage data"
+                        }),
                 ),
         )
-        .child(
-            div()
-                .flex_none()
-                .rounded(px(8.0))
-                .border_1()
-                .border_color(rgb(theme::border_default(cx)))
-                .bg(rgb(theme::bg_surface(cx)))
-                .flex()
-                .flex_row()
-                .child(telemetry_toggle_segment(
-                    cx,
-                    "settings-telemetry-on",
-                    "On",
-                    enabled,
-                    on_enable,
-                ))
-                .child(
-                    div()
-                        .w(px(1.0))
-                        .h(px(22.0))
-                        .bg(rgb(theme::border_subtle(cx))),
-                )
-                .child(telemetry_toggle_segment(
-                    cx,
-                    "settings-telemetry-off",
-                    "Off",
-                    !enabled,
-                    on_disable,
-                )),
-        )
+        .child(control)
 }
 
 fn telemetry_toggle_segment(

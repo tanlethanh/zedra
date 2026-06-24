@@ -1,8 +1,10 @@
 import AVFoundation
 import AudioToolbox
+#if !ZEDRA_NO_TELEMETRY
 import FirebaseAnalytics
 import FirebaseCore
 import FirebaseCrashlytics
+#endif
 import Foundation
 import UIKit
 import ZedraFFI
@@ -33,6 +35,7 @@ private final class CStringStorage {
     }
 }
 
+#if !ZEDRA_NO_TELEMETRY
 private enum ZedraFirebase {
     private static let lock = NSLock()
     private static var configured = false
@@ -60,6 +63,7 @@ private enum ZedraFirebase {
         return configured
     }
 }
+#endif
 
 @_cdecl("ios_get_app_version")
 func ios_get_app_version() -> UnsafePointer<CChar>? {
@@ -103,10 +107,12 @@ func ios_set_keyboard_accessory_theme(_ isDark: Bool) {
     NativePresentationTheme.setDark(isDark)
 }
 
+#if !ZEDRA_NO_TELEMETRY
 @_cdecl("zedra_firebase_initialize")
 func zedra_firebase_initialize_bridge() {
     _ = ZedraFirebase.configureIfAvailable()
 }
+#endif
 
 // Keeps the player alive for the duration of playback; AVAudioPlayer stops
 // when deallocated.
@@ -176,6 +182,7 @@ func ios_open_url(_ url: UnsafePointer<CChar>?) {
     }
 }
 
+#if !ZEDRA_NO_TELEMETRY
 @_cdecl("zedra_log_event")
 func zedra_log_event(
     _ name: UnsafePointer<CChar>?,
@@ -253,3 +260,4 @@ func zedra_set_collection_enabled(_ enabled: Int32) {
     Analytics.setAnalyticsCollectionEnabled(isEnabled)
     Crashlytics.crashlytics().setCrashlyticsCollectionEnabled(isEnabled)
 }
+#endif

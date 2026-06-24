@@ -23,8 +23,10 @@ private func gpui_ios_handle_view_resize(
 @_silgen_name("gpui_ios_set_software_keyboard_visible")
 private func gpui_ios_set_software_keyboard_visible(_ visible: Bool)
 
+#if !ZEDRA_NO_TELEMETRY
 @_silgen_name("zedra_firebase_initialize")
 private func zedra_firebase_initialize()
+#endif
 
 @_silgen_name("zedra_ios_app_will_terminate")
 private func zedra_ios_app_will_terminate()
@@ -51,7 +53,9 @@ final class GPUIRuntimeController: NSObject {
 
     func launch() {
         Self.activeController = self
+#if !ZEDRA_NO_TELEMETRY
         zedra_firebase_initialize()
+#endif
 
         gpuiApp = gpui_ios_initialize()
         zedra_launch_gpui()

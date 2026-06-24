@@ -1,8 +1,8 @@
 // No-op telemetry backend, selected when the `telemetry` feature is disabled.
 //
-// Building with `--no-default-features` swaps `ga4.rs` for this stub, so no GA4
-// credentials (`option_env!`), HTTP client, or send paths are compiled in. The
-// public surface mirrors `ga4::Ga4` so `main.rs` and `telemetry.rs` need no
+// Building with the `no-telemetry` feature swaps `ga4.rs` for this stub, so no
+// GA4 credentials (`option_env!`), HTTP client, or send paths are compiled in.
+// The public surface mirrors `ga4::Ga4` so `main.rs` and `telemetry.rs` need no
 // `cfg` gating; every method is inert.
 
 use serde_json::Value;

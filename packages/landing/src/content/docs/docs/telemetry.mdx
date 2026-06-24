@@ -35,14 +35,24 @@ zedra start --no-telemetry
 ZEDRA_TELEMETRY=0 zedra start
 ```
 
-Either turns telemetry off before any event is sent. Binaries you build yourself send nothing: telemetry credentials are baked in at compile time, so a daemon built without them has telemetry disabled with no flag required.
+Either turns telemetry off before any event is sent.
 
-To leave the code out of the build entirely, compile without the default `telemetry` feature:
+### Exclude telemetry completely when building from source
+
+Use the explicit `no-telemetry` feature for custom builds:
 
 ```sh
-cargo build -p zedra-host --no-default-features
+# Desktop host daemon: removes GA4 code, credentials, and send paths.
+cargo build --release -p zedra-host --features no-telemetry
+
+# Mobile app: removes the Firebase Analytics/Crashlytics backend.
+./scripts/build-ios.sh --no-telemetry
+./scripts/build-android.sh --no-telemetry
 ```
 
-The resulting daemon contains no analytics backend, credentials, or network calls — telemetry is gone at compile time, not just disabled at runtime.
+The mobile build keeps the Privacy row visible as a muted, disabled Off control
+with a build-disabled explanation. It does not initialize or call Firebase Analytics
+or Crashlytics. Android also omits those dependencies; Firebase Messaging remains
+available for Delta push notifications.
 
 For the full data-handling guarantees, see the [Privacy policy](/privacy).

@@ -18,9 +18,9 @@ pub mod client;
 pub mod delta;
 pub mod docs_tree;
 pub mod fs;
-#[cfg(feature = "telemetry")]
+#[cfg(all(feature = "telemetry", not(feature = "no-telemetry")))]
 pub mod ga4;
-#[cfg(not(feature = "telemetry"))]
+#[cfg(any(not(feature = "telemetry"), feature = "no-telemetry"))]
 #[path = "ga4_stub.rs"]
 pub mod ga4;
 pub mod git;

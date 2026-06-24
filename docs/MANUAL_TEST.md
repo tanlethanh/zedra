@@ -200,8 +200,18 @@ Use a `debug-telemetry` build so every event prints `[telemetry] >> <name>` to s
    `app_open`, and `[debug:telemetry] applied persisted opt-out enabled=false`.
 4. Open Settings → Privacy and set "Share usage data" back to **On**, then relaunch.
    Expected: `[telemetry] >> app_open` resumes and events fire again.
-5. Tap Settings → Privacy → "What we collect". Expected: the system browser opens
+5. Tap Settings → Privacy → "Telemetry docs". Expected: the system browser opens
    `zedra.dev/docs/telemetry`.
+
+## 0d-Telemetry. Compile-Time Mobile Opt-Out
+
+1. Build with `./scripts/build-ios.sh --no-telemetry` or
+   `./scripts/build-android.sh --no-telemetry`.
+2. Install and launch the resulting app.
+3. Expected: Settings shows a muted Privacy telemetry row with a non-interactive Off
+   control and the description "Telemetry disabled when this app was built". No Firebase
+   Analytics or Crashlytics calls are made. On Android, Delta push notifications remain
+   available.
 
 ## 0e. Developer Native Selection
 

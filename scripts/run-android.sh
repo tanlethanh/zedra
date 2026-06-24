@@ -9,7 +9,7 @@ ACTIVITY_CLASS="dev.zedra.app.MainActivity"
 PREF_FILE="/tmp/zedra-android-device-$PPID"
 
 usage() {
-    echo "Usage: $0 [device|emulator] [--no-build] [--release] [--preview] [--debug] [--debug-telemetry] [--device-id <SERIAL>] [--select-device] [--launch-url <URL>] [--target <ABI>]"
+    echo "Usage: $0 [device|emulator] [--no-build] [--release] [--preview] [--debug] [--debug-telemetry] [--no-telemetry] [--device-id <SERIAL>] [--select-device] [--launch-url <URL>] [--target <ABI>]"
     echo ""
     echo "  device    Build, install, and run on a connected Android target (default)"
     echo "  emulator  Restrict target selection to Android emulators"
@@ -19,6 +19,7 @@ usage() {
     echo "  --preview               Enable preview feature flag for Rust"
     echo "  --debug                 Use Rust debug profile (default unless --release is passed)"
     echo "  --debug-telemetry       Enable debug telemetry feature flag"
+    echo "  --no-telemetry          Compile Firebase Analytics and Crashlytics out"
     echo "  --devtool               Enable in-app HTTP devtool (127.0.0.1:9777)"
     echo "  --device-id <SERIAL>    Target a specific adb serial (skips selection)"
     echo "  --select-device         Ignore saved device preference and re-prompt"
@@ -63,6 +64,7 @@ fi
 REQUESTED_RELEASE=false
 REQUESTED_DEBUG=false
 REQUESTED_DEBUG_TELEMETRY=false
+REQUESTED_NO_TELEMETRY=false
 NO_BUILD=false
 SELECT_DEVICE=false
 FORCED_DEVICE_ID=""
@@ -87,6 +89,10 @@ while [ $# -gt 0 ]; do
         --debug-telemetry)
             REQUESTED_DEBUG_TELEMETRY=true
             RUST_FLAGS+=(--debug-telemetry)
+            ;;
+        --no-telemetry)
+            REQUESTED_NO_TELEMETRY=true
+            RUST_FLAGS+=(--no-telemetry)
             ;;
         --devtool)
             RUST_FLAGS+=(--devtool)
@@ -142,6 +148,11 @@ esac
 
 if [ "$REQUESTED_RELEASE" = true ] && { [ "$REQUESTED_DEBUG" = true ] || [ "$REQUESTED_DEBUG_TELEMETRY" = true ]; }; then
     echo "Error: --release cannot be combined with --debug or --debug-telemetry for Android builds." >&2
+    exit 1
+fi
+
+if [ "$REQUESTED_NO_TELEMETRY" = true ] && [ "$REQUESTED_DEBUG_TELEMETRY" = true ]; then
+    echo "Error: --no-telemetry cannot be combined with --debug-telemetry for Android builds." >&2
     exit 1
 fi
 
@@ -289,7 +300,9 @@ if [ "$NO_BUILD" = false ]; then
     fi
 
     echo "==> Building Android app..."
-    (cd android && ./gradlew "$GRADLE_TASK" -x "$RUST_TASK")
+    GRADLE_FLAGS=()
+    [ "$REQUESTED_NO_TELEMETRY" = true ] && GRADLE_FLAGS+=(-PnoTelemetry)
+    (cd android && ./gradlew "${GRADLE_FLAGS[@]+"${GRADLE_FLAGS[@]}"}" "$GRADLE_TASK" -x "$RUST_TASK")
 
     APK_PATH="$(find_apk)"
     if [ -z "$APK_PATH" ]; then
