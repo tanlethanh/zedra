@@ -177,12 +177,14 @@ pub extern "C" fn zedra_launch_gpui() {
     super::logger::IosLogger::init(log_level);
 
     crate::telemetry::init();
-    install_panic_hook();
 
     platform_bridge::set_bridge(super::bridge::IosBridge);
 
     // Apply the persisted telemetry opt-out before the first AppOpen event.
     telemetry::apply_persisted_optout();
+
+    // Install the panic hook only after the shared telemetry gate is final.
+    install_panic_hook();
 
     tracing::info!("Zedra iOS: Creating GPUI application with IosPlatform");
 

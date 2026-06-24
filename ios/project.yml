@@ -49,6 +49,7 @@ targets:
         # (telemetry::apply_persisted_optout).
         FIREBASE_ANALYTICS_COLLECTION_ENABLED: false
         FirebaseCrashlyticsCollectionEnabled: false
+        FirebaseAutomaticScreenReportingEnabled: false
         CFBundleURLTypes:
           - CFBundleURLSchemes: [zedra]
             CFBundleURLName: dev.zedra.app

@@ -160,7 +160,12 @@ pub fn read_telemetry_enabled() -> bool {
     }
 }
 
-pub fn write_telemetry_enabled(enabled: bool) {
+/// Update the persisted telemetry preference and the shared runtime gate.
+pub fn set_telemetry_enabled(enabled: bool) {
+    // Update the shared runtime gate first so the new state takes effect
+    // immediately, even if the settings write fails.
+    zedra_telemetry::set_enabled(enabled);
+
     let mut settings = read_settings().unwrap_or_default();
     settings.telemetry_enabled = Some(enabled);
     if let Err(err) = write_settings(&settings) {

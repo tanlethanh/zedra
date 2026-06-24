@@ -22,7 +22,6 @@ use ndk::native_window::NativeWindow;
 use std::sync::{Arc, Mutex, Once};
 
 use crate::android::sheet;
-use crate::install_panic_hook;
 use crate::platform_bridge::{
     self, AlertButton, AlertButtonStyle, CustomSheetOptions, HapticFeedback, ListPickerItem,
     NativeDictationPreviewOptions, NativeEditMenuItem, NativeFloatingButtonOptions,
@@ -120,7 +119,6 @@ pub fn init_logging() {
         );
 
         crate::telemetry::init();
-        install_panic_hook();
     });
 }
 

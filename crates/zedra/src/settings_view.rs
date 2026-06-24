@@ -404,8 +404,7 @@ impl SettingsView {
         }
         platform_bridge::trigger_haptic(HapticFeedback::SelectionChanged);
         self.telemetry_enabled = enabled;
-        zedra_telemetry::set_enabled(enabled);
-        settings::write_telemetry_enabled(enabled);
+        settings::set_telemetry_enabled(enabled);
         cx.notify();
     }
 

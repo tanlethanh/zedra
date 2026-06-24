@@ -13,11 +13,6 @@ object ZedraFirebase {
     @Volatile private var didInitialize = false
     @Volatile private var analytics: FirebaseAnalytics? = null
 
-    // Default-off: collection stays disabled until the user is confirmed opted-in
-    // at runtime via setCollectionEnabled (telemetry::apply_persisted_optout).
-    // Debug builds never collect.
-    @Volatile private var collectionEnabled = false
-
     @JvmStatic
     fun initialize(context: Context) {
         if (didInitialize) return
@@ -34,19 +29,18 @@ object ZedraFirebase {
                 }
 
             if (app != null) {
-                analytics = FirebaseAnalytics.getInstance(appContext).also {
-                    it.setAnalyticsCollectionEnabled(collectionEnabled)
-                }
-                crashlyticsOrNull(ignoreCollection = true)
-                    ?.setCrashlyticsCollectionEnabled(collectionEnabled)
+                analytics = FirebaseAnalytics.getInstance(appContext)
             }
             didInitialize = true
+
+            // The manifest is default-off; reset the SDK state on every launch
+            // until Rust applies the persisted telemetry preference.
+            setCollectionEnabled(false)
         }
     }
 
     @JvmStatic
     fun logEvent(name: String, keys: Array<String>, values: Array<String>) {
-        if (!collectionEnabled) return
         val analytics = analytics ?: return
         val params = Bundle()
         val count = minOf(keys.size, values.size)
@@ -77,23 +71,21 @@ object ZedraFirebase {
 
     @JvmStatic
     fun setUserId(userId: String) {
-        if (!collectionEnabled) return
         analytics?.setUserId(userId)
         crashlyticsOrNull()?.setUserId(userId)
     }
 
     @JvmStatic
     fun setCustomKey(key: String, value: String) {
-        if (!collectionEnabled || key.isEmpty()) return
+        if (key.isEmpty()) return
         crashlyticsOrNull()?.setCustomKey(key, value)
     }
 
     @JvmStatic
     fun setCollectionEnabled(enabled: Boolean) {
-        collectionEnabled = enabled && !BuildConfig.DEBUG
+        val collectionEnabled = enabled && !BuildConfig.DEBUG
         analytics?.setAnalyticsCollectionEnabled(collectionEnabled)
-        crashlyticsOrNull(ignoreCollection = true)
-            ?.setCrashlyticsCollectionEnabled(collectionEnabled)
+        crashlyticsOrNull()?.setCrashlyticsCollectionEnabled(collectionEnabled)
     }
 
     private fun initializeFirebaseApp(context: Context): FirebaseApp? {
@@ -105,9 +97,8 @@ object ZedraFirebase {
         }
     }
 
-    private fun crashlyticsOrNull(ignoreCollection: Boolean = false): FirebaseCrashlytics? {
-        if (!didInitialize && !ignoreCollection) return null
-        if (!collectionEnabled && !ignoreCollection) return null
+    private fun crashlyticsOrNull(): FirebaseCrashlytics? {
+        if (!didInitialize) return null
         return try {
             FirebaseCrashlytics.getInstance()
         } catch (error: IllegalStateException) {

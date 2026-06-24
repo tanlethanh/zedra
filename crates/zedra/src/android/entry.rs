@@ -39,12 +39,14 @@ pub extern "system" fn Java_dev_zedra_app_MainActivity_zedraLaunchGpui(
 ) {
     super::jni::init_logging();
     crate::telemetry::init();
-    install_panic_hook();
 
     platform_bridge::set_bridge(AndroidBridge);
 
     // Apply the persisted telemetry opt-out before the first AppOpen event.
     telemetry::apply_persisted_optout();
+
+    // Install the panic hook only after the shared telemetry gate is final.
+    install_panic_hook();
 
     tracing::info!("Zedra Android: creating GPUI application with AndroidPlatform");
 

@@ -110,7 +110,10 @@ func ios_set_keyboard_accessory_theme(_ isDark: Bool) {
 #if !ZEDRA_NO_TELEMETRY
 @_cdecl("zedra_firebase_initialize")
 func zedra_firebase_initialize_bridge() {
-    _ = ZedraFirebase.configureIfAvailable()
+    guard ZedraFirebase.configureIfAvailable() else { return }
+    // Keep collection disabled until Rust applies the persisted preference.
+    Analytics.setAnalyticsCollectionEnabled(false)
+    Crashlytics.crashlytics().setCrashlyticsCollectionEnabled(false)
 }
 #endif
 
