@@ -8,14 +8,12 @@
 ///   5. gpui_ios_request_frame()      — called each frame by CADisplayLink
 use std::cell::RefCell;
 use std::rc::Rc;
-use std::sync::Arc;
 
 use gpui::*;
 use gpui_ios::IosPlatform;
 
 use crate::{
-    ZedraAssets, app, install_panic_hook, native_presentation, platform_bridge,
-    sheet_host_view::SheetHostView,
+    app, install_panic_hook, native_presentation, platform_bridge, sheet_host_view::SheetHostView,
 };
 
 thread_local! {
@@ -179,17 +177,10 @@ pub extern "C" fn zedra_launch_gpui() {
     crate::telemetry::init();
     install_panic_hook();
 
-    platform_bridge::set_bridge(super::bridge::IosBridge);
-
     tracing::info!("Zedra iOS: Creating GPUI application with IosPlatform");
 
     let platform: Rc<dyn Platform> = Rc::new(IosPlatform::new());
-
-    let app_cell = App::new_app(
-        platform.clone(),
-        Arc::new(ZedraAssets),
-        Arc::new(http_client::BlockedHttpClient),
-    );
+    let app_cell = app::init_platform_app(platform.clone(), super::bridge::IosBridge);
 
     // Register the finish-launching callback via platform.run().
     // On iOS this does NOT block — it stores the callback in the FFI layer.

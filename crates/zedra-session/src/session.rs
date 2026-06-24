@@ -12,8 +12,7 @@ use zedra_rpc::proto::{
 
 use crate::RemoteTerminal;
 use crate::{
-    ConnectEvent, Connector, ReconnectReason, SessionHandle, SessionState, session_runtime,
-    signer::ClientSigner,
+    ConnectEvent, Connector, ReconnectReason, SessionHandle, SessionState, signer::ClientSigner,
 };
 
 const AUTO_RECONNECT_MAX_ATTEMPTS: u32 = 3;
@@ -37,11 +36,15 @@ pub struct Session {
     /// `connect()` awaits the previous loop's exit before running so old/new
     /// loops never race on the same `event_tx` or `SessionHandle`.
     connect_task: Arc<Mutex<Option<JoinHandle<()>>>>,
+    /// Runtime handle for the detached connect loop. `Session` owns no runtime;
+    /// the caller supplies one (keeps this crate a pure tokio-backed library).
+    runtime: tokio::runtime::Handle,
 }
 
 impl Session {
-    pub fn new() -> Self {
+    pub fn new(runtime: tokio::runtime::Handle) -> Self {
         let handle = SessionHandle::new();
+        handle.set_runtime(runtime.clone());
         let state = SessionState::new();
         let (event_tx, event_rx) = mpsc::channel(64);
         let abort_signal = Arc::new(Mutex::new(CancellationToken::new()));
@@ -59,6 +62,7 @@ impl Session {
             host_event_tx,
             host_info_tx,
             connect_task: Arc::new(Mutex::new(None)),
+            runtime,
         }
     }
 
@@ -128,7 +132,7 @@ impl Session {
         // writing to the same `event_tx`/`SessionHandle` simultaneously.
         let previous_task = self.connect_task.lock().unwrap().take();
         let task_slot = self.connect_task.clone();
-        let new_task = session_runtime().spawn(async move {
+        let new_task = self.runtime.spawn(async move {
             if let Some(prev) = previous_task {
                 let _ = prev.await;
             }
@@ -199,8 +203,9 @@ impl Session {
                             let subscribe_closed = closed_notify.clone();
                             let subscribe_events = host_event_tx.clone();
 
-                            // Subscribe to host events and and broadcast them via host_event_tx.
-                            session_runtime().spawn(async move {
+                            // Broadcast host events via host_event_tx. Bare spawn:
+                            // already inside the connect-loop task's runtime.
+                            tokio::spawn(async move {
                                 let mut host_events = match subscribe_client
                                     .server_streaming(SubscribeReq {}, 32)
                                     .await
@@ -246,7 +251,7 @@ impl Session {
                             let subscribe_closed = closed_notify.clone();
                             let subscribe_info = host_info_tx.clone();
 
-                            session_runtime().spawn(async move {
+                            tokio::spawn(async move {
                                 let mut snapshots = match subscribe_client
                                     .server_streaming(SubscribeHostInfoReq {}, 4)
                                     .await
@@ -381,7 +386,10 @@ impl Session {
                     handle.add_terminal(terminal.clone());
                     terminal
                 };
-                if let Err(e) = terminal.attach_remote(client).await {
+                if let Err(e) = terminal
+                    .attach_remote(client, &tokio::runtime::Handle::current())
+                    .await
+                {
                     warn!(
                         "Failed to attach host-created terminal {}: {e}",
                         terminal.id()
@@ -420,19 +428,13 @@ impl Session {
     }
 }
 
-impl Default for Session {
-    fn default() -> Self {
-        Self::new()
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
 
-    #[test]
-    fn request_reconnect_without_active_connection_does_not_leave_pending_reason() {
-        let session = Session::new();
+    #[tokio::test]
+    async fn request_reconnect_without_active_connection_does_not_leave_pending_reason() {
+        let session = Session::new(tokio::runtime::Handle::current());
 
         session.request_reconnect(ReconnectReason::AppForegrounded);
 
@@ -441,7 +443,7 @@ mod tests {
 
     #[tokio::test]
     async fn subscribe_host_events_fans_out_to_multiple_receivers() {
-        let session = Session::new();
+        let session = Session::new(tokio::runtime::Handle::current());
         let mut rx1 = session.subscribe_host_events();
         let mut rx2 = session.subscribe_host_events();
 
@@ -453,7 +455,7 @@ mod tests {
 
     #[tokio::test]
     async fn subscribe_host_info_fans_out_to_multiple_receivers() {
-        let session = Session::new();
+        let session = Session::new(tokio::runtime::Handle::current());
         let mut rx1 = session.subscribe_host_info();
         let mut rx2 = session.subscribe_host_info();
 

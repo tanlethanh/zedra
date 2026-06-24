@@ -1,4 +1,5 @@
 use gpui::*;
+use gpui_tokio::Tokio;
 use std::{collections::HashSet, f32::consts::TAU, time::Duration};
 use tracing::*;
 
@@ -144,7 +145,8 @@ impl DocsTree {
         cx.notify();
 
         cx.spawn(async move |this, cx| {
-            let result = request_docs_tree_page(handle, 0, true, None).await;
+            let result =
+                Tokio::spawn_result(cx, request_docs_tree_page(handle, 0, true, None)).await;
             let _ = this.update(cx, |this, cx| {
                 if this.build_epoch != epoch {
                     return;
@@ -199,7 +201,11 @@ impl DocsTree {
         cx.notify();
 
         cx.spawn(async move |this, cx| {
-            let result = request_docs_tree_page(handle, offset, false, Some(snapshot_id)).await;
+            let result = Tokio::spawn_result(
+                cx,
+                request_docs_tree_page(handle, offset, false, Some(snapshot_id)),
+            )
+            .await;
             let _ = this.update(cx, |this, cx| {
                 if this.build_epoch != epoch {
                     return;
@@ -660,32 +666,27 @@ impl Render for DocsTree {
     }
 }
 
+/// Uses `tokio::time`, so must be polled on Tokio (via `Tokio::spawn_result`).
 async fn request_docs_tree_page(
     handle: SessionHandle,
     offset: u32,
     rebuild: bool,
     snapshot_id: Option<String>,
 ) -> anyhow::Result<FsDocsTreeResult> {
-    let (tx, rx) = futures::channel::oneshot::channel();
-    zedra_session::session_runtime().spawn(async move {
-        let result = tokio::time::timeout(
-            DOCS_TREE_BUILD_TIMEOUT,
-            handle.fs_docs_tree(
-                DOCS_TREE_ROOT_PATH,
-                offset,
-                FS_DOCS_TREE_DEFAULT_LIMIT,
-                rebuild,
-                snapshot_id,
-            ),
-        )
-        .await;
-        let _ = tx.send(result);
-    });
-
-    match rx.await {
-        Ok(Ok(result)) => result,
-        Ok(Err(_)) => Err(anyhow::anyhow!("docs tree request timed out")),
-        Err(_) => Err(anyhow::anyhow!("docs tree request task dropped")),
+    match tokio::time::timeout(
+        DOCS_TREE_BUILD_TIMEOUT,
+        handle.fs_docs_tree(
+            DOCS_TREE_ROOT_PATH,
+            offset,
+            FS_DOCS_TREE_DEFAULT_LIMIT,
+            rebuild,
+            snapshot_id,
+        ),
+    )
+    .await
+    {
+        Ok(result) => result,
+        Err(_) => Err(anyhow::anyhow!("docs tree request timed out")),
     }
 }
 
@@ -1028,14 +1029,9 @@ mod tests {
         );
     }
 
-    #[test]
-    fn docs_tree_request_helper_does_not_require_caller_tokio_runtime() {
-        let result = futures::executor::block_on(request_docs_tree_page(
-            SessionHandle::new(),
-            0,
-            true,
-            None,
-        ));
+    #[tokio::test]
+    async fn docs_tree_request_helper_errors_when_not_connected() {
+        let result = request_docs_tree_page(SessionHandle::new(), 0, true, None).await;
 
         assert!(result.unwrap_err().to_string().contains("not connected"));
     }

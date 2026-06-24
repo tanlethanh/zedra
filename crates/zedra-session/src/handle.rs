@@ -37,6 +37,9 @@ struct SessionHandleInner {
     docs_tree_rpc_supported: AtomicBool,
     fs_search_rpc_supported: AtomicBool,
     set_app_state_rpc_supported: AtomicBool,
+    /// Runtime the terminal pump tasks spawn onto. Set by `Session::new` so
+    /// `attach_remote` works even when a method is awaited from the GPUI thread.
+    runtime: Mutex<Option<tokio::runtime::Handle>>,
 }
 
 impl Drop for SessionHandleInner {
@@ -74,7 +77,23 @@ impl SessionHandle {
             docs_tree_rpc_supported: AtomicBool::new(true),
             fs_search_rpc_supported: AtomicBool::new(true),
             set_app_state_rpc_supported: AtomicBool::new(true),
+            runtime: Mutex::new(None),
         }))
+    }
+
+    pub fn set_runtime(&self, runtime: tokio::runtime::Handle) {
+        *self.0.runtime.lock().unwrap() = Some(runtime);
+    }
+
+    /// Runtime for terminal pump tasks. Errors if the handle was built outside
+    /// `Session::new` (e.g. a bare test handle) and never given a runtime.
+    fn runtime(&self) -> Result<tokio::runtime::Handle> {
+        self.0
+            .runtime
+            .lock()
+            .ok()
+            .and_then(|g| g.clone())
+            .ok_or_else(|| anyhow::anyhow!("session handle has no runtime"))
     }
 
     // ─── Credentials ─────────────────────────────────────────────────────────
@@ -652,7 +671,11 @@ impl SessionHandle {
         }
 
         let terminal = RemoteTerminal::new(result.id.clone());
-        if terminal.attach_remote(&client).await.is_ok() {
+        if terminal
+            .attach_remote(&client, &self.runtime()?)
+            .await
+            .is_ok()
+        {
             self.add_terminal(terminal);
             tracing::info!("Terminal created: {}", result.id);
             Ok(result.id)
@@ -776,7 +799,11 @@ impl SessionHandle {
         }
 
         let terminal = RemoteTerminal::new(result.terminal_id.clone());
-        if terminal.attach_remote(&client).await.is_ok() {
+        if terminal
+            .attach_remote(&client, &self.runtime()?)
+            .await
+            .is_ok()
+        {
             self.add_terminal(terminal);
             tracing::info!("Agent session resumed in terminal: {}", result.terminal_id);
             Ok(result.terminal_id)

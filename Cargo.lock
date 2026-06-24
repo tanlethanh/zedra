@@ -3071,6 +3071,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "gpui_tokio"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "gpui",
+ "tokio",
+ "util",
+]
+
+[[package]]
 name = "gpui_util"
 version = "0.1.0"
 dependencies = [
@@ -10095,6 +10105,7 @@ dependencies = [
  "gpui",
  "gpui_android",
  "gpui_ios",
+ "gpui_tokio",
  "gpui_wgpu",
  "http_client",
  "iroh",

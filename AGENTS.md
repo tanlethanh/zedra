@@ -117,6 +117,6 @@ Mobile remote editor for iOS and Android. Primary platform is iOS (`gpui_ios` + 
 - GPUI scroll containers need an explicit `.id(...)`. In nested flex layouts, also constrain the full parent chain with `size_full()` and `min_h_0()` or scrolling can silently fail.
 - In GPUI `flex_col()` children, avoid `w_full()` for width fill; let stretch work with `min_w_0()`. For right-aligned row actions, make the left text column `flex_1()` and the action `flex_none()`.
 - GPUI text wrapping requires definite width constraints. Use `.w(px(width))` not `.max_w(px(width))` for text containers or text wraps at viewport width.
-- Prefer `cx.spawn(...)` for UI-thread async work and `session_runtime().spawn(...)` for Tokio session or network work when `cx` is unavailable.
+- In `cx.spawn`, host RPC calls (`SessionHandle` methods, incl. `tokio::join!`) `.await` directly — irpc oneshots, no reactor on the GPUI thread. Only reactor-driving futures crash there (`tokio::time`, iroh I/O, Delta HTTP); wrap those in `Tokio::spawn_result(cx, fut).await` (`use gpui_tokio::Tokio;`), or `Tokio::handle(cx).spawn(...)` for fire-and-forget / background-surviving tasks. See `docs/CONVENTIONS.md` § Async Runtime Selection.
 - Session-to-UI flow is `Session / SessionHandle -> ConnectEvent -> SessionState -> WorkspaceState -> Views`. Preserve that layering.
 - New `extern "C"` Rust→Swift call: add a weak stub in `crates/zedra/src/ios_stub.c` matching the function signature or the iOS staticlib link will fail with undefined symbol.

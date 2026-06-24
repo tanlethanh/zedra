@@ -4,6 +4,7 @@ use std::time::{Duration, Instant};
 
 use anyhow::{Result as AnyhowResult, anyhow};
 use gpui::{prelude::FluentBuilder as _, *};
+use gpui_tokio::Tokio;
 use tokio::sync::{broadcast, mpsc};
 use tracing::*;
 use uuid::Uuid;
@@ -709,7 +710,7 @@ impl Workspace {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> Self {
-        let session = Session::new();
+        let session = Session::new(Tokio::handle(cx));
         let session_state = cx.new(|_cx| session.state().clone());
         let terminal_state = cx.new(|_| TerminalState::new());
 
@@ -901,16 +902,15 @@ impl Workspace {
 
                         match foreground_resume_action(&phase) {
                             ForegroundResumeAction::ProbeLiveness => {
-                                // probe_liveness uses tokio timers, so it must run on the
-                                // Tokio runtime, not the GPUI executor this task lives on.
-                                let probe = zedra_session::session_runtime().spawn(async move {
+                                // probe_liveness uses tokio timers — must run on Tokio.
+                                let probe = Tokio::spawn(cx, async move {
                                     handle.probe_liveness(FOREGROUND_LIVENESS_TIMEOUT).await
                                 });
                                 let result = match probe.await {
                                     Ok(result) => result,
-                                    Err(join_error) => {
-                                        Err(anyhow::anyhow!("liveness probe task failed: {join_error}"))
-                                    }
+                                    Err(join_error) => Err(anyhow::anyhow!(
+                                        "liveness probe task failed: {join_error}"
+                                    )),
                                 };
                                 match result {
                                     Ok(rtt) => {
@@ -963,13 +963,12 @@ impl Workspace {
             }
         });
 
-        // Notify host when app foreground state changes so it can switch
-        // between RPC-only delivery and Delta push notifications.
-        // Run on Tokio, not GPUI: the GPUI executor pauses when the app backgrounds,
-        // which is exactly when we need this listener to fire and call notify_app_state.
+        // Notify host on foreground changes (toggles RPC-only vs Delta push).
+        // Must run on the bare Tokio handle, not `Tokio::spawn`: the GPUI executor
+        // pauses on background — exactly when this listener needs to fire.
         let foreground_handle = session.handle().clone();
         let mut foreground_rx = platform_bridge::subscribe_foreground_state();
-        let foreground_state_listener = zedra_session::session_runtime().spawn(async move {
+        let foreground_state_listener = Tokio::handle(cx).spawn(async move {
             // Seed the host with the current app state so a workspace that
             // starts while already backgrounded does not stay pinned to the
             // default foreground=true state.
@@ -1299,11 +1298,10 @@ impl Workspace {
         let host_pubkey = host_pubkey;
 
         cx.spawn(async move |workspace, cx| {
-            let result = crate::delta::offload(crate::delta::register_paired_host_node(
-                snapshot.clone(),
-                host_pubkey,
-                metadata,
-            ))
+            let result = Tokio::spawn_result(
+                cx,
+                crate::delta::register_paired_host_node(snapshot.clone(), host_pubkey, metadata),
+            )
             .await;
             match result {
                 Ok((Some(result), next)) => {
@@ -2125,7 +2123,7 @@ impl Workspace {
         &mut self,
         action: &GitShowItemActions,
         _window: &mut Window,
-        _cx: &mut Context<Self>,
+        cx: &mut Context<Self>,
     ) {
         info!("handle GitItemLongPress from workspace");
         let path = action.path.clone();
@@ -2136,6 +2134,8 @@ impl Workspace {
         };
 
         let handle = self.session.handle().clone();
+        // 'static platform callback has no executor; capture the runtime handle.
+        let runtime = Tokio::handle(cx);
         let display_path = path.clone();
 
         platform_bridge::show_selection(
@@ -2145,32 +2145,28 @@ impl Workspace {
                 AlertButton::default(main_action_label),
                 AlertButton::cancel("Cancel"),
             ],
-            move |selection| {
-                match selection {
-                    Some(0) => {
-                        let h = handle.clone();
-                        let p = path.clone();
-                        match section {
-                            GitFileSection::Staged => {
-                                // TODO: use cx.spawn
-                                zedra_session::session_runtime().spawn(async move {
-                                    if let Err(e) = h.git_unstage(&[p]).await {
-                                        tracing::error!("git unstage failed: {}", e);
-                                    }
-                                });
-                            }
-                            _ => {
-                                // TODO: use cx.spawn
-                                zedra_session::session_runtime().spawn(async move {
-                                    if let Err(e) = h.git_stage(&[p]).await {
-                                        tracing::error!("git stage failed: {}", e);
-                                    }
-                                });
-                            }
+            move |selection| match selection {
+                Some(0) => {
+                    let h = handle.clone();
+                    let p = path.clone();
+                    match section {
+                        GitFileSection::Staged => {
+                            runtime.spawn(async move {
+                                if let Err(e) = h.git_unstage(&[p]).await {
+                                    tracing::error!("git unstage failed: {}", e);
+                                }
+                            });
+                        }
+                        _ => {
+                            runtime.spawn(async move {
+                                if let Err(e) = h.git_stage(&[p]).await {
+                                    tracing::error!("git stage failed: {}", e);
+                                }
+                            });
                         }
                     }
-                    _ => {}
                 }
+                _ => {}
             },
         );
     }
@@ -2179,7 +2175,7 @@ impl Workspace {
         &mut self,
         action: &GitCommit,
         window: &mut Window,
-        _cx: &mut Context<Self>,
+        cx: &mut Context<Self>,
     ) {
         info!("handle GitCommit from workspace");
         let message = action.message.trim().to_string();
@@ -2196,6 +2192,8 @@ impl Workspace {
         let confirm_message = format!("Commit {file_label}?\n\n{message}");
 
         let handle = self.session.handle().clone();
+        // 'static platform callback has no executor; capture the runtime handle.
+        let runtime = Tokio::handle(cx);
         window.hide_soft_keyboard();
         platform_bridge::show_alert(
             "",
@@ -2209,8 +2207,7 @@ impl Workspace {
                     let h = handle.clone();
                     let m = message.clone();
                     let p = paths.clone();
-                    // TODO: use cx.spawn
-                    zedra_session::session_runtime().spawn(async move {
+                    runtime.spawn(async move {
                         match h.git_commit(&m, &p).await {
                             Ok(_) => {
                                 tracing::info!("git commit succeeded");

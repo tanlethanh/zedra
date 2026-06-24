@@ -20,13 +20,15 @@ Client-side connection and reconnect layer for mobile. Owns endpoint binding, au
 
 ## Runtime Rules
 
-- Reusable session-layer code should use `session_runtime()` instead of bare `tokio::spawn()`, unless it is already guaranteed to run inside the session runtime.
+- This crate owns no Tokio runtime — it is a pure tokio-backed library; every `async fn` assumes a runtime, and bare `tokio::spawn` needs an ambient one. The caller supplies it via `Session::new(runtime: tokio::runtime::Handle)` (app: `gpui_tokio::Tokio::handle(cx)`; host/tests: `Handle::current()`).
+- Bare `tokio::spawn()` only when already on a runtime-polled future (e.g. the `connect()` loop). Use the stored `Session::runtime` handle only at sync foreign-thread entry points that start a detached task (the connect loop).
 - `Session::connect()` intentionally stores signer, endpoint, ticket, session id, and token on `SessionHandle` before the async loop starts. Keep those credentials synchronized if connection flow changes.
 - Host event subscription is a sidecar task after successful connection. Changes there must respect abort signals and `closed_notify`.
 
 ## Terminal Rules
 
 - `RemoteTerminal` owns `last_seq`, attach state, and the bridging tasks for terminal I/O.
+- `attach_remote` takes an explicit `tokio::runtime::Handle` for its pump tasks — never bare `tokio::spawn`. It is awaited from the GPUI thread (terminal create / agent resume) where no ambient runtime exists; `SessionHandle` carries the handle (set in `Session::new`).
 - Preserve replay semantics: `TermAttachReq.last_seq` is how reconnect resume works.
 - On reattach, abort and replace prior input/output tasks rather than stacking them.
 - If terminal lifecycle changes, keep `SessionHandle`, `RemoteTerminal`, and the host-side `TermAttach` flow consistent.
