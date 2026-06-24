@@ -901,7 +901,18 @@ impl Workspace {
 
                         match foreground_resume_action(&phase) {
                             ForegroundResumeAction::ProbeLiveness => {
-                                match handle.probe_liveness(FOREGROUND_LIVENESS_TIMEOUT).await {
+                                // probe_liveness uses tokio timers, so it must run on the
+                                // Tokio runtime, not the GPUI executor this task lives on.
+                                let probe = zedra_session::session_runtime().spawn(async move {
+                                    handle.probe_liveness(FOREGROUND_LIVENESS_TIMEOUT).await
+                                });
+                                let result = match probe.await {
+                                    Ok(result) => result,
+                                    Err(join_error) => {
+                                        Err(anyhow::anyhow!("liveness probe task failed: {join_error}"))
+                                    }
+                                };
+                                match result {
                                     Ok(rtt) => {
                                         info!(
                                             rtt_ms = rtt.as_millis() as u64,
