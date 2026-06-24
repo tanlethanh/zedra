@@ -35,7 +35,7 @@ The protocol layer includes:
 
 - Network transport: iroh QUIC.
 - RPC framing: `irpc` over iroh streams.
-- ALPN: `zedra/rpc/5` (see `ZEDRA_ALPN` in `crates/zedra-rpc/src/proto.rs`). Bump the trailing integer on any change that alters how existing bytes decode (see §2.4).
+- ALPN: `zedra/rpc/4` (see `ZEDRA_ALPN` in `crates/zedra-rpc/src/proto.rs`). Bump the trailing integer on any change that alters how existing bytes decode (see §2.4).
 
 ### 2.2 Serialization
 
@@ -233,7 +233,7 @@ Result types that carry `error: Option<String>`:
 `FsListResult`, `FsSearchResult`, `FsReadResult`, `FsStatResult`, `SessionSwitchResult`, `TermCreateResult`,
 `GitStatusResult`, `GitDiffResult`, `GitLogResult`, `GitCommitResult`, `GitStageResult`,
 `GitUnstageResult`, `GitBranchesResult`, `AgentListResult`, `AgentSessionsResult`,
-`AgentResumeResult`, `LspDiagnosticsResult`, `WebFetchResult`, `WebTunnelOutput`.
+`AgentResumeResult`, `LspDiagnosticsResult`, `WebTunnelOutput`.
 
 Types that use non-string status fields or enum variants instead:
 `FsWriteResult` (`ok: bool`), `GitCheckoutResult` (`ok: bool`), `FsWatchResult`/`FsUnwatchResult` (enum),
@@ -286,7 +286,6 @@ Types that use non-string status fields or enum variants instead:
 
 ## 5.5 Web Tunnel
 
-- `WebFetch(WebFetchReq) -> WebFetchResult`
 - `WebConnect(WebConnectReq) <-> WebTunnelInput/WebTunnelOutput` (bidirectional)
 
 ### WebConnect conventions
@@ -297,15 +296,6 @@ Types that use non-string status fields or enum variants instead:
 - `WebTunnelInput.data` and `WebTunnelOutput.data` are raw byte chunks capped by `WEB_TUNNEL_MAX_CHUNK_BYTES`.
 - `close = true` half-closes or tears down that tunnel stream. `error = Some(msg)` means the stream failed and the receiver should close its local side.
 - The tunnel does not parse HTTP. HTTP, HTTPS, WebSocket upgrades, SSE, HMR, keep-alive, and backend calls are all just bytes after the SOCKS handshake.
-
-### WebFetch conventions
-
-- `WebFetch` is a one-shot helper and must not be used by the browser path.
-- The host only accepts `http://localhost`, `http://127.0.0.1`, and other loopback-address URLs. It rejects non-loopback hosts and non-HTTP schemes.
-- The host disables system proxy use for tunnel fetches so localhost requests are not leaked to proxy settings.
-- Redirects are returned to the app webview instead of followed host-side.
-- Request bodies are capped at `WEB_TUNNEL_MAX_REQUEST_BODY_BYTES`; response bodies are capped at `WEB_TUNNEL_MAX_RESPONSE_BODY_BYTES`.
-- Hop-by-hop headers such as `Connection`, `Transfer-Encoding`, `Host`, and `Content-Length` are not forwarded across the tunnel.
 
 ## 5.6 Terminals
 
@@ -630,9 +620,7 @@ Any protocol-layer change must include all applicable steps:
 
 ### 2026-06-19
 
-- Added `WebConnect(WebConnectReq) <-> WebTunnelInput/WebTunnelOutput` for the app WebView SOCKS tunnel. The browser path now streams raw TCP bytes to host loopback instead of replaying HTTP requests.
-- ALPN bumped to `zedra/rpc/5`.
-- Added `WebFetch(WebFetchReq) -> WebFetchResult` for the app web tunnel. The host fetches only HTTP loopback URLs, disables proxy use, and returns redirects instead of following them.
+- Added `WebConnect(WebConnectReq) <-> WebTunnelInput/WebTunnelOutput` for the app WebView SOCKS tunnel. The browser path streams raw TCP bytes to host loopback.
 - ALPN bumped to `zedra/rpc/4`.
 
 ### 2026-06-11

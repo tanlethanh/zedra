@@ -676,11 +676,6 @@ object NativePresentations {
     }
 
     @JvmStatic
-    fun closeWebView() = onUi {
-        closeWebViewNow()
-    }
-
-    @JvmStatic
     fun handleBackPressed(): Boolean {
         val webView = activeWebView ?: return false
         if (webView.canGoBack()) {

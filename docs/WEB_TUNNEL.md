@@ -96,8 +96,7 @@ Session layer:
 
 ## Implementation Notes
 
-- Add `WebConnect` to `zedra-rpc` as a bidirectional streaming RPC.
-- Keep `WebFetch` out of the browser path. It can remain a diagnostic helper, but it cannot support WebSocket/HMR/SSE semantics.
+- Add `WebConnect` to `zedra-rpc` as a bidirectional streaming RPC. The browser path is byte streams only; an HTTP-replay fetch cannot support WebSocket/HMR/SSE semantics.
 - Use byte frame structs such as `WebTunnelInput` and `WebTunnelOutput`, plus explicit connected/close/error signals so the app can send the correct SOCKS reply.
 - On the app, bridge the accepted SOCKS stream to the irpc channels with separate read and write tasks.
 - On the host, bridge the irpc channels to `tokio::net::TcpStream`.

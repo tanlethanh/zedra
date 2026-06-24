@@ -220,11 +220,6 @@ pub enum ZedraProto {
     #[rpc(tx = oneshot::Sender<ClearClientDeltaInfoResult>)]
     ClearClientDeltaInfo(ClearClientDeltaInfoReq),
 
-    /// Fetch one localhost HTTP resource on the host for the app web tunnel.
-    /// Kept at enum tail because protocol variants are append-only.
-    #[rpc(tx = oneshot::Sender<WebFetchResult>)]
-    WebFetch(WebFetchReq),
-
     /// Connect one app-local web proxy stream to a host-side loopback TCP port.
     /// Kept at enum tail because protocol variants are append-only.
     #[rpc(rx = mpsc::Receiver<WebTunnelInput>, tx = mpsc::Sender<WebTunnelOutput>)]
@@ -235,7 +230,7 @@ pub enum ZedraProto {
 // ALPN protocol identifier
 // ---------------------------------------------------------------------------
 
-pub const ZEDRA_ALPN: &[u8] = b"zedra/rpc/5";
+pub const ZEDRA_ALPN: &[u8] = b"zedra/rpc/4";
 
 /// Default page size for `FsList` requests (host uses this when `limit == 0`).
 pub const FS_LIST_DEFAULT_LIMIT: u32 = 50;
@@ -253,10 +248,6 @@ pub const FS_DOCS_TREE_MAX_LIMIT: u32 = 1000;
 pub const FS_DOCS_TREE_MAX_OFFSET: u32 = 5_000;
 /// Maximum filesystem entries visited while rebuilding one docs tree snapshot.
 pub const FS_DOCS_TREE_MAX_VISITED_ENTRIES: u32 = 10_000;
-/// Maximum request body forwarded through one web tunnel fetch.
-pub const WEB_TUNNEL_MAX_REQUEST_BODY_BYTES: usize = 4 * 1024 * 1024;
-/// Maximum response body forwarded through one web tunnel fetch.
-pub const WEB_TUNNEL_MAX_RESPONSE_BODY_BYTES: usize = 32 * 1024 * 1024;
 /// Maximum byte chunk forwarded through one web tunnel stream frame.
 pub const WEB_TUNNEL_MAX_CHUNK_BYTES: usize = 32 * 1024;
 
@@ -644,30 +635,6 @@ pub struct ClearClientDeltaInfoResult {}
 // ---------------------------------------------------------------------------
 // Web tunnel types
 // ---------------------------------------------------------------------------
-
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct WebHeader {
-    pub name: String,
-    pub value: String,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct WebFetchReq {
-    pub method: String,
-    pub url: String,
-    pub headers: Vec<WebHeader>,
-    #[serde(with = "serde_bytes")]
-    pub body: Vec<u8>,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct WebFetchResult {
-    pub status: u16,
-    pub headers: Vec<WebHeader>,
-    #[serde(with = "serde_bytes")]
-    pub body: Vec<u8>,
-    pub error: Option<String>,
-}
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct WebConnectReq {

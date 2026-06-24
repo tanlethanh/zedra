@@ -495,10 +495,6 @@ impl SessionHandle {
         }
     }
 
-    pub async fn web_fetch(&self, req: WebFetchReq) -> Result<WebFetchResult> {
-        Ok(self.call(req).await?)
-    }
-
     pub async fn web_connect(
         &self,
         req: WebConnectReq,
