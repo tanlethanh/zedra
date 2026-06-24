@@ -219,13 +219,18 @@ pub enum ZedraProto {
     /// Kept at enum tail because protocol variants are append-only.
     #[rpc(tx = oneshot::Sender<ClearClientDeltaInfoResult>)]
     ClearClientDeltaInfo(ClearClientDeltaInfoReq),
+
+    /// Connect one app-local web proxy stream to a host-side loopback TCP port.
+    /// Kept at enum tail because protocol variants are append-only.
+    #[rpc(rx = mpsc::Receiver<WebTunnelInput>, tx = mpsc::Sender<WebTunnelOutput>)]
+    WebConnect(WebConnectReq),
 }
 
 // ---------------------------------------------------------------------------
 // ALPN protocol identifier
 // ---------------------------------------------------------------------------
 
-pub const ZEDRA_ALPN: &[u8] = b"zedra/rpc/3";
+pub const ZEDRA_ALPN: &[u8] = b"zedra/rpc/4";
 
 /// Default page size for `FsList` requests (host uses this when `limit == 0`).
 pub const FS_LIST_DEFAULT_LIMIT: u32 = 50;
@@ -243,6 +248,8 @@ pub const FS_DOCS_TREE_MAX_LIMIT: u32 = 1000;
 pub const FS_DOCS_TREE_MAX_OFFSET: u32 = 5_000;
 /// Maximum filesystem entries visited while rebuilding one docs tree snapshot.
 pub const FS_DOCS_TREE_MAX_VISITED_ENTRIES: u32 = 10_000;
+/// Maximum byte chunk forwarded through one web tunnel stream frame.
+pub const WEB_TUNNEL_MAX_CHUNK_BYTES: usize = 32 * 1024;
 
 // ---------------------------------------------------------------------------
 // Serde helper for [u8; 64] (serde supports arrays only up to size 32 by default)
@@ -624,6 +631,32 @@ pub struct ClearClientDeltaInfoReq {}
 
 #[derive(Debug, Serialize, Deserialize)]
 pub struct ClearClientDeltaInfoResult {}
+
+// ---------------------------------------------------------------------------
+// Web tunnel types
+// ---------------------------------------------------------------------------
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct WebConnectReq {
+    pub host: String,
+    pub port: u16,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct WebTunnelInput {
+    #[serde(with = "serde_bytes")]
+    pub data: Vec<u8>,
+    pub close: bool,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct WebTunnelOutput {
+    #[serde(with = "serde_bytes")]
+    pub data: Vec<u8>,
+    pub connected: bool,
+    pub close: bool,
+    pub error: Option<String>,
+}
 
 /// A single fuzzy-search hit. `match_indices` are the host matcher's matched
 /// character positions into `rel_path`, so the client highlights exactly what

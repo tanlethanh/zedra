@@ -162,6 +162,11 @@ extern void ios_dismiss_custom_sheet(void);
 extern void ios_open_url(const char *url);
 
 /**
+ * Open a URL in a native in-app WKWebView.
+ */
+extern void ios_open_webview(const char *url, const char *title, const char *proxy_url);
+
+/**
  * Trigger a UIKit haptic feedback generator.
  * kind encoding matches HapticFeedback::to_i32().
  */
