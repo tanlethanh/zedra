@@ -8,6 +8,7 @@
   "scripts": {
     "format": "biome check --write packages/",
     "lint": "biome lint packages/",
-    "check": "biome ci packages/"
+    "check": "biome ci packages/",
+    "icons:gen": "bash scripts/generate-assets.sh"
   }
 }

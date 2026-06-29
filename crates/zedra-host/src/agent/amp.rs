@@ -1,8 +1,1 @@
-simple_actor!(
-    AmpActor,
-    "amp",
-    "Amp",
-    "AgentAmp",
-    ["amp"],
-    ["amp", "ampcode"]
-);
+simple_actor!(AmpActor, "amp", "Amp", "amp", ["amp"], ["amp", "ampcode"]);

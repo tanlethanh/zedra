@@ -416,7 +416,9 @@ pub trait AgentActor: Sync {
 
     fn display_name(&self) -> &'static str;
 
-    /// Native asset name used by the installed-agent launcher UI.
+    /// Icon slug: the bare `assets/icons/<slug>.svg` name, resolved identically
+    /// on every platform. Usually the agent slug, but a few differ for branding
+    /// (codex -> `openai`, copilot -> `githubcopilot`, hermes -> `hermesagent`).
     fn icon_name(&self) -> &'static str;
 
     /// Executables that can launch this actor, in preference order.

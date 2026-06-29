@@ -1,8 +1,1 @@
-simple_actor!(
-    GooseActor,
-    "goose",
-    "Goose",
-    "AgentGoose",
-    ["goose"],
-    ["goose"]
-);
+simple_actor!(GooseActor, "goose", "Goose", "goose", ["goose"], ["goose"]);

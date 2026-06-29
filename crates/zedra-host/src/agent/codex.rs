@@ -687,7 +687,7 @@ impl AgentActor for CodexActor {
     }
 
     fn icon_name(&self) -> &'static str {
-        "AgentCodex"
+        "openai"
     }
 
     fn programs(&self) -> &'static [&'static str] {

@@ -2,7 +2,7 @@ simple_actor!(
     OpenClawActor,
     "openclaw",
     "OpenClaw",
-    "AgentOpenClaw",
+    "openclaw",
     ["openclaw"],
     ["open-claw", "openclaw"]
 );

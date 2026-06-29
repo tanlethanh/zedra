@@ -27,6 +27,13 @@ repositories {
     mavenCentral()
 }
 
+// Classpath for the icon pipeline: Android Studio's own SVG -> VectorDrawable
+// engine (com.android.ide.common.vectordrawable.Svg2Vector), kept off the app
+// classpath. Pinned to the tools version that matches the AGP above.
+configurations {
+    iconConverter
+}
+
 def hasZedraReleaseSigning =
         project.hasProperty('ZEDRA_KEYSTORE') &&
         project.hasProperty('ZEDRA_KEYSTORE_ALIAS') &&
@@ -130,7 +137,9 @@ android {
                 kotlin.srcDirs += ['app/src/no-telemetry/kotlin']
             }
             resources.srcDirs = ['app/src/main/resources']
-            res.srcDirs = ['app/src/main/res']
+            // app/src/generated/res holds slug-named vector drawables produced by
+            // the `generateIconDrawables` task (gitignored; see AGENTS.md "Icon Assets").
+            res.srcDirs = ['app/src/main/res', 'app/src/generated/res']
             jniLibs.srcDirs = ['app/libs']
         }
     }
@@ -168,6 +177,9 @@ tasks.configureEach { task ->
 }
 
 dependencies {
+    // Build-time only: drives the icon SVG -> VectorDrawable conversion task.
+    iconConverter 'com.android.tools:sdk-common:31.13.2'
+
     implementation 'androidx.core:core-splashscreen:1.0.1'
     implementation 'androidx.appcompat:appcompat:1.6.1'
     implementation 'com.google.android.material:material:1.10.0'
@@ -226,7 +238,73 @@ def detectDeviceAbi() {
     return null
 }
 
+// Android resource names forbid hyphens, can't start with a digit, and can't be a
+// Java reserved word (e.g. the `package` icon) or aapt fails generating `R`. Prefix
+// every generated drawable with `ic_` so the name is always identifier-safe — the
+// idiomatic Android convention. NativePresentations.kt `drawableName` applies the
+// identical rule at runtime lookup.
+def androidDrawableName = { String slug -> "ic_${slug.replace('-', '_')}" }
+
+// Convert the single source-of-truth icon SVGs into slug-named VectorDrawables
+// with Android Studio's own Svg2Vector engine. It handles inherited fill/stroke
+// and basic shapes (circle/line/polyline) that lighter converters drop. Output
+// is gitignored; see AGENTS.md "Icon Assets".
+def generateIconDrawables = tasks.register('generateIconDrawables') {
+    def iconsDir = file('../crates/zedra/assets/icons')
+    def outDir = file('app/src/generated/res/drawable')
+    def converterCp = configurations.iconConverter
+    inputs.dir(iconsDir).withPathSensitivity(PathSensitivity.RELATIVE)
+    inputs.files(converterCp)
+    outputs.dir(outDir)
+    doLast {
+        def urls = converterCp.files.collect { it.toURI().toURL() } as URL[]
+        def loader = new URLClassLoader(urls, ClassLoader.getPlatformClassLoader())
+        def parse = loader.loadClass('com.android.ide.common.vectordrawable.Svg2Vector')
+                .getMethod('parseSvgToXml', java.nio.file.Path, OutputStream)
+
+        // Fail loudly on a broken source tree instead of wiping outputs and
+        // silently shipping no icons (runtime lookup would just resolve to 0).
+        if (!iconsDir.isDirectory()) {
+            throw new GradleException("generateIconDrawables: missing icon source dir ${iconsDir}")
+        }
+        def svgs = iconsDir.listFiles()?.findAll { it.name.endsWith('.svg') }?.sort()
+        if (!svgs) {
+            throw new GradleException("generateIconDrawables: no .svg files in ${iconsDir}")
+        }
+
+        outDir.mkdirs()
+        // Drop stale output so deleted icons don't linger as orphan drawables.
+        outDir.listFiles()?.findAll { it.name.endsWith('.xml') }?.each { it.delete() }
+
+        def tmp = File.createTempDir()
+        try {
+            svgs.each { svg ->
+                def slug = svg.name.substring(0, svg.name.length() - 4)
+                // `currentColor` is invalid in a VectorDrawable; bake a concrete color
+                // (drawables are tinted at runtime) so every path renders.
+                def pre = new File(tmp, svg.name)
+                pre.text = svg.text.replace('currentColor', '#000000')
+                def out = new ByteArrayOutputStream()
+                def warning = parse.invoke(null, pre.toPath(), out)
+                if (warning) {
+                    logger.warn("generateIconDrawables ${slug}: ${warning}")
+                }
+                // Empty output means the conversion failed — fail the build now
+                // instead of shipping a blank drawable that's invisible on device.
+                if (out.size() == 0) {
+                    throw new GradleException("generateIconDrawables: empty drawable for ${slug}.svg")
+                }
+                new File(outDir, "${androidDrawableName(slug)}.xml").bytes = out.toByteArray()
+            }
+        } finally {
+            tmp.deleteDir()
+        }
+    }
+}
+
 android.applicationVariants.configureEach { variant ->
+    variant.preBuildProvider.configure { it.dependsOn(generateIconDrawables) }
+
     def taskName = "buildRustLib${variant.name.capitalize()}"
     def rustTask = tasks.register(taskName, Exec) {
         workingDir '..'

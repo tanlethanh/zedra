@@ -3438,7 +3438,7 @@ mod tests {
         let button = add_to_chat_target_button(0, &target);
 
         assert_eq!(button.label, "codex");
-        assert_eq!(button.image_name.as_deref(), Some("AgentCodex"));
+        assert_eq!(button.image_name.as_deref(), Some("openai"));
     }
 
     #[::core::prelude::v1::test]

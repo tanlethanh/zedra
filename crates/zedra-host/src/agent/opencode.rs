@@ -663,7 +663,7 @@ impl AgentActor for OpenCodeActor {
     }
 
     fn icon_name(&self) -> &'static str {
-        "AgentOpenCode"
+        "opencode"
     }
 
     fn programs(&self) -> &'static [&'static str] {

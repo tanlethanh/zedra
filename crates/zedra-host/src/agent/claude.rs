@@ -1502,7 +1502,7 @@ impl AgentActor for ClaudeActor {
     }
 
     fn icon_name(&self) -> &'static str {
-        "AgentClaude"
+        "claude"
     }
 
     fn programs(&self) -> &'static [&'static str] {

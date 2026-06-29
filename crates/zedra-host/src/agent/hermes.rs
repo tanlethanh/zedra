@@ -625,7 +625,7 @@ impl AgentActor for HermesActor {
         "Hermes Agent"
     }
     fn icon_name(&self) -> &'static str {
-        "AgentHermes"
+        "hermesagent"
     }
     fn programs(&self) -> &'static [&'static str] {
         &["hermes", "hermes-agent"]

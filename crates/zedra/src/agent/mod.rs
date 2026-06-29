@@ -28,6 +28,12 @@ fn icon_for_slug(slug: &str) -> String {
     }
 }
 
+/// Strip an `icons/<slug>.svg` bundle path down to its bare `<slug>` — the name
+/// the native asset pipeline keys on, identical to the GPUI-rendered slug.
+fn icon_slug(path: &str) -> Option<&str> {
+    path.strip_prefix("icons/")?.strip_suffix(".svg")
+}
+
 /// Human-readable name for a slug the app has no specialized adapter for.
 /// Prefer the host's `AgentSummary.display_name` where one is available; this
 /// is only a local fallback (terminal titles, pending labels).
@@ -123,11 +129,12 @@ pub trait AgentAdapter: Send + Sync {
         "icons/terminal.svg"
     }
 
-    /// Native picker asset name (iOS image set), or `None` to present without an
-    /// icon. UIKit has no runtime fallback for a missing image set, so unknown
-    /// agents return `None` rather than a guessed name.
+    /// Native (iOS/Android) picker asset = the icon slug, so the native bridge
+    /// resolves the same `assets/icons/<slug>.svg` GPUI renders. Derived from
+    /// `icon_path` so a branding override (Codex -> openai) carries to native;
+    /// a path outside `icons/<slug>.svg` yields `None` (label-only).
     fn native_image_name(&self) -> Option<&str> {
-        None
+        icon_slug(self.icon_path())
     }
 
     fn should_notify(&self, _event_name: &str) -> bool {
@@ -286,10 +293,6 @@ impl AgentAdapter for ClaudeAdapter {
         "icons/claude.svg"
     }
 
-    fn native_image_name(&self) -> Option<&str> {
-        Some("AgentClaude")
-    }
-
     fn should_notify(&self, event_name: &str) -> bool {
         matches!(event_name, "Stop" | "PermissionRequest")
     }
@@ -340,10 +343,6 @@ impl AgentAdapter for CodexAdapter {
         "icons/openai.svg"
     }
 
-    fn native_image_name(&self) -> Option<&str> {
-        Some("AgentCodex")
-    }
-
     fn should_notify(&self, event_name: &str) -> bool {
         matches!(event_name, "Stop" | "PermissionRequest")
     }
@@ -363,10 +362,6 @@ impl AgentAdapter for OpenCodeAdapter {
 
     fn icon_path(&self) -> &str {
         "icons/opencode.svg"
-    }
-
-    fn native_image_name(&self) -> Option<&str> {
-        Some("AgentOpenCode")
     }
 
     fn should_notify(&self, event_name: &str) -> bool {
@@ -390,10 +385,6 @@ impl AgentAdapter for PiAdapter {
         "icons/pi.svg"
     }
 
-    fn native_image_name(&self) -> Option<&str> {
-        Some("AgentPi")
-    }
-
     fn should_notify(&self, event_name: &str) -> bool {
         event_name == "Stop"
     }
@@ -413,10 +404,6 @@ impl AgentAdapter for HermesAdapter {
 
     fn icon_path(&self) -> &str {
         "icons/hermesagent.svg"
-    }
-
-    fn native_image_name(&self) -> Option<&str> {
-        Some("AgentHermes")
     }
 
     fn should_notify(&self, event_name: &str) -> bool {
@@ -683,19 +670,17 @@ mod tests {
     }
 
     #[test]
-    fn specialized_adapters_present_native_icons() {
-        assert_eq!(
-            adapter("claude").target_presentation("claude"),
-            TargetPresentation {
-                label: "claude".into(),
-                image_name: Some("AgentClaude".into()),
-            }
-        );
+    fn native_image_name_is_the_icon_slug() {
+        // Native asset name is the bare icon slug, so the native bridge resolves
+        // the same `assets/icons/<slug>.svg` that GPUI renders.
+        assert_eq!(adapter("claude").native_image_name(), Some("claude"));
+        // Branding override on icon_path carries through to native too.
+        assert_eq!(adapter("codex").native_image_name(), Some("openai"));
         assert_eq!(
             adapter("codex").target_presentation("codex"),
             TargetPresentation {
                 label: "codex".into(),
-                image_name: Some("AgentCodex".into()),
+                image_name: Some("openai".into()),
             }
         );
     }

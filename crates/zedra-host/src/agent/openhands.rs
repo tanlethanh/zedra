@@ -2,7 +2,7 @@ simple_actor!(
     OpenHandsActor,
     "openhands",
     "OpenHands",
-    "AgentOpenHands",
+    "openhands",
     ["openhands"],
     ["open-hands", "openhands"]
 );

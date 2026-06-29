@@ -48,7 +48,7 @@ simple_actor!(
     AmpActor,           // actor type name
     "amp",              // slug: stable identity, sent over RPC
     "Amp",              // display name
-    "AgentAmp",         // native icon asset (iOS image set name)
+    "amp",              // icon slug: assets/icons/<slug>.svg, same name on every platform
     ["amp"],            // programs: executables that launch it, preference order
     ["amp", "ampcode"]  // detect aliases: substrings matched in the foreground command
 );
@@ -108,9 +108,8 @@ Add a specialized `AgentAdapter` only for custom branding or chat behavior, then
 register it in the `adapter()` match. Override the relevant methods:
 
 - `icon_path` — bundled SVG when it differs from `<slug>.svg` (Codex uses
-  `openai.svg`)
-- `native_image_name` — iOS image set name for the native picker; `None` shows
-  no icon
+  `openai.svg`). `native_image_name` derives from `icon_path`, so a branding
+  override carries to the native picker automatically — no second override.
 - `should_notify` — which provider hook event names raise a notification
 - `add_to_chat` / `ask` — custom paste format (Claude uses `@file#Lstart-Lend`
   mentions instead of the generic fenced context)
@@ -120,10 +119,14 @@ degrade to an unsupported feature, never require a new protocol variant.
 
 ## Icon resolution
 
-The terminal/card icon is an embedded SVG. `AssetSource::load` returns nothing
-for a missing file and GPUI renders blank — there is no automatic fallback, so
-resolution checks existence at the call site rather than chaining a resolution
-order:
+One icon name on every platform: the bare `assets/icons/<slug>.svg` slug. GPUI
+renders the embedded SVG; iOS/Android resolve the generated imageset/drawable of
+the same name (see AGENTS.md "Icon Assets"). The icon slug is usually the agent
+slug, but branding diverges it for a few (`codex` -> `openai`, `copilot` ->
+`githubcopilot`, `hermes` -> `hermesagent`).
+
+`AssetSource::load` returns nothing for a missing SVG and GPUI renders blank —
+no automatic fallback — so the GPUI path checks existence at the call site:
 
 ```
 icon(slug):
@@ -137,17 +140,19 @@ is free. Branding overrides must be struct-based: the bundle ships both
 `codex.svg` and `openai.svg`, so the slug default would pick the wrong one —
 Codex keeps a small adapter purely to override `icon_path()`.
 
-The host `AgentSummary.icon_name` hint is a **native** asset name (`Agent<Pascal>`)
-for the native picker only, not the SVG terminal/card icon. Native picker images
-have no runtime fallback in UIKit, so the picker shows a label-only button when
-the per-agent native image is missing.
+The host `AgentActor::icon_name` / `AgentSummary.icon_name` is this same icon
+slug, used as the native picker asset name. `AgentAdapter::native_image_name`
+strips `icon_path` to the same slug, so host hint and app derivation always
+agree.
 
 ## Assets
 
-- App SVG: `crates/zedra/assets/icons/<slug>.svg` (lowercase slug). Required for
-  the generic adapter to show a real icon.
-- iOS native: `ios/Zedra/Assets.xcassets/Agent<Name>.imageset`. The name must
-  match the host actor's `icon_name` and the app adapter's `native_image_name`.
+- Author one SVG: `crates/zedra/assets/icons/<slug>.svg` (lowercase slug). It is
+  the single committed source on every platform; required for the generic
+  adapter to show a real icon.
+- iOS imagesets and Android drawables are **generated** from it at build time
+  (gitignored) — do not hand-add `Agent*.imageset` or `agent_*.xml`. Run
+  `scripts/generate-assets.sh` (or `bun run icons:gen`) for the iOS/GPUI preview.
 
 ## RPC contract
 

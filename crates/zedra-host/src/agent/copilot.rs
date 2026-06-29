@@ -2,7 +2,7 @@ simple_actor!(
     CopilotActor,
     "copilot",
     "GitHub Copilot",
-    "AgentCopilot",
+    "githubcopilot",
     ["copilot", "github-copilot-cli"],
     ["copilot", "githubcopilot"]
 );

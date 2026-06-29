@@ -98,6 +98,25 @@ mod tests {
         assert!(result
             .agents
             .iter()
-            .any(|agent| agent.slug == "claude" && agent.icon_name == "AgentClaude"));
+            .any(|agent| agent.slug == "claude" && agent.icon_name == "claude"));
+    }
+
+    // Every actor's icon_name is a bare slug that must resolve to a real
+    // `assets/icons/<slug>.svg`; a typo would otherwise ship a missing native
+    // icon (no runtime fallback in UIKit). Source of truth is the zedra crate.
+    #[test]
+    fn every_icon_name_has_a_source_svg() {
+        let icons_dir =
+            std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../zedra/assets/icons");
+        for actor in agent::actors() {
+            let svg = icons_dir.join(format!("{}.svg", actor.icon_name()));
+            assert!(
+                svg.is_file(),
+                "icon_name `{}` (agent `{}`) has no source svg at {}",
+                actor.icon_name(),
+                actor.slug(),
+                svg.display()
+            );
+        }
     }
 }

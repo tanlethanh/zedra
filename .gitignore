@@ -60,3 +60,10 @@ screenshots
 worktrees
 
 data/
+
+# Generated icon assets (see AGENTS.md "Icon Assets"). Source of truth is
+# crates/zedra/assets/icons/*.svg. iOS imagesets come from scripts/generate-assets.sh;
+# Android drawables from the Gradle `generateIconDrawables` task.
+/ios/Zedra/Assets.xcassets/*.imageset/
+/ios/Zedra/Assets.xcassets/.generate-assets.stamp
+/android/app/src/generated/

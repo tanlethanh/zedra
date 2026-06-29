@@ -51,7 +51,8 @@ impl NativeEditMenuItem {
         }
     }
 
-    /// Use either an iOS asset-catalog image name or an SF Symbol name.
+    /// Native image name: a pipeline icon slug (`assets/icons/<slug>.svg`), an iOS
+    /// asset-catalog name, or an SF Symbol (dotted, iOS-only).
     pub fn image(mut self, image_name: impl Into<String>) -> Self {
         self.image_name = Some(image_name.into());
         self
@@ -81,8 +82,10 @@ impl AlertButton {
         }
     }
 
-    pub fn image(mut self, name: impl Into<String>) -> Self {
-        self.image_name = Some(name.into());
+    /// Native image name: a pipeline icon slug (`assets/icons/<slug>.svg`), an iOS
+    /// asset-catalog name, or an SF Symbol (dotted, iOS-only).
+    pub fn image(mut self, image_name: impl Into<String>) -> Self {
+        self.image_name = Some(image_name.into());
         self
     }
 }
@@ -172,7 +175,9 @@ impl NativeNotificationOptions {
         self
     }
 
-    /// Use either an iOS asset-catalog image name or an SF Symbol name.
+    /// An iOS asset-catalog image name or SF Symbol. Native notifications render
+    /// via SF Symbols / kind symbols, not the cross-platform slug->drawable path,
+    /// so pass an SF Symbol or asset name here, not a pipeline icon slug.
     pub fn image(mut self, image_name: impl Into<String>) -> Self {
         self.image_name = Some(image_name.into());
         self

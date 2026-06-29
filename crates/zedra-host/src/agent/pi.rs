@@ -684,7 +684,7 @@ impl AgentActor for PiActor {
         "Pi"
     }
     fn icon_name(&self) -> &'static str {
-        "AgentPi"
+        "pi"
     }
     fn programs(&self) -> &'static [&'static str] {
         &["pi"]

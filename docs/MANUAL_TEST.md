@@ -6,6 +6,14 @@
 - Prefer concrete reproduction steps and expected results over vague test descriptions.
 - When debugging, add targeted log instructions if the test depends on developer-run device validation.
 
+## 0-Icons. Shared Icon Pipeline (iOS + Android)
+
+1. Open Settings and tap the sign-in entry to present the account picker sheet
+2. Expected (iOS): the `Sign in with Google` button shows the Google icon and, on iOS, `Sign in with Apple` shows the Apple icon — both resolved from `assets/icons/{google,apple}.svg`
+3. Repeat on Android (`./scripts/run-android.sh`); expected: both buttons render the same icons (Android drawable looked up by slug)
+4. Open the agent/target picker so agent icons render; expected: each agent shows its icon (e.g. Codex shows the OpenAI mark) identically to the in-app GPUI list
+5. Regression check: delete `ios/Zedra/Assets.xcassets/*.imageset` and `android/app/src/generated/res`, then run a normal app build; expected: the build regenerates them (Xcode pre-build script / Gradle `generateIconDrawables` task) and icons still render
+
 ## 0-Compat. Legacy ALPN (`zedra/rpc/2`) Client
 
 Verifies a `zedra/rpc/3` host still serves a pre-bump app.
@@ -65,7 +73,7 @@ Verifies a `zedra/rpc/3` host still serves a pre-bump app.
 1. Run a Debug build and open Settings
 2. Tap `Native Notification` in the Developer section
 3. Expected: two compact in-app notification bubbles slide down near the top safe area, with the newest expanded in front and the older one peeking above it as a smaller glass bubble
-4. Expected: the front bubble uses the app asset icon `AgentCodex` tinted like the notification title; the upper peek bubble uses an SF Symbol fallback icon
+4. Expected: the front bubble uses the app asset icon `openai` (the Codex agent icon slug) tinted like the notification title; the upper peek bubble uses an SF Symbol fallback icon
 5. Expected: each new bubble fades in faster than it scales, then continues sliding down and settling into place with a subtle spring
 6. Tap the front `Agent completed` bubble
 7. Expected: it fades out faster than it scales, then finishes scaling back toward zero while sliding upward; a callback notification appears

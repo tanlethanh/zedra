@@ -911,21 +911,21 @@ object NativePresentations {
         return tf
     }
 
-    private fun agentIconRes(name: String?): Int {
-        if (name.isNullOrBlank() || !name.startsWith("Agent")) return 0
-        val snake = name.replace(Regex("(?<!^)(?=[A-Z])"), "_").lowercase()
-        val activity = activity ?: return 0
-        return activity.resources.getIdentifier(snake, "drawable", activity.packageName)
-    }
-
-    private fun selectionIconRes(name: String?): Int {
+    // Icon names are pipeline slugs (`assets/icons/<slug>.svg`); the matching Android
+    // drawable is `ic_<slug>` with hyphens swapped for underscores — identical to
+    // `androidDrawableName` in android/build.gradle (the `ic_` prefix keeps the name
+    // identifier-safe regardless of the slug).
+    private fun iconRes(name: String?): Int {
         if (name.isNullOrBlank()) return 0
         val activity = activity ?: return 0
-        val snake = name.replace(Regex("(?<!^)(?=[A-Z])"), "_").lowercase()
-        val icRes = activity.resources.getIdentifier("ic_$snake", "drawable", activity.packageName)
-        if (icRes != 0) return icRes
-        return agentIconRes(name)
+        return activity.resources.getIdentifier(drawableName(name), "drawable", activity.packageName)
     }
+
+    private fun drawableName(slug: String): String = "ic_${slug.replace('-', '_')}"
+
+    private fun agentIconRes(name: String?): Int = iconRes(name)
+
+    private fun selectionIconRes(name: String?): Int = iconRes(name)
 
     private fun alertButtonColor(style: Int): Int = when (style) {
         2 -> nativeTheme.accentRed       // Destructive

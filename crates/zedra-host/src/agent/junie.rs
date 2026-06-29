@@ -1,8 +1,1 @@
-simple_actor!(
-    JunieActor,
-    "junie",
-    "Junie",
-    "AgentJunie",
-    ["junie"],
-    ["junie"]
-);
+simple_actor!(JunieActor, "junie", "Junie", "junie", ["junie"], ["junie"]);
