@@ -31,19 +31,6 @@ import kotlin.math.max
 import kotlin.math.min
 import kotlin.math.roundToInt
 
-// Slugs that collide with Java reserved words (e.g. the `package` icon) can't be
-// used verbatim as Android resource names; the asset pipeline suffixes them with
-// `_`. Keep in sync with the `androidDrawableName` mapping in android/build.gradle.
-private val JAVA_KEYWORDS = setOf(
-    "abstract", "assert", "boolean", "break", "byte", "case", "catch", "char", "class",
-    "const", "continue", "default", "do", "double", "else", "enum", "extends", "final",
-    "finally", "float", "for", "goto", "if", "implements", "import", "instanceof", "int",
-    "interface", "long", "native", "new", "package", "private", "protected", "public",
-    "return", "short", "static", "strictfp", "super", "switch", "synchronized", "this",
-    "throw", "throws", "transient", "try", "void", "volatile", "while", "true", "false",
-    "null",
-)
-
 object NativePresentations {
     private val mainHandler = Handler(Looper.getMainLooper())
     private var activity: MainActivity? = null
@@ -925,18 +912,16 @@ object NativePresentations {
     }
 
     // Icon names are pipeline slugs (`assets/icons/<slug>.svg`); the matching Android
-    // drawable swaps hyphens for underscores and suffixes Java reserved words with `_`
-    // (resource-name rules) — identical to `androidDrawableName` in android/build.gradle.
+    // drawable is `ic_<slug>` with hyphens swapped for underscores — identical to
+    // `androidDrawableName` in android/build.gradle (the `ic_` prefix keeps the name
+    // identifier-safe regardless of the slug).
     private fun iconRes(name: String?): Int {
         if (name.isNullOrBlank()) return 0
         val activity = activity ?: return 0
         return activity.resources.getIdentifier(drawableName(name), "drawable", activity.packageName)
     }
 
-    private fun drawableName(slug: String): String {
-        val n = slug.replace('-', '_')
-        return if (n in JAVA_KEYWORDS) "${n}_" else n
-    }
+    private fun drawableName(slug: String): String = "ic_${slug.replace('-', '_')}"
 
     private fun agentIconRes(name: String?): Int = iconRes(name)
 
