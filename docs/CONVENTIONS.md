@@ -169,7 +169,7 @@ Read `docs/THEMING.md` before adding or changing product UI colors.
 `crates/zedra/assets/icons/<slug>.svg` is the single source of truth. The kebab-case slug is the icon's name on GPUI, iOS, and Android. Reference an icon by its slug string — it must match a filename in `assets/icons/`, since a wrong slug resolves to a missing icon at runtime. See AGENTS.md "Icon Assets" for the pipeline.
 
 - **GPUI render**: `svg().path("icons/<slug>.svg")`. Source SVGs use `currentColor`, so set the tint with `.text_color(rgb(theme::text_primary(cx)))` (or another `theme::` token) and size with `.size(px(theme::ICON_MD))`; do not hardcode fill colors in the SVG or hex in the view.
-- **Native bridge** (alerts, sheets, action rows): pass the bare slug with `.icon("google")` on `AlertButton` and friends. iOS resolves it via the asset-catalog imageset (named by slug); Android via the generated `ic_<slug>` drawable (the `ic_` prefix keeps the resource name identifier-safe — same rule at build and runtime).
+- **Native bridge** (alerts, sheets, action rows): pass the bare slug with `.image("google")` on `AlertButton` and friends. iOS resolves it via the asset-catalog imageset (named by slug); Android via the generated `ic_<slug>` drawable (the `ic_` prefix keeps the resource name identifier-safe — same rule at build and runtime). SF Symbols (dotted, iOS-only) go through the same `.image(...)` setter.
 - **SF Symbols** (names containing `.`, e.g. `doc.on.clipboard`) are iOS-only — use `.image("doc.on.clipboard")`.
 - Add an icon by dropping a `currentColor` SVG at `assets/icons/<slug>.svg` and running `scripts/generate-assets.sh` (or `bun run icons:gen`). Never hand-edit the generated imagesets or drawables.
 
