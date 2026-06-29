@@ -425,7 +425,7 @@ enum NativePresentationBridge {
 
     private static let actionIconPointSize: CGFloat = 22
     private static let iconInsets: [String: CGFloat] = [
-        "Google": 2,
+        "google": 2,
     ]
 
     static func actionImage(named imageName: String) -> UIImage? {

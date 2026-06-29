@@ -54,6 +54,11 @@ impl Kind {
     }
 }
 
+/// Strip an `icons/<slug>.svg` GPUI path down to its bare `<slug>` for native use.
+fn icon_slug(path: Option<&'static str>) -> Option<&'static str> {
+    path?.strip_prefix("icons/")?.strip_suffix(".svg")
+}
+
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
 pub struct AgentCaps {
     pub add_to_chat: bool,
@@ -215,6 +220,15 @@ fn native_target_presentation(title: &str, image_name: &'static str) -> TargetPr
     }
 }
 
+/// Target presentation whose native icon is derived from `kind`'s slug, so the
+/// icon-to-slug mapping stays in one place (`Kind::icon`).
+fn native_target_presentation_for(kind: Kind, title: &str) -> TargetPresentation {
+    TargetPresentation {
+        label: title.to_string(),
+        image_name: icon_slug(kind.icon()),
+    }
+}
+
 fn paste_fenced_add_to_chat(input: &AddToChat, term: &mut dyn TermCtx) -> Result<()> {
     term.paste(&fenced_add_to_chat_context(input))
 }
@@ -278,29 +292,10 @@ impl GenericPromptAgentAdapter {
         }
     }
 
+    /// Native (iOS/Android) image name = the icon slug, so GPUI and native always
+    /// resolve the same `assets/icons/<slug>.svg`.
     fn native_image_name(&self) -> Option<&'static str> {
-        match self.kind {
-            Kind::Shell => None,
-            Kind::Amp => Some("AgentAmp"),
-            Kind::Claude => Some("AgentClaude"),
-            Kind::Cline => Some("AgentCline"),
-            Kind::Codex => Some("AgentCodex"),
-            Kind::Copilot => Some("AgentCopilot"),
-            Kind::Cursor => Some("AgentCursor"),
-            Kind::Gemini => Some("AgentGemini"),
-            Kind::Goose => Some("AgentGoose"),
-            Kind::Hermes => Some("AgentHermes"),
-            Kind::Junie => Some("AgentJunie"),
-            Kind::KiloCode => Some("AgentKiloCode"),
-            Kind::OpenClaw => Some("AgentOpenClaw"),
-            Kind::OpenCode => Some("AgentOpenCode"),
-            Kind::OpenHands => Some("AgentOpenHands"),
-            Kind::Pi => Some("AgentPi"),
-            Kind::Qoder => Some("AgentQoder"),
-            Kind::Qwen => Some("AgentQwen"),
-            Kind::Trae => Some("AgentTrae"),
-            Kind::Zencoder => Some("AgentZencoder"),
-        }
+        icon_slug(self.kind.icon())
     }
 }
 
@@ -359,7 +354,7 @@ impl AgentAdapter for ClaudeAdapter {
     }
 
     fn target_presentation(&self, title: &str) -> TargetPresentation {
-        native_target_presentation(title, "AgentClaude")
+        native_target_presentation_for(Kind::Claude, title)
     }
 
     fn add_to_chat(
@@ -408,7 +403,7 @@ impl AgentAdapter for CodexAdapter {
     }
 
     fn target_presentation(&self, title: &str) -> TargetPresentation {
-        native_target_presentation(title, "AgentCodex")
+        native_target_presentation_for(Kind::Codex, title)
     }
 
     fn add_to_chat(
@@ -442,7 +437,7 @@ impl AgentAdapter for OpenCodeAdapter {
     }
 
     fn target_presentation(&self, title: &str) -> TargetPresentation {
-        native_target_presentation(title, "AgentOpenCode")
+        native_target_presentation_for(Kind::OpenCode, title)
     }
 
     fn add_to_chat(
@@ -789,21 +784,21 @@ mod tests {
             ClaudeAdapter.target_presentation("claude"),
             TargetPresentation {
                 label: "claude".into(),
-                image_name: Some("AgentClaude"),
+                image_name: Some("claude"),
             }
         );
         assert_eq!(
             CodexAdapter.target_presentation("codex"),
             TargetPresentation {
                 label: "codex".into(),
-                image_name: Some("AgentCodex"),
+                image_name: Some("openai"),
             }
         );
         assert_eq!(
             OpenCodeAdapter.target_presentation("opencode"),
             TargetPresentation {
                 label: "opencode".into(),
-                image_name: Some("AgentOpenCode"),
+                image_name: Some("opencode"),
             }
         );
 
@@ -811,7 +806,7 @@ mod tests {
             make_adapter(Kind::Gemini).target_presentation("gemini"),
             TargetPresentation {
                 label: "gemini".into(),
-                image_name: Some("AgentGemini"),
+                image_name: Some("gemini"),
             }
         );
     }
