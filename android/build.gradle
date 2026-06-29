@@ -274,7 +274,7 @@ def generateIconDrawables = tasks.register('generateIconDrawables') {
 
         outDir.mkdirs()
         // Drop stale output so deleted icons don't linger as orphan drawables.
-        delete fileTree(dir: outDir) { include '*.xml' }
+        outDir.listFiles()?.findAll { it.name.endsWith('.xml') }?.each { it.delete() }
 
         def tmp = File.createTempDir()
         try {
