@@ -238,11 +238,22 @@ def detectDeviceAbi() {
     return null
 }
 
-// Android resource names forbid hyphens. Map a slug to a valid drawable name;
-// NativePresentations.kt `drawableName` applies the identical rule at runtime
-// lookup. Icon slugs must stay identifier-safe (no Java reserved words) or aapt
-// fails when generating R — rename the offending icon if that ever happens.
-def androidDrawableName = { String slug -> slug.replace('-', '_') }
+// Android resource names forbid hyphens, and aapt fails generating `R` for names
+// that are Java reserved words (e.g. the `package` icon). Map a slug to a valid
+// drawable name: swap hyphens for underscores and suffix reserved words with `_`.
+// NativePresentations.kt `drawableName` applies the identical rule at runtime.
+def javaKeywords = [
+    'abstract', 'assert', 'boolean', 'break', 'byte', 'case', 'catch', 'char', 'class',
+    'const', 'continue', 'default', 'do', 'double', 'else', 'enum', 'extends', 'final',
+    'finally', 'float', 'for', 'goto', 'if', 'implements', 'import', 'instanceof', 'int',
+    'interface', 'long', 'native', 'new', 'package', 'private', 'protected', 'public',
+    'return', 'short', 'static', 'strictfp', 'super', 'switch', 'synchronized', 'this',
+    'throw', 'throws', 'transient', 'try', 'void', 'volatile', 'while', 'true', 'false', 'null',
+] as Set
+def androidDrawableName = { String slug ->
+    def n = slug.replace('-', '_')
+    javaKeywords.contains(n) ? "${n}_" : n
+}
 
 // Convert the single source-of-truth icon SVGs into slug-named VectorDrawables
 // with Android Studio's own Svg2Vector engine. It handles inherited fill/stroke
@@ -261,13 +272,23 @@ def generateIconDrawables = tasks.register('generateIconDrawables') {
         def parse = loader.loadClass('com.android.ide.common.vectordrawable.Svg2Vector')
                 .getMethod('parseSvgToXml', java.nio.file.Path, OutputStream)
 
+        // Fail loudly on a broken source tree instead of wiping outputs and
+        // silently shipping no icons (runtime lookup would just resolve to 0).
+        if (!iconsDir.isDirectory()) {
+            throw new GradleException("generateIconDrawables: missing icon source dir ${iconsDir}")
+        }
+        def svgs = iconsDir.listFiles()?.findAll { it.name.endsWith('.svg') }?.sort()
+        if (!svgs) {
+            throw new GradleException("generateIconDrawables: no .svg files in ${iconsDir}")
+        }
+
         outDir.mkdirs()
         // Drop stale output so deleted icons don't linger as orphan drawables.
         delete fileTree(dir: outDir) { include '*.xml' }
 
         def tmp = File.createTempDir()
         try {
-            iconsDir.listFiles()?.sort()?.findAll { it.name.endsWith('.svg') }?.each { svg ->
+            svgs.each { svg ->
                 def slug = svg.name.substring(0, svg.name.length() - 4)
                 // `currentColor` is invalid in a VectorDrawable; bake a concrete color
                 // (drawables are tinted at runtime) so every path renders.

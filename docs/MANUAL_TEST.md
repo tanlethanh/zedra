@@ -12,7 +12,7 @@
 2. Expected (iOS): the `Sign in with Google` button shows the Google icon and, on iOS, `Sign in with Apple` shows the Apple icon — both resolved from `assets/icons/{google,apple}.svg`
 3. Repeat on Android (`./scripts/run-android.sh`); expected: both buttons render the same icons (Android drawable looked up by slug)
 4. Open the agent/target picker so agent icons render; expected: each agent shows its icon (e.g. Codex shows the OpenAI mark) identically to the in-app GPUI list
-5. Regression check: delete `ios/Zedra/Assets.xcassets/*.imageset` and `android/app/src/generated/res`, then run a normal app build; expected: the build regenerates them (Xcode pre-build script / Gradle `generateIconAssets` task) and icons still render
+5. Regression check: delete `ios/Zedra/Assets.xcassets/*.imageset` and `android/app/src/generated/res`, then run a normal app build; expected: the build regenerates them (Xcode pre-build script / Gradle `generateIconDrawables` task) and icons still render
 
 ## 0-Compat. Legacy ALPN (`zedra/rpc/2`) Client
 

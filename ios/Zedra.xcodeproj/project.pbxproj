@@ -22,10 +22,10 @@
 
 /* Begin PBXBuildFile section */
 		06B0528DA79A66232AF4B929 /* Deeplink.swift in Sources */ = {isa = PBXBuildFile; fileRef = F28C0D512B8A4480EEA06229 /* Deeplink.swift */; };
+		0A7EBC66AD7F8079D04D7CD3 /* Pods_Zedra.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = 8BA0C6A78C48208B9363D782 /* Pods_Zedra.framework */; };
 		11668204685DBFE8BB77C80B /* SwiftUI.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = 039E80981F6E73204F578509 /* SwiftUI.framework */; };
 		29812E9727315BE0E4E6D8C3 /* KeyboardSupporter.swift in Sources */ = {isa = PBXBuildFile; fileRef = 69F922850E131108EA0DCDA2 /* KeyboardSupporter.swift */; };
 		2B5A25991606E9A04567BB82 /* GPUIRuntimeController.swift in Sources */ = {isa = PBXBuildFile; fileRef = C1CC23275A2211DE5D4991B1 /* GPUIRuntimeController.swift */; };
-		4CC4B316566B8C3A06847A9F /* Pods_Zedra.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = 6CB850960788F1FBD89E759A /* Pods_Zedra.framework */; };
 		53761D1BADAAD2936D25D5FB /* ZedraTaskWidgetBundle.swift in Sources */ = {isa = PBXBuildFile; fileRef = D08D5130C6BACFAF843287EB /* ZedraTaskWidgetBundle.swift */; };
 		55837536987D777B27BB44F7 /* Assets.xcassets in Resources */ = {isa = PBXBuildFile; fileRef = 90F44C66EC495EE5A6DC0994 /* Assets.xcassets */; };
 		59174DFFDBE71FAD97A1CCB3 /* AVFoundation.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = 00F1E4C60CC0F76F94D6404A /* AVFoundation.framework */; };
@@ -95,21 +95,22 @@
 		3E11226FD3ABACC60F196777 /* LiveActivityController.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LiveActivityController.swift; sourceTree = "<group>"; };
 		3E9F18339F5AECC291EFB877 /* WidgetKit.framework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.framework; name = WidgetKit.framework; path = System/Library/Frameworks/WidgetKit.framework; sourceTree = SDKROOT; };
 		410390D2A6FA601A8CF3BEF6 /* NativeBridge.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = NativeBridge.swift; sourceTree = "<group>"; };
-		42693C179D54C0DC105565CC /* Pods-Zedra.release.xcconfig */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = text.xcconfig; name = "Pods-Zedra.release.xcconfig"; path = "Target Support Files/Pods-Zedra/Pods-Zedra.release.xcconfig"; sourceTree = "<group>"; };
 		4738330EA54AA88057CFF9D6 /* Info.plist */ = {isa = PBXFileReference; lastKnownFileType = text.plist; path = Info.plist; sourceTree = "<group>"; };
 		47A99A911DFEB67B22FF841B /* Network.framework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.framework; name = Network.framework; path = System/Library/Frameworks/Network.framework; sourceTree = SDKROOT; };
 		512091F828A8B43816DA9723 /* CoreGraphics.framework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.framework; name = CoreGraphics.framework; path = System/Library/Frameworks/CoreGraphics.framework; sourceTree = SDKROOT; };
 		520C816D34F6ED9A97DA79BB /* QuartzCore.framework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.framework; name = QuartzCore.framework; path = System/Library/Frameworks/QuartzCore.framework; sourceTree = SDKROOT; };
 		5451E2C486BD774CF2935DB9 /* ZedraTaskLiveActivity.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ZedraTaskLiveActivity.swift; sourceTree = "<group>"; };
 		63C6681ECC3A80F94D9F1A0A /* CoreFoundation.framework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.framework; name = CoreFoundation.framework; path = System/Library/Frameworks/CoreFoundation.framework; sourceTree = SDKROOT; };
+		6861EF5A1CF4A218DC976F18 /* Pods-Zedra.release.xcconfig */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = text.xcconfig; name = "Pods-Zedra.release.xcconfig"; path = "Target Support Files/Pods-Zedra/Pods-Zedra.release.xcconfig"; sourceTree = "<group>"; };
 		69F922850E131108EA0DCDA2 /* KeyboardSupporter.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = KeyboardSupporter.swift; sourceTree = "<group>"; };
-		6CB850960788F1FBD89E759A /* Pods_Zedra.framework */ = {isa = PBXFileReference; explicitFileType = wrapper.framework; includeInIndex = 0; path = Pods_Zedra.framework; sourceTree = BUILT_PRODUCTS_DIR; };
 		727BC6F2E063B67B2EE2F133 /* DeltaBridge.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = DeltaBridge.swift; sourceTree = "<group>"; };
 		73FE1C11057A15B082B91094 /* notification.mp3 */ = {isa = PBXFileReference; lastKnownFileType = audio.mp3; path = notification.mp3; sourceTree = "<group>"; };
 		8853DDC4052807AEC78FEEF3 /* ZedraAppDelegate.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ZedraAppDelegate.swift; sourceTree = "<group>"; };
+		8BA0C6A78C48208B9363D782 /* Pods_Zedra.framework */ = {isa = PBXFileReference; explicitFileType = wrapper.framework; includeInIndex = 0; path = Pods_Zedra.framework; sourceTree = BUILT_PRODUCTS_DIR; };
 		90F44C66EC495EE5A6DC0994 /* Assets.xcassets */ = {isa = PBXFileReference; lastKnownFileType = folder.assetcatalog; path = Assets.xcassets; sourceTree = "<group>"; };
 		94CC8ED9DAA6944067FF57DB /* main.m */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.objc; path = main.m; sourceTree = "<group>"; };
 		A6B03B40299B5BEA1C29D4F5 /* Metal.framework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.framework; name = Metal.framework; path = System/Library/Frameworks/Metal.framework; sourceTree = SDKROOT; };
+		B29F9C25CE9716F8A2EB59F3 /* Pods-Zedra.debug.xcconfig */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = text.xcconfig; name = "Pods-Zedra.debug.xcconfig"; path = "Target Support Files/Pods-Zedra/Pods-Zedra.debug.xcconfig"; sourceTree = "<group>"; };
 		B9A9EA625E2ED4114945F081 /* ZedraFFI.xcframework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.xcframework; path = ZedraFFI.xcframework; sourceTree = "<group>"; };
 		C1CC23275A2211DE5D4991B1 /* GPUIRuntimeController.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = GPUIRuntimeController.swift; sourceTree = "<group>"; };
 		C49D42574FFC5F1D81BCB72D /* ZedraTaskActivity.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ZedraTaskActivity.swift; sourceTree = "<group>"; };
@@ -122,7 +123,6 @@
 		F28C0D512B8A4480EEA06229 /* Deeplink.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Deeplink.swift; sourceTree = "<group>"; };
 		F331068037097AEDDA54DF15 /* ZedraTaskWidget.appex */ = {isa = PBXFileReference; includeInIndex = 0; lastKnownFileType = "wrapper.app-extension"; path = ZedraTaskWidget.appex; sourceTree = BUILT_PRODUCTS_DIR; };
 		F48626960A7B8482AA6C9676 /* Info.plist */ = {isa = PBXFileReference; lastKnownFileType = text.plist; path = Info.plist; sourceTree = "<group>"; };
-		F848D34EAD2F656D5AF1535E /* Pods-Zedra.debug.xcconfig */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = text.xcconfig; name = "Pods-Zedra.debug.xcconfig"; path = "Target Support Files/Pods-Zedra/Pods-Zedra.debug.xcconfig"; sourceTree = "<group>"; };
 		FFE53F3BD5E50E1D1587D19D /* Zedra.entitlements */ = {isa = PBXFileReference; lastKnownFileType = text.plist.entitlements; path = Zedra.entitlements; sourceTree = "<group>"; };
 /* End PBXFileReference section */
 
@@ -151,13 +151,23 @@
 				C8F576CC1856D853138C29FD /* Security.framework in Frameworks */,
 				980622780D44495907582D63 /* Network.framework in Frameworks */,
 				59174DFFDBE71FAD97A1CCB3 /* AVFoundation.framework in Frameworks */,
-				4CC4B316566B8C3A06847A9F /* Pods_Zedra.framework in Frameworks */,
+				0A7EBC66AD7F8079D04D7CD3 /* Pods_Zedra.framework in Frameworks */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
 /* End PBXFrameworksBuildPhase section */
 
 /* Begin PBXGroup section */
+		219FAB971B89F336716BEC8A /* Pods */ = {
+			isa = PBXGroup;
+			children = (
+				B29F9C25CE9716F8A2EB59F3 /* Pods-Zedra.debug.xcconfig */,
+				6861EF5A1CF4A218DC976F18 /* Pods-Zedra.release.xcconfig */,
+			);
+			name = Pods;
+			path = Pods;
+			sourceTree = "<group>";
+		};
 		5092EC10F4D31658ACC56C8C /* Products */ = {
 			isa = PBXGroup;
 			children = (
@@ -165,16 +175,6 @@
 				F331068037097AEDDA54DF15 /* ZedraTaskWidget.appex */,
 			);
 			name = Products;
-			sourceTree = "<group>";
-		};
-		56AD89EC7CAF6290EFF9CBE5 /* Pods */ = {
-			isa = PBXGroup;
-			children = (
-				F848D34EAD2F656D5AF1535E /* Pods-Zedra.debug.xcconfig */,
-				42693C179D54C0DC105565CC /* Pods-Zedra.release.xcconfig */,
-			);
-			name = Pods;
-			path = Pods;
 			sourceTree = "<group>";
 		};
 		5A29D543BABC526F61A34022 /* Shared */ = {
@@ -193,7 +193,7 @@
 				95B4EB985CD10CFD3676D2FD /* ZedraTaskWidget */,
 				88F08496A69E4168EB2884D0 /* Frameworks */,
 				5092EC10F4D31658ACC56C8C /* Products */,
-				56AD89EC7CAF6290EFF9CBE5 /* Pods */,
+				219FAB971B89F336716BEC8A /* Pods */,
 			);
 			sourceTree = "<group>";
 		};
@@ -213,7 +213,7 @@
 				E0368E716FAFC7DC17C3B7B1 /* UIKit.framework */,
 				3E9F18339F5AECC291EFB877 /* WidgetKit.framework */,
 				B9A9EA625E2ED4114945F081 /* ZedraFFI.xcframework */,
-				6CB850960788F1FBD89E759A /* Pods_Zedra.framework */,
+				8BA0C6A78C48208B9363D782 /* Pods_Zedra.framework */,
 			);
 			name = Frameworks;
 			sourceTree = "<group>";
@@ -274,7 +274,8 @@
 			isa = PBXNativeTarget;
 			buildConfigurationList = 369835735FEF0BAB43052DA0 /* Build configuration list for PBXNativeTarget "Zedra" */;
 			buildPhases = (
-				03CB75D1D97CF6B5A3E3231D /* [CP] Check Pods Manifest.lock */,
+				A27109BE670D16A5BA6FF690 /* [CP] Check Pods Manifest.lock */,
+				F0A6A824E3CB17F570124740 /* Generate Icon Assets */,
 				909545E704A1285F03F00F56 /* Sources */,
 				3D0993EE512488A75299992B /* Resources */,
 				B904AB45BFDAA98506246086 /* Frameworks */,
@@ -282,7 +283,7 @@
 				8CA192F395F9B0CD6745F5AB /* Firebase Config */,
 				D20112C4D05FD7D8531C1012 /* Google OAuth URL Scheme */,
 				9B92177DC22DAAB553CD16E4 /* Firebase Crashlytics dSYM Upload */,
-				45BF3A8AFC3B4C24DEFF675E /* [CP] Copy Pods Resources */,
+				399A43999727F8B5DC90817F /* [CP] Copy Pods Resources */,
 			);
 			buildRules = (
 			);
@@ -356,29 +357,7 @@
 /* End PBXResourcesBuildPhase section */
 
 /* Begin PBXShellScriptBuildPhase section */
-		03CB75D1D97CF6B5A3E3231D /* [CP] Check Pods Manifest.lock */ = {
-			isa = PBXShellScriptBuildPhase;
-			buildActionMask = 2147483647;
-			files = (
-			);
-			inputFileListPaths = (
-			);
-			inputPaths = (
-				"${PODS_PODFILE_DIR_PATH}/Podfile.lock",
-				"${PODS_ROOT}/Manifest.lock",
-			);
-			name = "[CP] Check Pods Manifest.lock";
-			outputFileListPaths = (
-			);
-			outputPaths = (
-				"$(DERIVED_FILE_DIR)/Pods-Zedra-checkManifestLockResult.txt",
-			);
-			runOnlyForDeploymentPostprocessing = 0;
-			shellPath = /bin/sh;
-			shellScript = "diff \"${PODS_PODFILE_DIR_PATH}/Podfile.lock\" \"${PODS_ROOT}/Manifest.lock\" > /dev/null\nif [ $? != 0 ] ; then\n    # print error to STDERR\n    echo \"error: The sandbox is not in sync with the Podfile.lock. Run 'pod install' or update your CocoaPods installation.\" >&2\n    exit 1\nfi\n# This output is used by Xcode 'outputs' to avoid re-running this script phase.\necho \"SUCCESS\" > \"${SCRIPT_OUTPUT_FILE_0}\"\n";
-			showEnvVarsInLog = 0;
-		};
-		45BF3A8AFC3B4C24DEFF675E /* [CP] Copy Pods Resources */ = {
+		399A43999727F8B5DC90817F /* [CP] Copy Pods Resources */ = {
 			isa = PBXShellScriptBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
@@ -456,6 +435,28 @@
 			shellPath = /bin/sh;
 			shellScript = "set -eu\n\nGOOGLE_SERVICE_PLIST=\"${SRCROOT}/Zedra/GoogleService-Info.plist\"\n\nif [ ! -f \"$GOOGLE_SERVICE_PLIST\" ]; then\n  case \"${CONFIGURATION:-}\" in\n    Release*)\n      echo \"error: Missing $GOOGLE_SERVICE_PLIST. Release builds require Firebase configuration.\"\n      exit 1\n      ;;\n    *)\n      echo \"warning: Skipping Firebase Crashlytics dSYM upload because $GOOGLE_SERVICE_PLIST is missing.\"\n      exit 0\n      ;;\n  esac\nfi\n\n\"${PODS_ROOT}/FirebaseCrashlytics/run\"\n";
 		};
+		A27109BE670D16A5BA6FF690 /* [CP] Check Pods Manifest.lock */ = {
+			isa = PBXShellScriptBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			inputFileListPaths = (
+			);
+			inputPaths = (
+				"${PODS_PODFILE_DIR_PATH}/Podfile.lock",
+				"${PODS_ROOT}/Manifest.lock",
+			);
+			name = "[CP] Check Pods Manifest.lock";
+			outputFileListPaths = (
+			);
+			outputPaths = (
+				"$(DERIVED_FILE_DIR)/Pods-Zedra-checkManifestLockResult.txt",
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+			shellPath = /bin/sh;
+			shellScript = "diff \"${PODS_PODFILE_DIR_PATH}/Podfile.lock\" \"${PODS_ROOT}/Manifest.lock\" > /dev/null\nif [ $? != 0 ] ; then\n    # print error to STDERR\n    echo \"error: The sandbox is not in sync with the Podfile.lock. Run 'pod install' or update your CocoaPods installation.\" >&2\n    exit 1\nfi\n# This output is used by Xcode 'outputs' to avoid re-running this script phase.\necho \"SUCCESS\" > \"${SCRIPT_OUTPUT_FILE_0}\"\n";
+			showEnvVarsInLog = 0;
+		};
 		D20112C4D05FD7D8531C1012 /* Google OAuth URL Scheme */ = {
 			isa = PBXShellScriptBuildPhase;
 			alwaysOutOfDate = 1;
@@ -476,6 +477,25 @@
 			runOnlyForDeploymentPostprocessing = 0;
 			shellPath = /bin/sh;
 			shellScript = "set -eu\n\nGOOGLE_SERVICE_PLIST=\"${SRCROOT}/Zedra/GoogleService-Info.plist\"\nAPP_INFO_PLIST=\"${TARGET_BUILD_DIR}/${INFOPLIST_PATH}\"\n\nif [ ! -f \"$GOOGLE_SERVICE_PLIST\" ]; then\n  echo \"warning: Missing $GOOGLE_SERVICE_PLIST. Delta Google sign-in is disabled for this build.\"\n  exit 0\nfi\n\nREVERSED_CLIENT_ID=\"$(/usr/libexec/PlistBuddy -c 'Print :REVERSED_CLIENT_ID' \"$GOOGLE_SERVICE_PLIST\" 2>/dev/null || true)\"\nif [ -z \"$REVERSED_CLIENT_ID\" ]; then\n  echo \"error: Missing REVERSED_CLIENT_ID in $GOOGLE_SERVICE_PLIST.\"\n  exit 1\nfi\n\n/usr/libexec/PlistBuddy -c \"Delete :CFBundleURLTypes\" \"$APP_INFO_PLIST\" 2>/dev/null || true\n/usr/libexec/PlistBuddy -c \"Add :CFBundleURLTypes array\" \"$APP_INFO_PLIST\"\n/usr/libexec/PlistBuddy -c \"Add :CFBundleURLTypes:0 dict\" \"$APP_INFO_PLIST\"\n/usr/libexec/PlistBuddy -c \"Add :CFBundleURLTypes:0:CFBundleURLName string dev.zedra.app\" \"$APP_INFO_PLIST\"\n/usr/libexec/PlistBuddy -c \"Add :CFBundleURLTypes:0:CFBundleURLSchemes array\" \"$APP_INFO_PLIST\"\n/usr/libexec/PlistBuddy -c \"Add :CFBundleURLTypes:0:CFBundleURLSchemes:0 string zedra\" \"$APP_INFO_PLIST\"\n/usr/libexec/PlistBuddy -c \"Add :CFBundleURLTypes:1 dict\" \"$APP_INFO_PLIST\"\n/usr/libexec/PlistBuddy -c \"Add :CFBundleURLTypes:1:CFBundleURLName string google\" \"$APP_INFO_PLIST\"\n/usr/libexec/PlistBuddy -c \"Add :CFBundleURLTypes:1:CFBundleURLSchemes array\" \"$APP_INFO_PLIST\"\n/usr/libexec/PlistBuddy -c \"Add :CFBundleURLTypes:1:CFBundleURLSchemes:0 string $REVERSED_CLIENT_ID\" \"$APP_INFO_PLIST\"\n";
+		};
+		F0A6A824E3CB17F570124740 /* Generate Icon Assets */ = {
+			isa = PBXShellScriptBuildPhase;
+			alwaysOutOfDate = 1;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			inputFileListPaths = (
+			);
+			inputPaths = (
+			);
+			name = "Generate Icon Assets";
+			outputFileListPaths = (
+			);
+			outputPaths = (
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+			shellPath = /bin/sh;
+			shellScript = "set -eu\nexport PATH=\"$HOME/.bun/bin:/opt/homebrew/bin:$PATH\"\ncd \"${SRCROOT}/..\"\nbash scripts/generate-assets.sh\n";
 		};
 /* End PBXShellScriptBuildPhase section */
 
@@ -611,7 +631,7 @@
 		};
 		50B88CA82039DB4A2A14E6F3 /* Debug */ = {
 			isa = XCBuildConfiguration;
-			baseConfigurationReference = F848D34EAD2F656D5AF1535E /* Pods-Zedra.debug.xcconfig */;
+			baseConfigurationReference = B29F9C25CE9716F8A2EB59F3 /* Pods-Zedra.debug.xcconfig */;
 			buildSettings = {
 				APS_ENVIRONMENT = development;
 				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
@@ -660,7 +680,7 @@
 		};
 		517EF2B7F22F02FF5CE0D7A9 /* Release */ = {
 			isa = XCBuildConfiguration;
-			baseConfigurationReference = 42693C179D54C0DC105565CC /* Pods-Zedra.release.xcconfig */;
+			baseConfigurationReference = 6861EF5A1CF4A218DC976F18 /* Pods-Zedra.release.xcconfig */;
 			buildSettings = {
 				APS_ENVIRONMENT = production;
 				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;

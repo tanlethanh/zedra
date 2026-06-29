@@ -222,4 +222,23 @@ mod tests {
             .iter()
             .any(|agent| agent.slug == "claude" && agent.icon_name == "claude"));
     }
+
+    // Every shipped icon_name must map to a real `assets/icons/<slug>.svg`; a typo
+    // in any rename would otherwise ship a missing native icon. Source of truth lives
+    // in the zedra crate, alongside this workspace.
+    #[test]
+    fn every_icon_name_has_a_source_svg() {
+        let icons_dir =
+            std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../zedra/assets/icons");
+        for spec in INSTALLED_AGENT_SPECS {
+            let svg = icons_dir.join(format!("{}.svg", spec.icon_name));
+            assert!(
+                svg.is_file(),
+                "icon_name `{}` (agent `{}`) has no source svg at {}",
+                spec.icon_name,
+                spec.slug,
+                svg.display()
+            );
+        }
+    }
 }

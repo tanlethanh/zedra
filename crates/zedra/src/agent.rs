@@ -220,6 +220,15 @@ fn native_target_presentation(title: &str, image_name: &'static str) -> TargetPr
     }
 }
 
+/// Target presentation whose native icon is derived from `kind`'s slug, so the
+/// icon-to-slug mapping stays in one place (`Kind::icon`).
+fn native_target_presentation_for(kind: Kind, title: &str) -> TargetPresentation {
+    TargetPresentation {
+        label: title.to_string(),
+        image_name: icon_slug(kind.icon()),
+    }
+}
+
 fn paste_fenced_add_to_chat(input: &AddToChat, term: &mut dyn TermCtx) -> Result<()> {
     term.paste(&fenced_add_to_chat_context(input))
 }
@@ -345,7 +354,7 @@ impl AgentAdapter for ClaudeAdapter {
     }
 
     fn target_presentation(&self, title: &str) -> TargetPresentation {
-        native_target_presentation(title, "claude")
+        native_target_presentation_for(Kind::Claude, title)
     }
 
     fn add_to_chat(
@@ -394,7 +403,7 @@ impl AgentAdapter for CodexAdapter {
     }
 
     fn target_presentation(&self, title: &str) -> TargetPresentation {
-        native_target_presentation(title, "openai")
+        native_target_presentation_for(Kind::Codex, title)
     }
 
     fn add_to_chat(
@@ -428,7 +437,7 @@ impl AgentAdapter for OpenCodeAdapter {
     }
 
     fn target_presentation(&self, title: &str) -> TargetPresentation {
-        native_target_presentation(title, "opencode")
+        native_target_presentation_for(Kind::OpenCode, title)
     }
 
     fn add_to_chat(
