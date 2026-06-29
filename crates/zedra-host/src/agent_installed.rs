@@ -13,115 +13,115 @@ const INSTALLED_AGENT_SPECS: &[InstalledAgentSpec] = &[
     InstalledAgentSpec {
         slug: "claude",
         display_name: "Claude Code",
-        icon_name: "AgentClaude",
+        icon_name: "claude",
         programs: &["claude"],
     },
     InstalledAgentSpec {
         slug: "codex",
         display_name: "Codex",
-        icon_name: "AgentCodex",
+        icon_name: "openai",
         programs: &["codex"],
     },
     InstalledAgentSpec {
         slug: "opencode",
         display_name: "OpenCode",
-        icon_name: "AgentOpenCode",
+        icon_name: "opencode",
         programs: &["opencode"],
     },
     InstalledAgentSpec {
         slug: "amp",
         display_name: "Amp",
-        icon_name: "AgentAmp",
+        icon_name: "amp",
         programs: &["amp"],
     },
     InstalledAgentSpec {
         slug: "cline",
         display_name: "Cline",
-        icon_name: "AgentCline",
+        icon_name: "cline",
         programs: &["cline"],
     },
     InstalledAgentSpec {
         slug: "cursor",
         display_name: "Cursor Agent",
-        icon_name: "AgentCursor",
+        icon_name: "cursor",
         programs: &["cursor-agent", "cursor"],
     },
     InstalledAgentSpec {
         slug: "copilot",
         display_name: "GitHub Copilot",
-        icon_name: "AgentCopilot",
+        icon_name: "githubcopilot",
         programs: &["copilot", "github-copilot-cli"],
     },
     InstalledAgentSpec {
         slug: "gemini",
         display_name: "Gemini",
-        icon_name: "AgentGemini",
+        icon_name: "gemini",
         programs: &["gemini"],
     },
     InstalledAgentSpec {
         slug: "goose",
         display_name: "Goose",
-        icon_name: "AgentGoose",
+        icon_name: "goose",
         programs: &["goose"],
     },
     InstalledAgentSpec {
         slug: "hermes",
         display_name: "Hermes Agent",
-        icon_name: "AgentHermes",
+        icon_name: "hermesagent",
         programs: &["hermes", "hermes-agent"],
     },
     InstalledAgentSpec {
         slug: "junie",
         display_name: "Junie",
-        icon_name: "AgentJunie",
+        icon_name: "junie",
         programs: &["junie"],
     },
     InstalledAgentSpec {
         slug: "kilocode",
         display_name: "Kilo Code",
-        icon_name: "AgentKiloCode",
+        icon_name: "kilocode",
         programs: &["kilocode"],
     },
     InstalledAgentSpec {
         slug: "openclaw",
         display_name: "OpenClaw",
-        icon_name: "AgentOpenClaw",
+        icon_name: "openclaw",
         programs: &["openclaw"],
     },
     InstalledAgentSpec {
         slug: "openhands",
         display_name: "OpenHands",
-        icon_name: "AgentOpenHands",
+        icon_name: "openhands",
         programs: &["openhands"],
     },
     InstalledAgentSpec {
         slug: "pi",
         display_name: "Pi",
-        icon_name: "AgentPi",
+        icon_name: "pi",
         programs: &["pi"],
     },
     InstalledAgentSpec {
         slug: "qoder",
         display_name: "Qoder",
-        icon_name: "AgentQoder",
+        icon_name: "qoder",
         programs: &["qoder"],
     },
     InstalledAgentSpec {
         slug: "qwen",
         display_name: "Qwen Code",
-        icon_name: "AgentQwen",
+        icon_name: "qwen",
         programs: &["qwen"],
     },
     InstalledAgentSpec {
         slug: "trae",
         display_name: "Trae Agent",
-        icon_name: "AgentTrae",
+        icon_name: "trae",
         programs: &["trae"],
     },
     InstalledAgentSpec {
         slug: "zencoder",
         display_name: "Zencoder",
-        icon_name: "AgentZencoder",
+        icon_name: "zencoder",
         programs: &["zencoder"],
     },
 ];
@@ -220,6 +220,6 @@ mod tests {
         assert!(result
             .agents
             .iter()
-            .any(|agent| agent.slug == "claude" && agent.icon_name == "AgentClaude"));
+            .any(|agent| agent.slug == "claude" && agent.icon_name == "claude"));
     }
 }

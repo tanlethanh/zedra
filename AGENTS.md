@@ -91,6 +91,15 @@ Mobile remote editor for iOS and Android. Primary platform is iOS (`gpui_ios` + 
 - `UIGlassEffect` is public UIKit on iOS 26+. Use `if #available(iOS 26.0, *)`, not runtime probing.
 - In Swift bridge code, keep access control consistent with helper type visibility.
 
+## Icon Assets
+
+- `crates/zedra/assets/icons/<slug>.svg` is the single source of truth; the kebab-case slug is the name on every platform (GPUI, iOS, Android). Commit only the SVGs, and reference an icon by that bare slug string (no enum) — a typo resolves to a missing icon at runtime, so keep it exact.
+- Generated assets are gitignored — never hand-edit: iOS imagesets (`ios/Zedra/Assets.xcassets/*.imageset`) from `scripts/generate-assets.sh`, Android drawables (`android/app/src/generated/res/drawable/*.xml`) from the Gradle `generateIconDrawables` task. Builds run both automatically (Xcode pre-build script in `ios/project.yml`; Android `preBuild` depends on `generateIconDrawables`).
+- Add an icon by dropping a `currentColor` SVG at the path above, then run `scripts/generate-assets.sh` (or `bun run icons:gen`) for iOS/GPUI preview and/or build Android. No network fetch — source the SVG yourself.
+- GPUI render: `svg().path("icons/<slug>.svg")`, tint with `.text_color(...)` (SVGs are `currentColor`). Native bridge (alerts, sheets, action rows): pass the bare slug, `.icon("google")` → iOS imageset / Android drawable. SF Symbols (dotted names like `doc.on.clipboard`) use `.image("…")` and are iOS-only.
+- Android conversion uses Android Studio's `Svg2Vector` (`com.android.tools:sdk-common`, AGP-pinned in `android/build.gradle`): it resolves inherited `fill`/`stroke` and `circle`/`line`/`polyline` shapes that lighter converters silently drop, and bakes `currentColor` to a concrete color (drawables tinted at runtime). CI smoke-tests the iOS script; Android conversion runs in Gradle.
+- Future remote/dynamic icons (host-delivered, not bundled) should use a runtime image loader (Coil + coil-svg on Android), scoped to that path — not these bundled monochrome glyphs.
+
 ## Vendor Zed
 
 - `vendor/zed` is a git submodule and an intentional part of the architecture, not just third-party reference code.

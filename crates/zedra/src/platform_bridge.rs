@@ -11,6 +11,26 @@ use tokio::sync::broadcast;
 
 use gpui::{AnyView, App, Bounds, Entity, Pixels, Point, Render};
 
+/// Builder `image`/`icon` setters for any options struct with an
+/// `image_name: Option<String>` field. `image` takes an iOS asset-catalog or SF
+/// Symbol name; `icon` takes a pipeline slug (kebab-case `assets/icons/<slug>.svg`
+/// name) resolved on every platform.
+macro_rules! image_name_setters {
+    ($ty:ty) => {
+        impl $ty {
+            pub fn image(mut self, image_name: impl Into<String>) -> Self {
+                self.image_name = Some(image_name.into());
+                self
+            }
+
+            pub fn icon(mut self, slug: impl Into<String>) -> Self {
+                self.image_name = Some(slug.into());
+                self
+            }
+        }
+    };
+}
+
 // ---------------------------------------------------------------------------
 // Native alert API
 // ---------------------------------------------------------------------------
@@ -50,13 +70,8 @@ impl NativeEditMenuItem {
             image_name: None,
         }
     }
-
-    /// Use either an iOS asset-catalog image name or an SF Symbol name.
-    pub fn image(mut self, image_name: impl Into<String>) -> Self {
-        self.image_name = Some(image_name.into());
-        self
-    }
 }
+image_name_setters!(NativeEditMenuItem);
 
 impl AlertButton {
     pub fn default(label: impl Into<String>) -> Self {
@@ -80,12 +95,8 @@ impl AlertButton {
             image_name: None,
         }
     }
-
-    pub fn image(mut self, name: impl Into<String>) -> Self {
-        self.image_name = Some(name.into());
-        self
-    }
 }
+image_name_setters!(AlertButton);
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum CustomSheetDetent {
@@ -172,12 +183,6 @@ impl NativeNotificationOptions {
         self
     }
 
-    /// Use either an iOS asset-catalog image name or an SF Symbol name.
-    pub fn image(mut self, image_name: impl Into<String>) -> Self {
-        self.image_name = Some(image_name.into());
-        self
-    }
-
     /// Alias for callers that want to document SF Symbol intent.
     pub fn system_image(mut self, image_name: impl Into<String>) -> Self {
         self.image_name = Some(image_name.into());
@@ -199,6 +204,7 @@ impl NativeNotificationOptions {
         self
     }
 }
+image_name_setters!(NativeNotificationOptions);
 
 #[derive(Clone, Debug)]
 pub struct DeltaGoogleSignInResult {

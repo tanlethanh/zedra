@@ -68,6 +68,11 @@ cd ios && pod install
 A personal Apple developer account is enough for local iOS builds. Firebase
 credentials are not required. See `docs/GET_STARTED.md` for the full setup.
 
+Icons are authored once as `crates/zedra/assets/icons/<slug>.svg` and generated
+per platform at build time (no extra tooling): iOS imagesets by
+`scripts/generate-assets.sh`, Android VectorDrawables by the Gradle
+`generateIconDrawables` task. See AGENTS.md "Icon Assets".
+
 ## Host-Only Development
 
 You can work on the desktop daemon without an iPhone. Important commands:

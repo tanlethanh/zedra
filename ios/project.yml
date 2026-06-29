@@ -53,6 +53,16 @@ targets:
         CFBundleURLTypes:
           - CFBundleURLSchemes: [zedra]
             CFBundleURLName: dev.zedra.app
+    preBuildScripts:
+      - name: "Generate Icon Assets"
+        # Regenerate slug-named imagesets from crates/zedra/assets/icons before the
+        # asset catalog compiles. Generated assets are gitignored (see AGENTS.md).
+        basedOnDependencyAnalysis: false
+        script: |
+          set -eu
+          export PATH="$HOME/.bun/bin:/opt/homebrew/bin:$PATH"
+          cd "${SRCROOT}/.."
+          bash scripts/generate-assets.sh
     postBuildScripts:
       - name: "Firebase Config"
         script: |
