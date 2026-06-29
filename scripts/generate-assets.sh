@@ -21,18 +21,20 @@ xcassets="$root/ios/Zedra/Assets.xcassets"
 # Marks the last successful run; lets repeat builds skip when nothing changed.
 stamp="$xcassets/.generate-assets.stamp"
 
-# True when an imageset already exists for every icon and no source SVG (nor this
-# script) is newer than the last run. Lets the unconditional build-time invocation
-# no-op on incremental builds where nothing changed.
+# Sorted list of bare slugs for the current source SVGs / existing imagesets.
+source_slugs() { (cd "$icons_dir" && ls *.svg 2>/dev/null | sed 's/\.svg$//' | sort); }
+imageset_slugs() { (cd "$xcassets" && ls -d *.imageset 2>/dev/null | sed 's/\.imageset$//' | sort); }
+
+# True when an imageset exists for exactly the current set of source SVGs and none
+# is newer than the last run. Lets the unconditional build-time invocation no-op on
+# incremental builds, and forces a rebuild when icons are added, renamed, or deleted
+# (so stale imagesets get pruned). Every *.imageset here is script-generated; AppIcon
+# is an .appiconset and is left alone.
 up_to_date() {
-  local n="$1"
   [ -f "$stamp" ] || return 1
-  local n_ios
-  n_ios=$(find "$xcassets" -maxdepth 1 -name '*.imageset' 2>/dev/null | wc -l | tr -d ' ')
-  [ "$n_ios" -ge "$n" ] || return 1
   find "$icons_dir" -name '*.svg' -newer "$stamp" 2>/dev/null | grep -q . && return 1
   [ "${BASH_SOURCE[0]}" -nt "$stamp" ] && return 1
-  return 0
+  [ "$(source_slugs)" = "$(imageset_slugs)" ]
 }
 
 gen() {
@@ -43,14 +45,20 @@ gen() {
   local n=${#svgs[@]}
   [ "$n" -gt 0 ] || { echo "no svgs found in $icons_dir" >&2; exit 1; }
 
-  if up_to_date "$n"; then
+  if up_to_date; then
     echo "iOS imagesets up to date ($n icons)"
     return 0
   fi
 
   mkdir -p "$xcassets"
+  local slug
+  # Prune imagesets whose source SVG is gone (renamed/deleted icons) so stale
+  # entries never get compiled into the catalog.
+  for dir in "$xcassets"/*.imageset; do
+    slug="${dir##*/}"; slug="${slug%.imageset}"
+    [ -f "$icons_dir/$slug.svg" ] || rm -rf "$dir"
+  done
   for svg in "${svgs[@]}"; do
-    local slug
     slug="${svg##*/}"; slug="${slug%.svg}"
     write_ios_imageset "$slug" "$svg"
   done

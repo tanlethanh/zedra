@@ -183,6 +183,14 @@ impl NativeNotificationOptions {
         self
     }
 
+    /// Use either an iOS asset-catalog image name or an SF Symbol name. Native
+    /// notifications render via SF Symbols / kind symbols, not the slug->drawable
+    /// path, so there is no `icon()` slug setter here.
+    pub fn image(mut self, image_name: impl Into<String>) -> Self {
+        self.image_name = Some(image_name.into());
+        self
+    }
+
     /// Alias for callers that want to document SF Symbol intent.
     pub fn system_image(mut self, image_name: impl Into<String>) -> Self {
         self.image_name = Some(image_name.into());
@@ -204,7 +212,6 @@ impl NativeNotificationOptions {
         self
     }
 }
-image_name_setters!(NativeNotificationOptions);
 
 #[derive(Clone, Debug)]
 pub struct DeltaGoogleSignInResult {
