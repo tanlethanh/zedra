@@ -495,7 +495,7 @@
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 			shellPath = /bin/sh;
-			shellScript = "set -eu\nexport PATH=\"$HOME/.bun/bin:/opt/homebrew/bin:$PATH\"\ncd \"${SRCROOT}/..\"\nbash scripts/generate-assets.sh\n";
+			shellScript = "set -eu\ncd \"${SRCROOT}/..\"\nbash scripts/generate-assets.sh\n";
 		};
 /* End PBXShellScriptBuildPhase section */
 

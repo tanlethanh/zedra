@@ -60,7 +60,6 @@ targets:
         basedOnDependencyAnalysis: false
         script: |
           set -eu
-          export PATH="$HOME/.bun/bin:/opt/homebrew/bin:$PATH"
           cd "${SRCROOT}/.."
           bash scripts/generate-assets.sh
     postBuildScripts:
