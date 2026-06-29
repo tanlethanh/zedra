@@ -8,42 +8,22 @@ pub use zedra_rpc::proto::TermShellState as ShellState;
 
 #[derive(Clone, Default, Debug)]
 pub struct TerminalMeta {
-    /// Raw terminal title as reported by OSC title updates.
+    /// Raw OSC title.
     pub title: Option<String>,
-    /// Title with emoji and transient activity glyphs removed for compact picker labels.
+    /// Title with emoji/activity glyphs stripped for compact picker labels.
     pub plain_title: Option<String>,
     pub cwd: Option<String>,
     pub last_exit_code: Option<i32>,
     pub shell_state: ShellState,
-    /// Last command line reported by OSC 633;E. Cleared when the shell returns to prompt.
+    /// Last command from OSC 633;E.
     pub current_command: Option<String>,
-    /// Icon of the foreground agent. Recomputed when a command starts,
-    /// cleared on command end, survives prompt-ready between agent turns.
-    pub agent_icon: Option<&'static str>,
-    pub agent_kind: Option<agent::Kind>,
-    pub agent_source: AgentIdentitySource,
+    pub agent_icon: Option<String>,
+    pub agent_slug: Option<String>,
     pub agent_state: AgentState,
 }
 
-impl TerminalMeta {
-    /// Identity follows the foreground command: agents latch their icon,
-    /// any other command resets to the default terminal icon.
-    fn update_agent_identity(&mut self, kind: agent::Kind) {
-        self.agent_kind = (kind != agent::Kind::Shell).then_some(kind);
-        self.agent_icon = kind.icon();
-    }
-}
-
-#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
-pub enum AgentIdentitySource {
-    #[default]
-    CommandLine,
-    IconName,
-}
-
-/// App-level entity that holds live terminal metadata (title, cwd, shell state)
-/// keyed by terminal ID. Updated by WorkspaceTerminal as OSC events arrive;
-/// read by TerminalPanel and QuickActionPanel for rendering cards.
+/// Live terminal metadata (title, cwd, shell state) keyed by terminal ID.
+/// Written from OSC events, read by the terminal/quick-action panels.
 pub struct TerminalState {
     entries: HashMap<String, TerminalMeta>,
 }
@@ -79,102 +59,71 @@ impl TerminalState {
     }
 
     pub fn set_shell_running(&mut self, id: &str) {
+        self.entry(id).shell_state = ShellState::Running;
+    }
+
+    /// Apply host-resolved agent identity (`None` clears). Sets icon from slug;
+    /// defaults title to the display name when the terminal has none.
+    pub fn set_agent_slug(&mut self, id: &str, slug: Option<String>) {
+        // Adapter applies branding overrides (e.g. Codex -> OpenAI) + slug-asset fallback.
+        let resolved = slug.as_deref().map(|slug| {
+            let adapter = agent::adapter(slug);
+            (
+                adapter.icon_path().to_owned(),
+                adapter.display_name().to_owned(),
+            )
+        });
+        let icon = resolved.as_ref().map(|(icon, _)| icon.clone());
+        let default_title = resolved.map(|(_, name)| name);
         let e = self.entry(id);
-        e.shell_state = ShellState::Running;
-        // Recompute identity from the starting command; keep the current
-        // identity when the command is unknown (e.g. bare 633;C).
-        if e.agent_source == AgentIdentitySource::CommandLine
-            && let Some(command) = e.current_command.as_deref()
+        e.agent_slug = slug;
+        e.agent_icon = icon;
+        if e.title.is_none()
+            && let Some(title) = default_title
         {
-            let kind = agent_kind_from_command(command);
-            e.update_agent_identity(kind);
+            e.title = Some(title.clone());
+            e.plain_title = plain_terminal_title(&title);
         }
     }
 
     pub fn set_command_started(&mut self, id: &str) {
-        let prev_kind = self.entry(id).agent_kind;
-        self.set_shell_running(id);
-        let e = self.entry(id);
-        // Default the title only when an agent is newly latched; an already
-        // running agent starting an inner command keeps its live title.
-        if let Some(kind) = e.agent_kind
-            && prev_kind != Some(kind)
-        {
-            let title = agent::make_adapter(kind).display_name().to_owned();
-            e.plain_title = plain_terminal_title(&title);
-            e.title = Some(title);
-        }
+        self.entry(id).shell_state = ShellState::Running;
     }
 
     pub fn set_shell_idle(&mut self, id: &str, exit_code: Option<i32>) {
-        self.mark_shell_idle(id, exit_code, true);
+        self.mark_shell_idle(id, exit_code);
     }
 
     pub fn set_prompt_ready(&mut self, id: &str) {
-        // OSC 133;A signals the shell is showing its prompt. For long-running
-        // agents like pi that emit this between turns, do not clear agent
-        // identity — the agent is still the foreground process.
-        self.mark_shell_idle(id, None, false);
+        // OSC 133;A = prompt shown. Identity is host-driven, so only shell state updates.
+        self.mark_shell_idle(id, None);
     }
 
-    fn mark_shell_idle(&mut self, id: &str, exit_code: Option<i32>, clear_agent: bool) {
+    fn mark_shell_idle(&mut self, id: &str, exit_code: Option<i32>) {
         let e = self.entry(id);
         e.shell_state = ShellState::Idle;
         if let Some(code) = exit_code {
             e.last_exit_code = Some(code);
         }
         e.current_command = None;
-        if clear_agent {
-            e.agent_icon = None;
-            e.agent_kind = None;
-        }
     }
 
     pub fn set_current_command(&mut self, id: &str, command: String) {
-        let kind = agent_kind_from_command(&command);
-        let e = self.entry(id);
-        let latched = e.shell_state == ShellState::Running;
-        let ignored = e.agent_source == AgentIdentitySource::IconName;
-        e.current_command = Some(command);
-        if latched && !ignored {
-            e.update_agent_identity(kind);
-        }
+        self.entry(id).current_command = Some(command);
     }
 
-    pub fn set_icon_name(&mut self, id: &str, icon_name: String) {
-        let kind = agent_kind_from_command(&icon_name);
-        let agent_icon = kind.icon();
-        let e = self.entry(id);
-        e.agent_source = AgentIdentitySource::IconName;
-
-        if let Some(icon) = agent_icon {
-            e.shell_state = ShellState::Running;
-            e.agent_icon = Some(icon);
-            e.agent_kind = Some(kind);
-        } else {
-            e.shell_state = ShellState::Idle;
-            e.agent_icon = None;
-            e.agent_kind = None;
-        }
-    }
-
-    /// Seed full terminal metadata from the host's sync snapshot. The host is
-    /// the source of truth on reconnect; later live OSC events update from
-    /// this baseline.
+    /// Seed terminal metadata from the host sync snapshot (source of truth on
+    /// reconnect; live OSC events / `TerminalAgentChanged` update from here).
     pub fn seed_host_meta(&mut self, sync: &TerminalSyncEntry) {
         let id = &sync.id;
         self.set_title(id, sync.title.clone());
         if let Some(cwd) = &sync.cwd {
             self.set_cwd(id, cwd.clone());
         }
-        if let Some(icon_name) = &sync.icon_name {
-            self.set_icon_name(id, icon_name.clone());
-        }
 
         let e = self.entry(id);
         e.shell_state = sync.shell_state;
-        // Client current_command is only meaningful while running; the host
-        // command survives prompt-ready, so gate on shell state.
+        // current_command only meaningful while running; gate on shell state.
         e.current_command = if sync.shell_state == ShellState::Running {
             sync.agent_command.clone()
         } else {
@@ -185,29 +134,13 @@ impl TerminalState {
         }
         e.agent_state = sync.agent_state;
 
-        // The host-latched agent command is authoritative for agent identity;
-        // it overrides a non-agent OSC 1 icon name (shells often set OSC 1 to
-        // the cwd).
-        if let Some(command) = &sync.agent_command {
-            let kind = agent_kind_from_command(command);
-            if kind != agent::Kind::Shell {
-                e.agent_source = AgentIdentitySource::CommandLine;
-                e.update_agent_identity(kind);
-            }
-        }
+        // Host-resolved identity is authoritative.
+        self.set_agent_slug(id, sync.agent_slug.clone());
     }
 
     fn entry(&mut self, id: &str) -> &mut TerminalMeta {
         self.entries.entry(id.to_string()).or_default()
     }
-}
-
-pub fn agent_icon_from_command(raw: &str) -> Option<&'static str> {
-    agent_kind_from_command(raw).icon()
-}
-
-pub fn agent_kind_from_command(raw: &str) -> agent::Kind {
-    agent::detect(raw)
 }
 
 fn plain_terminal_title(title: &str) -> Option<String> {
@@ -276,61 +209,64 @@ mod tests {
     use super::*;
 
     #[test]
-    fn latches_codex_icon_from_command_until_command_end() {
+    fn set_agent_slug_resolves_icon_and_defaults_title() {
         let mut state = TerminalState::new();
         let id = "term-1";
 
-        state.set_current_command(id, "codex --model gpt-5.4".to_owned());
-        state.set_shell_running(id);
-
+        state.set_agent_slug(id, Some("codex".to_owned()));
         let meta = state.meta(id);
-        assert_eq!(meta.shell_state, ShellState::Running);
-        assert_eq!(meta.agent_icon, Some("icons/openai.svg"));
+        assert_eq!(meta.agent_slug.as_deref(), Some("codex"));
+        assert_eq!(meta.agent_icon.as_deref(), Some("icons/openai.svg"));
+        assert_eq!(meta.title.as_deref(), Some("Codex"));
+    }
 
-        state.set_title(id, Some("Reviewing terminal icon code".to_owned()));
-        assert_eq!(
-            state.meta(id).agent_icon,
-            Some("icons/openai.svg"),
-            "running command identity should survive later title changes"
-        );
+    #[test]
+    fn set_agent_slug_none_clears_identity() {
+        let mut state = TerminalState::new();
+        let id = "term-1";
 
-        state.set_shell_idle(id, Some(0));
+        state.set_agent_slug(id, Some("claude".to_owned()));
+        assert!(state.meta(id).agent_icon.is_some());
+
+        state.set_agent_slug(id, None);
         let meta = state.meta(id);
-        assert_eq!(meta.shell_state, ShellState::Idle);
+        assert_eq!(meta.agent_slug, None);
         assert_eq!(meta.agent_icon, None);
-        assert_eq!(meta.current_command, None);
     }
 
     #[test]
-    fn agent_identity_survives_prompt_ready_until_next_command() {
+    fn unknown_agent_slug_falls_back_to_terminal_icon() {
         let mut state = TerminalState::new();
         let id = "term-1";
 
-        state.set_current_command(id, "codex".to_owned());
-        state.set_shell_running(id);
-        assert_eq!(state.meta(id).agent_icon, Some("icons/openai.svg"));
-
-        // Agents emit prompt-ready between turns without exiting.
-        state.set_prompt_ready(id);
-        assert_eq!(state.meta(id).agent_icon, Some("icons/openai.svg"));
-
-        // A new non-agent command resets identity to the default icon.
-        state.set_current_command(id, "vim .".to_owned());
-        state.set_command_started(id);
-        assert_eq!(state.meta(id).agent_icon, None);
-        assert_eq!(state.meta(id).agent_kind, None);
+        state.set_agent_slug(id, Some("brand-new-agent".to_owned()));
+        assert_eq!(
+            state.meta(id).agent_icon.as_deref(),
+            Some("icons/terminal.svg")
+        );
     }
 
     #[test]
-    fn sync_seed_derives_agent_identity_from_latched_command() {
+    fn live_title_overrides_default_agent_title() {
+        let mut state = TerminalState::new();
+        let id = "term-1";
+
+        state.set_agent_slug(id, Some("hermes".to_owned()));
+        assert_eq!(state.meta(id).title.as_deref(), Some("Hermes Agent"));
+
+        state.set_title(id, Some("Reviewing auth flow".to_owned()));
+        assert_eq!(state.meta(id).title.as_deref(), Some("Reviewing auth flow"));
+    }
+
+    #[test]
+    fn sync_seed_sets_host_resolved_identity() {
         let mut state = TerminalState::new();
         let sync = TerminalSyncEntry {
             id: "term-1".to_owned(),
             title: Some("Reviewing auth flow".to_owned()),
             cwd: Some("/repo".to_owned()),
-            // Shells often set OSC 1 to the cwd; must not block agent identity.
-            icon_name: Some("..a-integration".to_owned()),
             agent_command: Some("codex".to_owned()),
+            agent_slug: Some("codex".to_owned()),
             shell_state: ShellState::Idle,
             last_exit_code: Some(0),
             ..Default::default()
@@ -339,14 +275,14 @@ mod tests {
         state.seed_host_meta(&sync);
 
         let meta = state.meta("term-1");
-        assert_eq!(meta.agent_kind, Some(agent::Kind::Codex));
-        assert_eq!(meta.agent_icon, Some("icons/openai.svg"));
+        assert_eq!(meta.agent_slug.as_deref(), Some("codex"));
+        assert_eq!(meta.agent_icon.as_deref(), Some("icons/openai.svg"));
         assert_eq!(meta.shell_state, ShellState::Idle);
         assert_eq!(meta.title.as_deref(), Some("Reviewing auth flow"));
     }
 
     #[test]
-    fn sync_seed_without_agent_command_does_not_invent_identity() {
+    fn sync_seed_without_agent_slug_has_no_identity() {
         let mut state = TerminalState::new();
         let sync = TerminalSyncEntry {
             id: "term-1".to_owned(),
@@ -359,26 +295,8 @@ mod tests {
         state.seed_host_meta(&sync);
 
         let meta = state.meta("term-1");
-        assert_eq!(meta.agent_kind, None);
+        assert_eq!(meta.agent_slug, None);
         assert_eq!(meta.agent_icon, None);
-    }
-
-    #[test]
-    fn title_does_not_seed_agent_icon_when_command_line_is_missing() {
-        let mut state = TerminalState::new();
-        let id = "term-1";
-
-        state.set_title(id, Some("codex".to_owned()));
-        state.set_shell_running(id);
-
-        assert_eq!(state.meta(id).agent_icon, None);
-
-        state.set_title(id, Some("Implementing a fix".to_owned()));
-        assert_eq!(
-            state.meta(id).agent_icon,
-            None,
-            "title is display metadata, not an agent identity source"
-        );
     }
 
     #[test]
@@ -391,32 +309,6 @@ mod tests {
         let meta = state.meta(id);
         assert_eq!(meta.title.as_deref(), Some("🤖  Fix auth flow 🚀"));
         assert_eq!(meta.plain_title.as_deref(), Some("Fix auth flow"));
-    }
-
-    #[test]
-    fn command_start_sets_default_agent_title() {
-        let mut state = TerminalState::new();
-        let id = "term-1";
-
-        state.set_title(id, Some("Launching Hermes Agent...".to_owned()));
-        state.set_current_command(id, "hermes".to_owned());
-        state.set_command_started(id);
-
-        let meta = state.meta(id);
-        assert_eq!(meta.title.as_deref(), Some("Hermes Agent"));
-        assert_eq!(meta.plain_title.as_deref(), Some("Hermes Agent"));
-    }
-
-    #[test]
-    fn inner_program_title_overrides_default_agent_title() {
-        let mut state = TerminalState::new();
-        let id = "term-1";
-
-        state.set_current_command(id, "hermes".to_owned());
-        state.set_command_started(id);
-        state.set_title(id, Some("Reviewing auth flow".to_owned()));
-
-        assert_eq!(state.meta(id).title.as_deref(), Some("Reviewing auth flow"));
     }
 
     #[test]
@@ -441,111 +333,5 @@ mod tests {
         let meta = state.meta(id);
         assert_eq!(meta.title.as_deref(), Some(" ✨ 🚀 "));
         assert_eq!(meta.plain_title, None);
-    }
-
-    #[test]
-    fn updates_agent_icon_if_command_line_arrives_after_start() {
-        let mut state = TerminalState::new();
-        let id = "term-1";
-
-        state.set_shell_running(id);
-        assert_eq!(state.meta(id).agent_icon, None);
-
-        state.set_current_command(id, "npx @openai/codex".to_owned());
-        assert_eq!(state.meta(id).agent_icon, Some("icons/openai.svg"));
-    }
-
-    #[test]
-    fn title_does_not_seed_agent_icon_after_command_start() {
-        let mut state = TerminalState::new();
-        let id = "term-1";
-
-        state.set_shell_running(id);
-        assert_eq!(state.meta(id).agent_icon, None);
-
-        state.set_title(id, Some("claude".to_owned()));
-        assert_eq!(state.meta(id).agent_icon, None);
-
-        state.set_title(id, Some("Editing terminal_state.rs".to_owned()));
-        assert_eq!(
-            state.meta(id).agent_icon,
-            None,
-            "semantic titles must not create an agent identity"
-        );
-    }
-
-    #[test]
-    fn command_line_metadata_sets_agent_icon_even_after_title_changes() {
-        let mut state = TerminalState::new();
-        let id = "term-1";
-
-        state.set_shell_running(id);
-        state.set_title(id, Some("claude".to_owned()));
-        assert_eq!(state.meta(id).agent_icon, None);
-
-        state.set_current_command(id, "gemini --yolo".to_owned());
-        assert_eq!(state.meta(id).agent_icon, Some("icons/gemini.svg"));
-    }
-
-    #[test]
-    fn icon_name_latches_agent_when_command_lifecycle_is_missing() {
-        let mut state = TerminalState::new();
-        let id = "term-1";
-
-        state.set_icon_name(id, "codex".to_owned());
-        assert_eq!(state.meta(id).shell_state, ShellState::Running);
-        assert_eq!(state.meta(id).agent_icon, Some("icons/openai.svg"));
-        assert_eq!(state.meta(id).agent_kind, Some(agent::Kind::Codex));
-
-        state.set_title(id, Some("⠋ zedra".to_owned()));
-        assert_eq!(
-            state.meta(id).agent_icon,
-            Some("icons/openai.svg"),
-            "semantic title changes should not clear icon-name fallback identity"
-        );
-
-        state.set_icon_name(id, "..rojects/zedra".to_owned());
-        let meta = state.meta(id);
-        assert_eq!(meta.shell_state, ShellState::Idle);
-        assert_eq!(meta.agent_icon, None);
-        assert_eq!(meta.agent_kind, None);
-        assert_eq!(meta.current_command, None);
-    }
-
-    #[test]
-    fn icon_name_is_primary_over_command_line_identity() {
-        let mut state = TerminalState::new();
-        let id = "term-1";
-
-        state.set_current_command(id, "claude --dangerously-skip-permissions".to_owned());
-        state.set_shell_running(id);
-        assert_eq!(state.meta(id).agent_icon, Some("icons/claude.svg"));
-
-        state.set_icon_name(id, "..rojects/zedra".to_owned());
-        assert_eq!(state.meta(id).agent_icon, None);
-
-        state.set_current_command(id, "codex".to_owned());
-        state.set_shell_running(id);
-        assert_eq!(
-            state.meta(id).agent_icon,
-            None,
-            "once OSC 1 is present, command-line metadata should not override it"
-        );
-
-        state.set_icon_name(id, "codex".to_owned());
-        assert_eq!(state.meta(id).agent_icon, Some("icons/openai.svg"));
-    }
-
-    #[test]
-    fn command_start_without_command_line_preserves_icon_name_fallback_source() {
-        let mut state = TerminalState::new();
-        let id = "term-1";
-
-        state.set_icon_name(id, "claude".to_owned());
-        state.set_shell_running(id);
-        assert_eq!(state.meta(id).agent_icon, Some("icons/claude.svg"));
-
-        state.set_icon_name(id, "..rojects/zedra".to_owned());
-        assert_eq!(state.meta(id).agent_icon, None);
     }
 }

@@ -1,15 +1,9 @@
-//! Claude CLI PTY probe — unstructured fallback for usage/plan when OAuth file token is absent.
-//!
-//! Used when there is no readable OAuth token file, or when OAuth API calls fail and the host
-//! falls back here. Spawns `claude`, drives `/usage` and `/status`, and parses plain-text TUI
-//! output (layout inspired by codexbar `ClaudeStatusProbe`).
-//!
-//! **Reliability:** best-effort, not a stable API. Percents are usually stable;
-//! `rate_limit_*_resets_at` may be wrong or missing (host-local time, glued TUI tokens).
-//! Clients should treat missing reset fields as duration unknown.
-//!
-//! **Performance:** one combined probe per cache window (~seconds). `PTY_LOCK` serializes probes;
-//! `PTY_CACHE` dedupes parallel `scan_account_usage` / `scan_account_plans`.
+//! Claude CLI PTY probe — best-effort usage/plan fallback when no OAuth token file is readable
+//! (or OAuth calls fail). Spawns `claude`, drives `/usage` and `/status`, parses plain-text TUI
+//! output (layout from codexbar `ClaudeStatusProbe`). Not a stable API: percents are usually
+//! reliable, but `rate_limit_*_resets_at` may be missing or wrong (host-local time, glued tokens)
+//! — treat missing resets as duration-unknown. One combined probe per cache window: `PTY_LOCK`
+//! serializes, `PTY_CACHE` dedupes parallel usage/plan scans.
 //! Env: `ZEDRA_DEBUG_CLAUDE_PTY=1`, `ZEDRA_CLAUDE_PTY_CACHE_SECS` (10–300, default 60).
 
 use chrono::{
@@ -524,12 +518,8 @@ fn which_claude() -> Option<std::path::PathBuf> {
         .find(|p| p.is_file())
 }
 
-/// Strip ANSI escape sequences from a byte slice, returning plain text.
-///
-/// Multi-byte UTF-8 characters are handled correctly: the leading byte determines
-/// the character length and all continuation bytes are consumed together.
-/// Truncated sequences at the end of the buffer (split across read boundaries)
-/// are dropped rather than emitting replacement characters.
+/// Strip ANSI escapes from a byte slice. Multi-byte UTF-8 is consumed whole by leading-byte
+/// length; sequences truncated at the buffer end (split reads) are dropped, not replaced.
 fn strip_ansi(input: &[u8]) -> String {
     let mut out = String::with_capacity(input.len());
     let mut i = 0;
@@ -568,20 +558,17 @@ fn strip_ansi(input: &[u8]) -> String {
             // Skip other control bytes (e.g. cursor movement OSC)
             i += 1;
         } else {
-            // Determine the UTF-8 character width from the leading byte, then
-            // validate and push the whole character. This handles multi-byte
-            // sequences correctly instead of processing one byte at a time.
+            // Push the whole UTF-8 character by leading-byte width, not byte-by-byte.
             let char_len = utf8_char_len(input[i]);
             if i + char_len <= input.len() {
                 if let Ok(s) = std::str::from_utf8(&input[i..i + char_len]) {
                     out.push_str(s);
                 }
-                // Skip all bytes of this character even if invalid — avoids
-                // treating continuation bytes as independent characters.
+                // Skip every byte of the char even if invalid, so continuation bytes
+                // aren't treated as independent characters.
                 i += char_len;
             } else {
-                // Truncated sequence at end of buffer — skip remaining bytes.
-                break;
+                break; // truncated char at buffer end
             }
         }
     }
@@ -852,11 +839,9 @@ fn local_from_month_day_time(
     }
 }
 
-/// Parse plain-text from Claude `/usage` PTY capture into `AgentUsageSnapshot`.
-///
-/// Label lines may have no spaces (`Currentsession`, `Currentweek(allmodels)`). Percentages
-/// often appear on the following line. Reset lines are best-effort unix timestamps in host local
-/// time; see PTY module note when `resets_at` is None.
+/// Parse Claude `/usage` PTY text into `AgentUsageSnapshot`. Labels may be unspaced
+/// (`Currentsession`, `Currentweek(allmodels)`) with the percent on the next line; reset lines are
+/// best-effort host-local unix timestamps (see module note when `resets_at` is None).
 fn parse_usage_output(text: &str) -> Option<AgentUsageSnapshot> {
     let mut session_pct: Option<f32> = None;
     let mut week_pct: Option<f32> = None;
@@ -920,10 +905,7 @@ fn parse_usage_output(text: &str) -> Option<AgentUsageSnapshot> {
         rate_limit_seven_day_resets_at: week_resets_at,
         context_used_percent: context_used,
         total_cost_usd: credits_used,
-        total_duration_ms: None,
-        total_api_duration_ms: None,
-        lines_added: None,
-        lines_removed: None,
+        ..Default::default()
     })
 }
 
@@ -1080,15 +1062,7 @@ mod tests {
     fn cli_plan_fallback_logged_in_when_usage_present() {
         let usage = AgentUsageSnapshot {
             rate_limit_five_hour_used_percent: Some(10.0),
-            rate_limit_seven_day_used_percent: None,
-            rate_limit_five_hour_resets_at: None,
-            rate_limit_seven_day_resets_at: None,
-            context_used_percent: None,
-            total_cost_usd: None,
-            total_duration_ms: None,
-            total_api_duration_ms: None,
-            lines_added: None,
-            lines_removed: None,
+            ..Default::default()
         };
         let fields = plan_with_usage_fallback(None, &Some(usage)).expect("fields");
         assert_eq!(field_value(&fields, "Logged in"), Some("yes"));

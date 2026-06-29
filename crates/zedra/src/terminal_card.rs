@@ -23,7 +23,7 @@ pub struct TerminalCardProps {
     pub is_active: bool,
     pub title: Option<String>,
     pub cwd: Option<String>,
-    pub agent_icon: Option<&'static str>,
+    pub agent_icon: Option<String>,
     pub agent_state: AgentState,
     pub shell_state: ShellState,
     pub last_exit_code: Option<i32>,
@@ -114,7 +114,7 @@ pub fn render_terminal_card(cx: &App, props: TerminalCardProps) -> Stateful<Div>
     let card_id = SharedString::from(format!("term-card-{}", props.id));
     let close_btn_id = SharedString::from(format!("term-close-{}", props.id));
     let is_active = props.is_active;
-    let icon_path = props.agent_icon.unwrap_or("icons/terminal.svg");
+    let icon_path = props.agent_icon.unwrap_or("icons/terminal.svg".to_string());
 
     // Build the right-side indicator up front so we can move on_close without borrow issues.
     let right_element: AnyElement = if let Some(close_fn) = props.on_close {

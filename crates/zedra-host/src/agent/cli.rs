@@ -1,15 +1,16 @@
+use crate::agent;
+use crate::{identity, utils};
 use anyhow::{bail, Context, Result};
 use chrono::{DateTime, Utc};
-use clap::{Args, Subcommand, ValueEnum};
+use clap::{Args, Subcommand};
 use serde::de::DeserializeOwned;
 use serde::Serialize;
 use std::collections::HashMap;
 use std::io::{stderr, Read, Write};
 use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
-use zedra_host::{agent, identity, utils};
 use zedra_rpc::proto::{
-    AgentInfoField, AgentInstalledListResult, AgentKind, AgentListResult, AgentResumeResult,
+    AgentInfoField, AgentInstalledListResult, AgentListResult, AgentResumeResult,
     AgentSessionSummary, AgentSessionsResult, AgentSummary, AgentUsageSnapshot,
     InstalledAgentEntry,
 };
@@ -47,8 +48,7 @@ pub struct AgentListArgs {
 #[derive(Debug, Args)]
 pub struct AgentSessionsArgs {
     /// Agent provider to inspect
-    #[arg(value_enum)]
-    kind: CliManagedAgentKind,
+    kind: String,
     /// Working directory of the running daemon
     #[arg(short, long, default_value = ".")]
     workdir: String,
@@ -97,8 +97,7 @@ pub struct AgentScanWorkdirArgs {
 #[derive(Debug, Args)]
 pub struct AgentScanSessionsArgs {
     /// Agent provider to inspect
-    #[arg(value_enum)]
-    kind: CliManagedAgentKind,
+    kind: String,
     /// Workspace directory to scan
     #[arg(short, long, default_value = ".")]
     workdir: String,
@@ -132,8 +131,7 @@ pub struct AgentScanBenchArgs {
 #[derive(Debug, Args)]
 pub struct AgentResumeArgs {
     /// Agent provider to resume
-    #[arg(value_enum)]
-    kind: CliManagedAgentKind,
+    kind: String,
     /// Provider session id to resume
     session_id: String,
     /// Working directory of the running daemon
@@ -166,8 +164,8 @@ pub struct AgentHookInstallArgs {
     #[arg(short, long, default_value = ".")]
     workdir: String,
     /// Provider to install. Repeat for multiple providers. Defaults to all.
-    #[arg(long = "provider", value_enum)]
-    providers: Vec<CliManagedAgentKind>,
+    #[arg(long = "provider")]
+    providers: Vec<String>,
     /// Overwrite existing generated hook config files
     #[arg(long)]
     force: bool,
@@ -195,8 +193,7 @@ pub struct AgentHookReceiveArgs {
 #[derive(Debug, Args)]
 pub struct AgentHookTestArgs {
     /// Agent provider to simulate
-    #[arg(value_enum)]
-    kind: CliManagedAgentKind,
+    kind: String,
     /// Provider event name to simulate
     event: String,
     /// Working directory of the running daemon
@@ -210,38 +207,10 @@ pub struct AgentHookTestArgs {
     json: bool,
 }
 
-#[derive(Clone, Copy, Debug, ValueEnum)]
-pub enum CliManagedAgentKind {
-    Claude,
-    Codex,
-    #[value(name = "opencode", alias = "open-code", alias = "open_code")]
-    OpenCode,
-    Pi,
-    Hermes,
-}
-
-impl CliManagedAgentKind {
-    fn slug(self) -> &'static str {
-        match self {
-            Self::Claude => "claude",
-            Self::Codex => "codex",
-            Self::OpenCode => "opencode",
-            Self::Pi => "pi",
-            Self::Hermes => "hermes",
-        }
-    }
-}
-
-impl From<CliManagedAgentKind> for AgentKind {
-    fn from(value: CliManagedAgentKind) -> Self {
-        match value {
-            CliManagedAgentKind::Claude => AgentKind::Claude,
-            CliManagedAgentKind::Codex => AgentKind::Codex,
-            CliManagedAgentKind::OpenCode => AgentKind::OpenCode,
-            CliManagedAgentKind::Pi => AgentKind::Pi,
-            CliManagedAgentKind::Hermes => AgentKind::Hermes,
-        }
-    }
+fn actor_slug(raw: &str) -> Result<&'static str> {
+    agent::actor(raw)
+        .map(|actor| actor.slug())
+        .ok_or_else(|| anyhow::anyhow!("unsupported agent: {raw}"))
 }
 
 pub async fn run(command: AgentCommand) -> Result<()> {
@@ -267,12 +236,13 @@ async fn list_agents(args: AgentListArgs) -> Result<()> {
 
 async fn list_sessions(args: AgentSessionsArgs) -> Result<()> {
     let workdir = resolve_workdir(&args.workdir);
-    let path = format!("/api/agents/{}/sessions", args.kind.slug());
+    let slug = actor_slug(&args.kind)?;
+    let path = format!("/api/agents/{slug}/sessions");
     let result: AgentSessionsResult = api_get(&workdir, &path).await?;
     if args.json {
         println!("{}", serde_json::to_string_pretty(&result)?);
     } else {
-        println!("{}", render_agent_sessions(args.kind.into(), &result));
+        println!("{}", render_agent_sessions(slug, &result));
     }
     Ok(())
 }
@@ -324,9 +294,9 @@ fn scan_list(args: AgentScanWorkdirArgs) -> Result<()> {
 
 fn scan_sessions(args: AgentScanSessionsArgs) -> Result<()> {
     let workdir = resolve_workdir(&args.workdir);
-    let kind: AgentKind = args.kind.into();
+    let slug = actor_slug(&args.kind)?;
     let started = Instant::now();
-    let result = agent::scan_agent_sessions(kind, &workdir, args.limit);
+    let result = agent::scan_agent_sessions(slug, &workdir, args.limit);
     emit_scan(
         ScanEmit {
             scan: "sessions",
@@ -337,7 +307,7 @@ fn scan_sessions(args: AgentScanSessionsArgs) -> Result<()> {
             quiet: args.quiet,
         },
         &result,
-        |value| render_agent_sessions(kind, value),
+        |value| render_agent_sessions(slug, value),
     )
 }
 
@@ -380,20 +350,15 @@ fn scan_bench(args: AgentScanBenchArgs) -> Result<()> {
     });
 
     let mut sessions = std::collections::HashMap::new();
-    for kind in [
-        AgentKind::Claude,
-        AgentKind::Codex,
-        AgentKind::OpenCode,
-        AgentKind::Pi,
-        AgentKind::Hermes,
-    ] {
+    for actor in agent::actors() {
+        let slug = actor.slug();
         let started = Instant::now();
-        let result = agent::scan_agent_sessions(kind, &workdir, args.limit);
+        let result = agent::scan_agent_sessions(slug, &workdir, args.limit);
         steps.push(ScanStepTiming {
-            scan: format!("sessions:{kind:?}"),
+            scan: format!("sessions:{slug}"),
             elapsed_ms: started.elapsed().as_millis(),
         });
-        sessions.insert(format!("{kind:?}"), result);
+        sessions.insert(slug.to_string(), result);
     }
 
     let total_elapsed = bench_started.elapsed();
@@ -452,16 +417,11 @@ fn scan_bench(args: AgentScanBenchArgs) -> Result<()> {
     println!("{}", render_installed_agents(&installed));
     println!();
     println!("{}", render_agent_list(&list));
-    for kind in [
-        AgentKind::Claude,
-        AgentKind::Codex,
-        AgentKind::OpenCode,
-        AgentKind::Pi,
-        AgentKind::Hermes,
-    ] {
+    for actor in agent::actors() {
+        let slug = actor.slug();
         println!();
-        if let Some(result) = sessions.get(&format!("{kind:?}")) {
-            println!("{}", render_agent_sessions(kind, result));
+        if let Some(result) = sessions.get(slug) {
+            println!("{}", render_agent_sessions(slug, result));
         }
     }
     Ok(())
@@ -482,8 +442,8 @@ async fn scan_usage(args: AgentScanCommonArgs) -> Result<()> {
     if args.json {
         #[derive(serde::Serialize)]
         struct ScanUsageOutput<'a> {
-            usage: &'a HashMap<AgentKind, AgentUsageSnapshot>,
-            plans: &'a HashMap<AgentKind, Vec<AgentInfoField>>,
+            usage: &'a HashMap<String, AgentUsageSnapshot>,
+            plans: &'a HashMap<String, Vec<AgentInfoField>>,
         }
         println!(
             "{}",
@@ -493,22 +453,14 @@ async fn scan_usage(args: AgentScanCommonArgs) -> Result<()> {
             })?
         );
     } else {
-        use zedra_rpc::proto::AgentKind::*;
-        for kind in [Claude, Codex, OpenCode, Pi, Hermes] {
-            let label = match kind {
-                Claude => "Claude",
-                Codex => "Codex",
-                OpenCode => "OpenCode",
-                Pi => "Pi",
-                Hermes => "Hermes",
-            };
-            match snapshots.get(&kind) {
-                // Hermes has no remote usage/plan endpoint; absence is expected.
-                None if kind == Hermes => println!("{label}: local-only (no remote usage)"),
-                None => println!("{label}: no credentials / fetch failed"),
+        for actor in agent::actors() {
+            let slug = actor.slug();
+            let label = actor.display_name();
+            match snapshots.get(slug) {
+                None => println!("{label}: no remote usage available"),
                 Some(snap) => {
                     println!("{label}:");
-                    if let Some(fields) = plans.get(&kind) {
+                    if let Some(fields) = plans.get(slug) {
                         for field in fields {
                             if matches!(
                                 field.label.as_str(),
@@ -603,7 +555,8 @@ fn emit_scan<T: Serialize>(
 
 async fn resume_session(args: AgentResumeArgs) -> Result<()> {
     let workdir = resolve_workdir(&args.workdir);
-    let path = format!("/api/agents/{}/resume", args.kind.slug());
+    let slug = actor_slug(&args.kind)?;
+    let path = format!("/api/agents/{slug}/resume");
     let body = serde_json::json!({
         "session_id": args.session_id,
         "cols": args.cols,
@@ -644,8 +597,8 @@ async fn receive_hook(args: AgentHookReceiveArgs) -> Result<()> {
         }
     };
     let payload = parse_hook_payload(&raw);
-    let slug = zedra_host::agent::managed_kind_from_slug(&args.agent)
-        .map(zedra_host::agent_utils::program_name)
+    let slug = agent::actor(&args.agent)
+        .map(|actor| actor.slug())
         .unwrap_or(args.agent.as_str());
     let body = AgentHookForwardReq {
         event_name: None,
@@ -676,7 +629,10 @@ async fn receive_hook(args: AgentHookReceiveArgs) -> Result<()> {
 
 async fn test_hook(args: AgentHookTestArgs) -> Result<()> {
     let workdir = resolve_workdir(&args.workdir);
-    let payload = synthetic_hook_payload(args.kind, &args.event, &workdir);
+    let actor = agent::actor(&args.kind)
+        .ok_or_else(|| anyhow::anyhow!("unsupported agent: {}", args.kind))?;
+    let slug = actor.slug();
+    let payload = actor.hook_test_payload(&args.event, &workdir);
     let body = AgentHookForwardReq {
         event_name: Some(args.event),
         terminal_id: args.terminal_id,
@@ -685,7 +641,7 @@ async fn test_hook(args: AgentHookTestArgs) -> Result<()> {
         tool_name: Some("Bash".to_string()),
         payload,
     };
-    let path = format!("/api/agent-hooks/{}", args.kind.slug());
+    let path = format!("/api/agent-hooks/{slug}");
     let response: serde_json::Value = api_post(&workdir, &path, &body).await?;
     if args.json {
         println!("{}", serde_json::to_string_pretty(&response)?);
@@ -706,40 +662,31 @@ struct AgentHookForwardReq {
 }
 
 fn install_hooks(args: AgentHookInstallArgs) -> Result<()> {
-    if !zedra_host::agent_setup::hooks_enabled() {
+    if !agent::hooks_enabled() {
         anyhow::bail!("agent hook install is disabled in release builds");
     }
     let workdir = resolve_workdir(&args.workdir);
-    let providers = if args.providers.is_empty() {
-        vec![
-            CliManagedAgentKind::Claude,
-            CliManagedAgentKind::Codex,
-            CliManagedAgentKind::OpenCode,
-            CliManagedAgentKind::Pi,
-            CliManagedAgentKind::Hermes,
-        ]
+    let script_path = workdir.join(".zedra/agent-hooks/zedra-agent-hook.sh");
+    let actors = if args.providers.is_empty() {
+        agent::actors().to_vec()
     } else {
         args.providers
+            .iter()
+            .map(|slug| {
+                actor_slug(slug).and_then(|slug| {
+                    agent::actor(slug).ok_or_else(|| anyhow::anyhow!("unsupported agent: {slug}"))
+                })
+            })
+            .collect::<Result<Vec<_>>>()?
     };
-    let script_path = write_hook_script(&workdir, args.force)?;
-    let mut written = vec![script_path.clone()];
-    for provider in providers {
-        match provider {
-            CliManagedAgentKind::Claude => written.push(write_claude_hook_config(
-                &workdir,
-                &script_path,
-                args.force,
-            )?),
-            CliManagedAgentKind::Codex => {
-                written.push(write_codex_hook_config(&workdir, &script_path, args.force)?)
+    let mut written = Vec::new();
+    for actor in actors {
+        match actor.setup(&workdir, args.force) {
+            Ok(mut paths) => written.append(&mut paths),
+            Err(error) if args.providers.is_empty() => {
+                tracing::debug!(agent = actor.slug(), %error, "agent has no hook installer")
             }
-            CliManagedAgentKind::OpenCode => written.push(write_opencode_hook_config(
-                &workdir,
-                &script_path,
-                args.force,
-            )?),
-            CliManagedAgentKind::Pi => written.push(write_pi_hook_extension(args.force)?),
-            CliManagedAgentKind::Hermes => written.extend(write_hermes_hook_config(args.force)?),
+            Err(error) => return Err(error),
         }
     }
 
@@ -759,8 +706,11 @@ fn install_hooks(args: AgentHookInstallArgs) -> Result<()> {
     Ok(())
 }
 
-fn write_hook_script(workdir: &Path, force: bool) -> Result<PathBuf> {
+pub(crate) fn write_hook_script(workdir: &Path, force: bool) -> Result<PathBuf> {
     let path = workdir.join(".zedra/agent-hooks/zedra-agent-hook.sh");
+    if path.exists() && !force {
+        return Ok(path);
+    }
     write_file_checked(
         &path,
         &hook_script_contents(workdir)?,
@@ -777,7 +727,11 @@ fn write_hook_script(workdir: &Path, force: bool) -> Result<PathBuf> {
     Ok(path)
 }
 
-fn write_claude_hook_config(workdir: &Path, script_path: &Path, force: bool) -> Result<PathBuf> {
+pub(crate) fn write_claude_hook_config(
+    workdir: &Path,
+    script_path: &Path,
+    force: bool,
+) -> Result<PathBuf> {
     let path = workdir.join(".claude/settings.local.json");
     let value = claude_hook_config(script_path);
     write_json_file_checked(&path, &value, force, "Claude local hook config")?;
@@ -787,37 +741,41 @@ fn write_claude_hook_config(workdir: &Path, script_path: &Path, force: bool) -> 
 fn claude_hook_config(script_path: &Path) -> serde_json::Value {
     serde_json::json!({
         "hooks": {
-            "Setup": hook_groups_for_event(script_path, CliManagedAgentKind::Claude, "Setup", Some("*")),
-            "SessionStart": hook_groups_for_event(script_path, CliManagedAgentKind::Claude, "SessionStart", None),
-            "InstructionsLoaded": hook_groups_for_event(script_path, CliManagedAgentKind::Claude, "InstructionsLoaded", Some("*")),
-            "UserPromptSubmit": hook_groups_for_event(script_path, CliManagedAgentKind::Claude, "UserPromptSubmit", None),
-            "UserPromptExpansion": hook_groups_for_event(script_path, CliManagedAgentKind::Claude, "UserPromptExpansion", Some("*")),
-            "PreToolUse": hook_groups_for_event(script_path, CliManagedAgentKind::Claude, "PreToolUse", Some("*")),
-            "PermissionRequest": hook_groups_for_event(script_path, CliManagedAgentKind::Claude, "PermissionRequest", Some("*")),
-            "PermissionDenied": hook_groups_for_event(script_path, CliManagedAgentKind::Claude, "PermissionDenied", Some("*")),
-            "PostToolUse": hook_groups_for_event(script_path, CliManagedAgentKind::Claude, "PostToolUse", Some("*")),
-            "PostToolUseFailure": hook_groups_for_event(script_path, CliManagedAgentKind::Claude, "PostToolUseFailure", Some("*")),
-            "PostToolBatch": hook_groups_for_event(script_path, CliManagedAgentKind::Claude, "PostToolBatch", None),
-            "TaskCreated": hook_groups_for_event(script_path, CliManagedAgentKind::Claude, "TaskCreated", None),
-            "TaskCompleted": hook_groups_for_event(script_path, CliManagedAgentKind::Claude, "TaskCompleted", None),
-            "Stop": hook_groups_for_event(script_path, CliManagedAgentKind::Claude, "Stop", None),
-            "StopFailure": hook_groups_for_event(script_path, CliManagedAgentKind::Claude, "StopFailure", None),
-            "TeammateIdle": hook_groups_for_event(script_path, CliManagedAgentKind::Claude, "TeammateIdle", None),
-            "ConfigChange": hook_groups_for_event(script_path, CliManagedAgentKind::Claude, "ConfigChange", Some("*")),
-            "CwdChanged": hook_groups_for_event(script_path, CliManagedAgentKind::Claude, "CwdChanged", None),
-            "WorktreeCreate": hook_groups_for_event(script_path, CliManagedAgentKind::Claude, "WorktreeCreate", None),
-            "WorktreeRemove": hook_groups_for_event(script_path, CliManagedAgentKind::Claude, "WorktreeRemove", None),
-            "PreCompact": hook_groups_for_event(script_path, CliManagedAgentKind::Claude, "PreCompact", Some("*")),
-            "PostCompact": hook_groups_for_event(script_path, CliManagedAgentKind::Claude, "PostCompact", Some("*")),
-            "Elicitation": hook_groups_for_event(script_path, CliManagedAgentKind::Claude, "Elicitation", Some("*")),
-            "ElicitationResult": hook_groups_for_event(script_path, CliManagedAgentKind::Claude, "ElicitationResult", Some("*")),
-            "SessionEnd": hook_groups_for_event(script_path, CliManagedAgentKind::Claude, "SessionEnd", Some("*")),
-            "Notification": hook_groups_for_event(script_path, CliManagedAgentKind::Claude, "Notification", Some("*"))
+            "Setup": hook_groups_for_event(script_path, "claude", "Setup", Some("*")),
+            "SessionStart": hook_groups_for_event(script_path, "claude", "SessionStart", None),
+            "InstructionsLoaded": hook_groups_for_event(script_path, "claude", "InstructionsLoaded", Some("*")),
+            "UserPromptSubmit": hook_groups_for_event(script_path, "claude", "UserPromptSubmit", None),
+            "UserPromptExpansion": hook_groups_for_event(script_path, "claude", "UserPromptExpansion", Some("*")),
+            "PreToolUse": hook_groups_for_event(script_path, "claude", "PreToolUse", Some("*")),
+            "PermissionRequest": hook_groups_for_event(script_path, "claude", "PermissionRequest", Some("*")),
+            "PermissionDenied": hook_groups_for_event(script_path, "claude", "PermissionDenied", Some("*")),
+            "PostToolUse": hook_groups_for_event(script_path, "claude", "PostToolUse", Some("*")),
+            "PostToolUseFailure": hook_groups_for_event(script_path, "claude", "PostToolUseFailure", Some("*")),
+            "PostToolBatch": hook_groups_for_event(script_path, "claude", "PostToolBatch", None),
+            "TaskCreated": hook_groups_for_event(script_path, "claude", "TaskCreated", None),
+            "TaskCompleted": hook_groups_for_event(script_path, "claude", "TaskCompleted", None),
+            "Stop": hook_groups_for_event(script_path, "claude", "Stop", None),
+            "StopFailure": hook_groups_for_event(script_path, "claude", "StopFailure", None),
+            "TeammateIdle": hook_groups_for_event(script_path, "claude", "TeammateIdle", None),
+            "ConfigChange": hook_groups_for_event(script_path, "claude", "ConfigChange", Some("*")),
+            "CwdChanged": hook_groups_for_event(script_path, "claude", "CwdChanged", None),
+            "WorktreeCreate": hook_groups_for_event(script_path, "claude", "WorktreeCreate", None),
+            "WorktreeRemove": hook_groups_for_event(script_path, "claude", "WorktreeRemove", None),
+            "PreCompact": hook_groups_for_event(script_path, "claude", "PreCompact", Some("*")),
+            "PostCompact": hook_groups_for_event(script_path, "claude", "PostCompact", Some("*")),
+            "Elicitation": hook_groups_for_event(script_path, "claude", "Elicitation", Some("*")),
+            "ElicitationResult": hook_groups_for_event(script_path, "claude", "ElicitationResult", Some("*")),
+            "SessionEnd": hook_groups_for_event(script_path, "claude", "SessionEnd", Some("*")),
+            "Notification": hook_groups_for_event(script_path, "claude", "Notification", Some("*"))
         }
     })
 }
 
-fn write_codex_hook_config(workdir: &Path, script_path: &Path, force: bool) -> Result<PathBuf> {
+pub(crate) fn write_codex_hook_config(
+    workdir: &Path,
+    script_path: &Path,
+    force: bool,
+) -> Result<PathBuf> {
     let path = workdir.join(".codex/hooks.json");
     let value = codex_hook_config(script_path);
     write_json_file_checked(&path, &value, force, "Codex local hook config")?;
@@ -827,16 +785,20 @@ fn write_codex_hook_config(workdir: &Path, script_path: &Path, force: bool) -> R
 fn codex_hook_config(script_path: &Path) -> serde_json::Value {
     serde_json::json!({
         "hooks": {
-            "SessionStart": hook_groups_for_event(script_path, CliManagedAgentKind::Codex, "SessionStart", None),
-            "UserPromptSubmit": hook_groups_for_event(script_path, CliManagedAgentKind::Codex, "UserPromptSubmit", None),
-            "PermissionRequest": hook_groups_for_event(script_path, CliManagedAgentKind::Codex, "PermissionRequest", Some("*")),
-            "PostToolUse": hook_groups_for_event(script_path, CliManagedAgentKind::Codex, "PostToolUse", Some("*")),
-            "Stop": hook_groups_for_event(script_path, CliManagedAgentKind::Codex, "Stop", None)
+            "SessionStart": hook_groups_for_event(script_path, "codex", "SessionStart", None),
+            "UserPromptSubmit": hook_groups_for_event(script_path, "codex", "UserPromptSubmit", None),
+            "PermissionRequest": hook_groups_for_event(script_path, "codex", "PermissionRequest", Some("*")),
+            "PostToolUse": hook_groups_for_event(script_path, "codex", "PostToolUse", Some("*")),
+            "Stop": hook_groups_for_event(script_path, "codex", "Stop", None)
         }
     })
 }
 
-fn write_opencode_hook_config(workdir: &Path, script_path: &Path, force: bool) -> Result<PathBuf> {
+pub(crate) fn write_opencode_hook_config(
+    workdir: &Path,
+    script_path: &Path,
+    force: bool,
+) -> Result<PathBuf> {
     let path = workdir.join(".opencode/plugins/zedra.js");
     let contents = format!(
         r#"const hookScript = {script};
@@ -879,7 +841,7 @@ export const ZedraPlugin = async () => ({{
     Ok(path)
 }
 
-fn write_pi_hook_extension(force: bool) -> Result<PathBuf> {
+pub(crate) fn write_pi_hook_extension(force: bool) -> Result<PathBuf> {
     let path = agent::home_path(&[".pi", "agent", "extensions", "zedra-agent-hooks.ts"]);
     let cli = std::env::current_exe().context("failed to resolve current zedra binary")?;
     let contents = pi_hook_extension_contents(&cli.display().to_string());
@@ -969,8 +931,8 @@ const HERMES_HOOK_EVENTS: &[&str] = &[
 
 /// Writes the Hermes hook script and patches `~/.hermes/config.yaml`.
 /// Returns the list of paths written/modified (hook script + config.yaml).
-fn write_hermes_hook_config(force: bool) -> Result<Vec<PathBuf>> {
-    let hermes_home = zedra_host::agent_hermes::hermes_home();
+pub(crate) fn write_hermes_hook_config(force: bool) -> Result<Vec<PathBuf>> {
+    let hermes_home = crate::agent::hermes::HermesActor::hermes_home();
     let script_path = hermes_home.join("agent-hooks").join("zedra-agent-hooks.sh");
     let cli = std::env::current_exe().context("failed to resolve current zedra binary")?;
     let script = hermes_hook_script_contents(&cli.display().to_string());
@@ -1011,15 +973,9 @@ exec "$CLI" agent hook receive --agent hermes --quiet
     )
 }
 
-/// Idempotently patches the `hooks:` block in `~/.hermes/config.yaml`.
-///
-/// Strategy:
-/// - Zedra owns exactly the event keys listed in `HERMES_HOOK_EVENTS`.
-/// - On every run (first install or re-run) we remove those keys from the
-///   existing hooks block and re-insert fresh entries — so the path and
-///   timeout are always up-to-date regardless of prior runs.
-/// - All other hooks (user-defined) are preserved verbatim.
-/// - Handles the default empty-dict form (`hooks: {}`) and the block form.
+/// Idempotently patch the `hooks:` block in `~/.hermes/config.yaml`. Each run strips the
+/// `HERMES_HOOK_EVENTS` keys Zedra owns and re-inserts fresh entries (path/timeout stay current),
+/// preserves all user-defined hooks verbatim, and handles both `hooks: {}` and block forms.
 pub fn patch_hermes_config_hooks(config: &str, script_path: &Path) -> String {
     let script = script_path.display().to_string();
 
@@ -1103,13 +1059,9 @@ fn is_hooks_key_line(line: &str) -> bool {
             && matches!(t.as_bytes().get(6), Some(b' ') | Some(b'{') | None))
 }
 
-/// Remove event blocks whose key is in `remove_events` from the indented
-/// hooks content lines (the lines *after* the `hooks:` key).
-///
-/// An event block starts at a line with exactly 2-space indent followed by
-/// an identifier and `:`, and continues until the next such line or EOF.
-/// All other content (blank lines, comments, deeper-indented lines) is kept
-/// or skipped depending on whether we are currently inside a removed block.
+/// Remove `remove_events` blocks from the indented hooks lines (those *after* the `hooks:` key).
+/// A block runs from a `  identifier:` line (exactly 2-space indent) to the next such line or EOF;
+/// other lines (blank, comment, deeper-indented) are kept or dropped by whether we're inside one.
 fn remove_zedra_event_blocks<'a>(lines: &[&'a str], remove_events: &[&str]) -> String {
     let mut out = String::new();
     let mut skip = false;
@@ -1170,17 +1122,17 @@ fn hook_groups(command: &str, matcher: Option<&str>) -> serde_json::Value {
 
 fn hook_groups_for_event(
     script_path: &Path,
-    kind: CliManagedAgentKind,
+    slug: &str,
     event_name: &str,
     matcher: Option<&str>,
 ) -> serde_json::Value {
-    hook_groups(&hook_command(script_path, kind, event_name), matcher)
+    hook_groups(&hook_command(script_path, slug, event_name), matcher)
 }
 
-fn hook_command(script_path: &Path, kind: CliManagedAgentKind, event_expr: &str) -> String {
+fn hook_command(script_path: &Path, slug: &str, event_expr: &str) -> String {
     format!(
         "ZEDRA_AGENT_KIND={} ZEDRA_AGENT_EVENT={} {}",
-        kind.slug(),
+        slug,
         event_expr,
         utils::shell_arg_path(script_path)
     )
@@ -1242,63 +1194,6 @@ fn write_file_checked(path: &Path, contents: &str, force: bool, label: &str) -> 
     std::fs::write(path, contents)
         .with_context(|| format!("failed to write {}", path.display()))?;
     Ok(())
-}
-
-fn synthetic_hook_payload(
-    kind: CliManagedAgentKind,
-    event_name: &str,
-    workdir: &Path,
-) -> serde_json::Value {
-    match kind {
-        CliManagedAgentKind::Claude => {
-            let cwd = workdir.to_string_lossy();
-            serde_json::json!({
-                "hook_event_name": event_name,
-                "session_id": "zedra-test-session",
-                "transcript_path": "/tmp/zedra-test-session.jsonl",
-                "cwd": cwd,
-                "tool_name": "Bash",
-                "tool_use_id": "toolu_zedra_test"
-            })
-        }
-        CliManagedAgentKind::Codex => {
-            let cwd = workdir.to_string_lossy();
-            serde_json::json!({
-                "hook_event_name": event_name,
-                "session_id": "zedra-test-session",
-                "cwd": cwd,
-                "tool_name": "Bash"
-            })
-        }
-        CliManagedAgentKind::OpenCode => {
-            let cwd = workdir.to_string_lossy();
-            serde_json::json!({
-                "event": event_name,
-                "sessionID": "zedra-test-session",
-                "cwd": cwd,
-                "tool": "bash"
-            })
-        }
-        CliManagedAgentKind::Pi => {
-            // The pi extension normalizes to Claude-compatible names; match that
-            // wire so `agent hook test --agent pi` exercises the real receiver.
-            let cwd = workdir.to_string_lossy();
-            serde_json::json!({
-                "hook_event_name": event_name,
-                "session_id": "zedra-test-session",
-                "cwd": cwd,
-            })
-        }
-        CliManagedAgentKind::Hermes => {
-            // Hermes shell hooks use the same wire format as Claude/Codex.
-            let cwd = workdir.to_string_lossy();
-            serde_json::json!({
-                "hook_event_name": event_name,
-                "session_id": "zedra-test-session",
-                "cwd": cwd,
-            })
-        }
-    }
 }
 
 fn parse_hook_payload(stdin: &str) -> serde_json::Value {
@@ -1469,13 +1364,13 @@ fn agent_summary_row(agent: &AgentSummary) -> Vec<String> {
     ]
 }
 
-fn render_agent_sessions(kind: AgentKind, result: &AgentSessionsResult) -> String {
+fn render_agent_sessions(slug: &str, result: &AgentSessionsResult) -> String {
     let rows = result
         .sessions
         .iter()
         .map(agent_session_row)
         .collect::<Vec<_>>();
-    let mut sections = vec![format!("{kind:?} Sessions"), String::new()];
+    let mut sections = vec![format!("{slug} Sessions"), String::new()];
     sections.push(format!(
         "Showing {} of {} workspace sessions",
         result.sessions.len(),
@@ -1589,11 +1484,7 @@ mod tests {
 
     #[test]
     fn hook_command_uses_provider_env() {
-        let command = hook_command(
-            Path::new("/tmp/zedra hook.sh"),
-            CliManagedAgentKind::Claude,
-            "Stop",
-        );
+        let command = hook_command(Path::new("/tmp/zedra hook.sh"), "claude", "Stop");
         assert!(command.contains("ZEDRA_AGENT_KIND=claude"));
         assert!(command.contains("ZEDRA_AGENT_EVENT=Stop"));
         assert!(command.contains("'/tmp/zedra hook.sh'"));

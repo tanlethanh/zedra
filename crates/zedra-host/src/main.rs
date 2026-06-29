@@ -15,6 +15,7 @@ use std::io::{IsTerminal, Write};
 use std::path::{Path, PathBuf};
 use std::process::Command as ProcessCommand;
 use std::sync::Arc;
+use zedra_host::agent::cli as agent_cli;
 use zedra_host::client as zedra_client;
 use zedra_host::ga4::Ga4;
 use zedra_host::{
@@ -24,7 +25,6 @@ use zedra_host::{
 use zedra_rpc::ZedraPairingTicket;
 use zedra_telemetry::Event;
 
-mod agent_cli;
 mod setup;
 mod terminal_cli;
 

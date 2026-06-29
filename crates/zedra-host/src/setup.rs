@@ -1377,7 +1377,7 @@ mod tests {
         // No-op guards: outside Zedra terminals and for non-interactive pi runs.
         assert!(ext.contains("if (!process.env.ZEDRA_TERMINAL_ID) return;"));
         assert!(ext.contains("ctx?.hasUI === false"));
-        // Detection in agent_setup relies on this marker substring.
+        // The OpenCode actor detects this marker in its local setup probe.
         assert!(ext.contains("zedra-agent-hook"));
     }
 }

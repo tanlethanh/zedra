@@ -21,10 +21,10 @@ struct CachedAgentData {
     workdir: Option<PathBuf>,
     installed: Option<AgentInstalledListResult>,
     agents: Option<AgentListResult>,
-    cli_versions: HashMap<AgentKind, AgentCliSummary>,
-    account_usage: HashMap<AgentKind, AgentUsageSnapshot>,
-    account_plans: HashMap<AgentKind, Vec<AgentInfoField>>,
-    sessions: HashMap<AgentKind, CachedSessions>,
+    cli_versions: HashMap<String, AgentCliSummary>,
+    account_usage: HashMap<String, AgentUsageSnapshot>,
+    account_plans: HashMap<String, Vec<AgentInfoField>>,
+    sessions: HashMap<String, CachedSessions>,
 }
 
 #[derive(Default)]
@@ -118,23 +118,23 @@ impl AgentCache {
 
     pub async fn sessions(
         self: &Arc<Self>,
-        kind: AgentKind,
+        slug: &str,
         workdir: &Path,
         _session: Option<&Arc<ServerSession>>,
         limit: u32,
         refresh: bool,
     ) -> AgentSessionsResult {
         if refresh {
-            self.refresh_sessions(kind, workdir, limit).await;
+            self.refresh_sessions(slug, workdir, limit).await;
         } else {
-            self.ensure_sessions(kind, workdir, limit).await;
+            self.ensure_sessions(slug, workdir, limit).await;
         }
         if let Some(result) = self
             .inner
             .lock()
             .await
             .sessions
-            .get(&kind)
+            .get(slug)
             .map(|cached| cached.result.clone())
         {
             return result;
@@ -151,12 +151,13 @@ impl AgentCache {
         let agents = agent::scan_agent_list(workdir);
         let limit = agent::default_agent_session_limit() as u32;
         let mut sessions = HashMap::new();
-        for kind in agent::MANAGED_AGENT_KINDS {
+        for actor in agent::actors() {
+            let slug = actor.slug().to_string();
             sessions.insert(
-                kind,
+                slug.clone(),
                 CachedSessions {
                     limit,
-                    result: agent::scan_agent_sessions(kind, workdir, limit),
+                    result: agent::scan_agent_sessions(&slug, workdir, limit),
                 },
             );
         }
@@ -193,12 +194,14 @@ impl AgentCache {
         inner.agents = Some(agents);
     }
 
-    async fn refresh_sessions(&self, kind: AgentKind, workdir: &Path, limit: u32) {
+    async fn refresh_sessions(&self, slug: &str, workdir: &Path, limit: u32) {
         let effective_limit = agent::agent_session_limit(limit) as u32;
         let workdir = workdir.to_path_buf();
         let scan_workdir = workdir.clone();
+        let slug = slug.to_string();
+        let scan_slug = slug.clone();
         let result = tokio::task::spawn_blocking(move || {
-            agent::scan_agent_sessions(kind, &scan_workdir, limit)
+            agent::scan_agent_sessions(&scan_slug, &scan_workdir, limit)
         })
         .await
         .unwrap_or_else(|error| AgentSessionsResult {
@@ -210,7 +213,7 @@ impl AgentCache {
         inner.invalidate_if_workdir_changed(&workdir);
         inner.workdir = Some(workdir);
         inner.sessions.insert(
-            kind,
+            slug,
             CachedSessions {
                 limit: effective_limit,
                 result,
@@ -242,7 +245,7 @@ impl AgentCache {
         self.inner.lock().await.agents.is_some()
     }
 
-    async fn ensure_sessions(&self, kind: AgentKind, workdir: &Path, limit: u32) -> bool {
+    async fn ensure_sessions(&self, slug: &str, workdir: &Path, limit: u32) -> bool {
         // A cache hit must cover the requested limit: a scan run at a smaller
         // limit would silently truncate the result for a larger request.
         let needed = agent::agent_session_limit(limit) as u32;
@@ -251,21 +254,21 @@ impl AgentCache {
             // Global agents (Hermes) scan workspace-independent data, so their
             // retained session cache is valid even when the cached workdir
             // differs after a workspace switch.
-            if agent::is_global(kind)
+            if agent::is_global(slug)
                 || inner
                     .workdir
                     .as_deref()
                     .is_some_and(|cached| cached == workdir)
             {
-                if let Some(cached) = inner.sessions.get(&kind) {
+                if let Some(cached) = inner.sessions.get(slug) {
                     if cached.limit >= needed {
                         return true;
                     }
                 }
             }
         }
-        self.refresh_sessions(kind, workdir, limit).await;
-        self.inner.lock().await.sessions.contains_key(&kind)
+        self.refresh_sessions(slug, workdir, limit).await;
+        self.inner.lock().await.sessions.contains_key(slug)
     }
 
     async fn needs_version_refresh(&self) -> bool {
@@ -312,7 +315,7 @@ impl AgentCache {
 
     async fn cached_agent_summary(
         self: &Arc<Self>,
-        kind: AgentKind,
+        slug: &str,
         _session: Option<&Arc<ServerSession>>,
     ) -> Option<AgentSummary> {
         let (mut agents, versions, usage, plans) = {
@@ -328,7 +331,7 @@ impl AgentCache {
         agent::apply_cached_cli_versions(&mut agents, &versions);
         agent::apply_cached_account_usage(&mut agents, &usage);
         agent::apply_cached_account_plans(&mut agents, &plans);
-        agents.into_iter().find(|agent| agent.kind == kind)
+        agents.into_iter().find(|agent| agent.slug == slug)
     }
 
     async fn request_version_refresh(self: &Arc<Self>, session: Option<Arc<ServerSession>>) {
@@ -370,7 +373,7 @@ impl AgentCache {
     }
 
     async fn run_version_refresh(self: &Arc<Self>) {
-        let versions = tokio::task::spawn_blocking(agent::scan_managed_agent_cli_versions)
+        let versions = tokio::task::spawn_blocking(agent::scan_agent_cli_versions)
             .await
             .unwrap_or_default();
 
@@ -386,7 +389,7 @@ impl AgentCache {
             "managed agent cli versions refreshed: {}",
             versions
                 .iter()
-                .map(|(kind, cli)| format!("{kind:?}={}", cli.version.as_deref().unwrap_or("?")))
+                .map(|(slug, cli)| format!("{slug}={}", cli.version.as_deref().unwrap_or("?")))
                 .collect::<Vec<_>>()
                 .join(", ")
         );
@@ -450,8 +453,8 @@ impl AgentCache {
             "agent account usage refreshed: {}",
             snapshots
                 .iter()
-                .map(|(kind, snap)| format!(
-                    "{kind:?} 5h={:.0}% 7d={:.0}%",
+                .map(|(slug, snap)| format!(
+                    "{slug} 5h={:.0}% 7d={:.0}%",
                     snap.rate_limit_five_hour_used_percent.unwrap_or(0.0),
                     snap.rate_limit_seven_day_used_percent.unwrap_or(0.0),
                 ))
@@ -462,11 +465,11 @@ impl AgentCache {
             "agent subscription plans refreshed: {}",
             plans
                 .iter()
-                .filter_map(|(kind, fields)| {
+                .filter_map(|(slug, fields)| {
                     fields
                         .iter()
                         .find(|field| field.label == "Plan")
-                        .map(|field| format!("{kind:?}={}", field.value))
+                        .map(|field| format!("{slug}={}", field.value))
                 })
                 .collect::<Vec<_>>()
                 .join(", ")
@@ -508,8 +511,9 @@ impl AgentCache {
     }
 
     async fn push_agent_info_changed(self: &Arc<Self>, session: &Arc<ServerSession>) {
-        for kind in agent::MANAGED_AGENT_KINDS {
-            let Some(info) = self.cached_agent_summary(kind, Some(session)).await else {
+        for actor in agent::actors() {
+            let slug = actor.slug();
+            let Some(info) = self.cached_agent_summary(slug, Some(session)).await else {
                 continue;
             };
             if session
@@ -520,7 +524,7 @@ impl AgentCache {
             }
             tracing::debug!(
                 session_id = %session.id,
-                ?kind,
+                agent = slug,
                 "AgentInfoChanged dropped (no subscriber or channel full)"
             );
         }
@@ -529,14 +533,14 @@ impl AgentCache {
 
 impl CachedAgentData {
     /// Workdir-scoped caches (`agents`, `sessions`) are keyed only by agent
-    /// kind, so when the workdir changes they must be dropped or a later
+    /// slug, so when the workdir changes they must be dropped or a later
     /// lookup would serve results from the previous workdir. Global agents
     /// (Hermes) scan workspace-independent data, so their session cache stays
     /// valid across a workdir change and is retained.
     fn invalidate_if_workdir_changed(&mut self, workdir: &Path) {
         if self.workdir.as_deref() != Some(workdir) {
             self.agents = None;
-            self.sessions.retain(|kind, _| agent::is_global(*kind));
+            self.sessions.retain(|slug, _| agent::is_global(slug));
             self.cli_versions.clear();
         }
     }

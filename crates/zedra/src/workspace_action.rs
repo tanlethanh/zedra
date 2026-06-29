@@ -1,5 +1,4 @@
 use gpui::Action;
-use zedra_rpc::proto::AgentKind;
 
 #[derive(Clone, PartialEq, Action)]
 #[action(namespace = workspace, no_json)]
@@ -107,7 +106,7 @@ pub struct OpenAgentManage;
 #[derive(Clone, PartialEq, Action)]
 #[action(namespace = workspace, no_json)]
 pub struct OpenAgentDetail {
-    pub kind: AgentKind,
+    pub slug: String,
 }
 
 #[derive(Clone, PartialEq, Action)]
@@ -124,7 +123,7 @@ pub struct SpawnAgentTerminal {
 #[derive(Clone, PartialEq, Action)]
 #[action(namespace = workspace, no_json)]
 pub struct ResumeAgentSession {
-    pub kind: AgentKind,
+    pub slug: String,
     pub session_id: String,
 }
 

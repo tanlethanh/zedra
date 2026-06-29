@@ -374,10 +374,14 @@ impl Session {
         event: HostEvent,
     ) {
         match &event {
-            HostEvent::TerminalCreated { id, launch_cmd } => {
+            HostEvent::TerminalCreated {
+                id,
+                launch_cmd,
+                agent_slug,
+            } => {
                 info!(
-                    "HostEvent: terminal created id={} launch_cmd={:?}",
-                    id, launch_cmd,
+                    "HostEvent: terminal created id={} launch_cmd={:?} agent_slug={:?}",
+                    id, launch_cmd, agent_slug,
                 );
                 let terminal = if let Some(terminal) = handle.terminal(id) {
                     terminal
@@ -403,14 +407,17 @@ impl Session {
                 info!("HostEvent: fs changed path={path}");
             }
             HostEvent::AgentInfoChanged { info } => {
-                info!("HostEvent: agent info changed {:?}", info.kind);
+                info!(agent = info.slug, "HostEvent: agent info changed");
             }
             HostEvent::AgentHookReceived {
-                agent_kind,
+                agent_slug,
                 event_name,
                 ..
             } => {
-                info!("HostEvent: agent hook received kind={agent_kind:?} event={event_name}");
+                info!(
+                    agent = agent_slug,
+                    event_name, "HostEvent: agent hook received"
+                );
             }
             HostEvent::AgentStateChanged {
                 terminal_id,
@@ -420,6 +427,15 @@ impl Session {
                 info!(
                     "HostEvent: agent state changed terminal={terminal_id} \
                      agent_session={agent_session_id} state={state:?}"
+                );
+            }
+            HostEvent::TerminalAgentChanged {
+                terminal_id,
+                agent_slug,
+            } => {
+                info!(
+                    "HostEvent: terminal agent changed terminal={terminal_id} \
+                     agent_slug={agent_slug:?}"
                 );
             }
         }

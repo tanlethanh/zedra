@@ -50,7 +50,7 @@ impl AgentManage {
                         let should_break = this
                             .update(cx, |this, cx| {
                                 if let Some(agent) =
-                                    this.agents.iter_mut().find(|agent| agent.kind == info.kind)
+                                    this.agents.iter_mut().find(|agent| agent.slug == info.slug)
                                 {
                                     *agent = info;
                                 } else {
@@ -208,14 +208,14 @@ fn render_list_body(agents: &[AgentSummary], cx: &mut Context<AgentManage>) -> i
         .gap(px(theme::SPACING_SM));
 
     for agent in agents {
-        let kind = agent.kind;
+        let slug = agent.slug.clone();
         list = list.child(
             render_agent_card(cx, AgentCardProps { agent })
                 .cursor_pointer()
                 .on_press(cx.listener(move |_this, _event, window, cx| {
                     platform_bridge::trigger_haptic(HapticFeedback::ImpactLight);
                     window.dispatch_action(
-                        workspace_action::OpenAgentDetail { kind }.boxed_clone(),
+                        workspace_action::OpenAgentDetail { slug: slug.clone() }.boxed_clone(),
                         cx,
                     );
                 })),

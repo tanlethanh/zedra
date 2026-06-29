@@ -9,7 +9,7 @@ use tokio::sync::{broadcast, mpsc};
 use tracing::*;
 use uuid::Uuid;
 use zedra_rpc::ZedraPairingTicket;
-use zedra_rpc::proto::{AgentKind, HostEvent, SyncSessionResult};
+use zedra_rpc::proto::{HostEvent, SyncSessionResult};
 use zedra_session::{
     ConnectEvent, ConnectPhase, ConnectSnapshot, ReconnectReason, Session, SessionHandle,
     SessionState, signer::ClientSigner,
@@ -20,7 +20,6 @@ use crate::agent_detail::AgentDetail;
 use crate::agent_manage::AgentManage;
 use crate::agent_picker::AgentPicker;
 use crate::agent_sessions::AgentSessions;
-use crate::agent_ui::managed_agent_name;
 use crate::delta::{ClientDeltaInfo, DeltaState};
 use crate::editor::git_sidebar::GitFileSection;
 use crate::file_search::{FileSearchEvent, FileSearchPanel};
@@ -167,8 +166,8 @@ struct ConnectionRequest {
 
 #[derive(Clone)]
 struct AddToChatTarget {
-    terminal_id: String,
-    kind: agent::Kind,
+    tid: String,
+    slug: String,
     title: Option<String>,
     cwd: Option<String>,
     input_tx: mpsc::Sender<Vec<u8>>,
@@ -658,6 +657,7 @@ fn seed_host_created_terminal_meta(
     terminal_id: &str,
     workspace_workdir: &str,
     launch_cmd: Option<&str>,
+    agent_slug: Option<&str>,
 ) -> bool {
     let mut changed = false;
 
@@ -674,6 +674,13 @@ fn seed_host_created_terminal_meta(
         changed = true;
     }
 
+    // Host-resolved identity for the launch command; a spawned command emits no
+    // OSC, so this is the only way the icon appears before a reconnect.
+    if let Some(slug) = agent_slug {
+        terminal_state.set_agent_slug(terminal_id, Some(slug.to_owned()));
+        changed = true;
+    }
+
     changed
 }
 
@@ -682,21 +689,17 @@ fn seed_pending_launch_terminal_meta(
     terminal_id: &str,
     title: String,
     launch_cmd: Option<&str>,
+    agent_slug: Option<&str>,
 ) {
     terminal_state.set_title(terminal_id, Some(title));
     if let Some(command) = launch_cmd.filter(|command| !command.is_empty()) {
         terminal_state.set_current_command(terminal_id, command.to_owned());
         terminal_state.set_shell_running(terminal_id);
     }
-}
-
-fn managed_agent_command_hint(kind: AgentKind) -> &'static str {
-    match kind {
-        AgentKind::Claude => "claude",
-        AgentKind::Codex => "codex",
-        AgentKind::OpenCode => "opencode",
-        AgentKind::Pi => "pi",
-        AgentKind::Hermes => "hermes",
+    // When the launcher knows the agent (resume flow), seed identity directly for
+    // an instant icon; otherwise it arrives via the host TerminalAgentChanged.
+    if let Some(slug) = agent_slug {
+        terminal_state.set_agent_slug(terminal_id, Some(slug.to_owned()));
     }
 }
 
@@ -812,7 +815,11 @@ impl Workspace {
         let host_event_listener = cx.spawn(async move |workspace, cx| {
             loop {
                 match host_event_rx.recv().await {
-                    Ok(HostEvent::TerminalCreated { id, launch_cmd }) => {
+                    Ok(HostEvent::TerminalCreated {
+                        id,
+                        launch_cmd,
+                        agent_slug,
+                    }) => {
                         let should_break = workspace
                             .update(cx, |ws, cx| {
                                 let session_state = ws.session_state.read(cx).clone();
@@ -826,6 +833,7 @@ impl Workspace {
                                         &id,
                                         &workdir,
                                         launch_cmd.as_deref(),
+                                        agent_slug.as_deref(),
                                     ) {
                                         cx.notify();
                                     }
@@ -837,30 +845,14 @@ impl Workspace {
                         }
                     }
                     Ok(HostEvent::AgentHookReceived {
-                        agent_kind,
+                        agent_slug,
                         event_name,
                         ..
                     }) => {
-                        let should_notify = match agent_kind {
-                            AgentKind::Claude => {
-                                matches!(event_name.as_str(), "Stop" | "PermissionRequest")
-                            }
-                            AgentKind::Codex => {
-                                matches!(event_name.as_str(), "Stop" | "PermissionRequest")
-                            }
-                            AgentKind::OpenCode => {
-                                matches!(event_name.as_str(), "session.idle" | "permission.asked")
-                            }
-                            // Pi exposes no approval hook; Stop is the only turn boundary.
-                            AgentKind::Pi => event_name == "Stop",
-                            AgentKind::Hermes => matches!(
-                                event_name.as_str(),
-                                "post_llm_call" | "pre_approval_request"
-                            ),
-                        };
+                        let should_notify = agent::adapter(&agent_slug).should_notify(&event_name);
                         let in_foreground = platform_bridge::is_app_in_foreground();
                         tracing::info!(
-                            ?agent_kind,
+                            agent = agent_slug,
                             event_name,
                             should_notify,
                             in_foreground,
@@ -877,6 +869,22 @@ impl Workspace {
                             .update(cx, |ws, cx| {
                                 ws.terminal_state.update(cx, |tstate, cx| {
                                     tstate.set_agent_state(&terminal_id, state);
+                                    cx.notify();
+                                });
+                            })
+                            .is_err();
+                        if should_break {
+                            break;
+                        }
+                    }
+                    Ok(HostEvent::TerminalAgentChanged {
+                        terminal_id,
+                        agent_slug,
+                    }) => {
+                        let should_break = workspace
+                            .update(cx, |ws, cx| {
+                                ws.terminal_state.update(cx, |tstate, cx| {
+                                    tstate.set_agent_slug(&terminal_id, agent_slug);
                                     cx.notify();
                                 });
                             })
@@ -1992,12 +2000,12 @@ impl Workspace {
                 });
                 view_telemetry::record(view_telemetry::WORKSPACE_AGENT_MANAGE);
             }
-            WorkspaceMainView::AgentDetail { kind } => {
+            WorkspaceMainView::AgentDetail { slug } => {
                 let view = cx.new(|cx| {
                     AgentDetail::new(
                         self.session.handle().clone(),
                         self.session.clone(),
-                        kind,
+                        slug,
                         self.workspace_state.clone(),
                         cx,
                     )
@@ -2313,6 +2321,7 @@ impl Workspace {
                     TERMINAL_PENDING_ID,
                     title,
                     launch_cmd.as_deref(),
+                    None,
                 );
                 cx.notify();
             });
@@ -2370,6 +2379,7 @@ impl Workspace {
                             &terminal_id,
                             title,
                             launch_cmd_for_meta.as_deref(),
+                            None,
                         );
                         state.remove(TERMINAL_PENDING_ID);
                         cx.notify();
@@ -2440,10 +2450,15 @@ impl Workspace {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        info!(?action.kind, "handle OpenAgentDetail from workspace");
+        info!(agent = action.slug, "handle OpenAgentDetail from workspace");
         self.drawer_host
             .update(cx, |host, cx| host.close_with_window(&mut *window, cx));
-        self.navigate_to(WorkspaceMainView::AgentDetail { kind: action.kind }, cx);
+        self.navigate_to(
+            WorkspaceMainView::AgentDetail {
+                slug: action.slug.clone(),
+            },
+            cx,
+        );
     }
 
     fn handle_resume_agent_session(
@@ -2453,16 +2468,16 @@ impl Workspace {
         cx: &mut Context<Self>,
     ) {
         info!(
-            ?action.kind,
+            agent = action.slug,
             session_id = %action.session_id,
             "handle ResumeAgentSession from workspace"
         );
-        self.resume_agent_session(action.kind, action.session_id.clone(), window, cx);
+        self.resume_agent_session(action.slug.clone(), action.session_id.clone(), window, cx);
     }
 
     fn resume_agent_session(
         &mut self,
-        kind: AgentKind,
+        slug: String,
         session_id: String,
         window: &mut Window,
         cx: &mut Context<Self>,
@@ -2475,14 +2490,14 @@ impl Workspace {
         let workspace_terminal =
             self.create_terminal_entity(TERMINAL_PENDING_ID.to_string(), window, cx);
         let pending_entity_id = workspace_terminal.entity_id();
-        let pending_title = format!("Resuming {}...", managed_agent_name(kind));
-        let command_hint = managed_agent_command_hint(kind);
+        let pending_title = format!("Resuming {}...", agent::name(&slug));
         self.terminal_state.update(cx, |state, cx| {
             seed_pending_launch_terminal_meta(
                 state,
                 TERMINAL_PENDING_ID,
                 pending_title.clone(),
-                Some(command_hint),
+                None,
+                Some(&slug),
             );
             cx.notify();
         });
@@ -2495,12 +2510,12 @@ impl Workspace {
 
         cx.spawn(async move |workspace, cx| {
             let terminal_id = match session_handle
-                .agent_resume_session(kind, session_id, cols as u16, rows as u16)
+                .agent_resume_session(slug.clone(), session_id, cols as u16, rows as u16)
                 .await
             {
                 Ok(id) => id,
                 Err(e) => {
-                    tracing::error!(?kind, "agent session resume failed: {}", e);
+                    tracing::error!(agent = slug, "agent session resume failed: {}", e);
                     let _ = workspace.update(cx, |ws, cx| {
                         ws.terminals.retain(|t| t.entity_id() != pending_entity_id);
                         ws.terminal_state.update(cx, |state, cx| {
@@ -2529,7 +2544,8 @@ impl Workspace {
                         state,
                         &terminal_id,
                         pending_title,
-                        Some(command_hint),
+                        None,
+                        Some(&slug),
                     );
                     state.remove(TERMINAL_PENDING_ID);
                     cx.notify();
@@ -2729,7 +2745,7 @@ impl Workspace {
             PendingWorkspaceAction::DisconnectSession => self.disconnect(cx),
             PendingWorkspaceAction::DeleteTerminal { id } => self.close_terminal_by_id(id, cx),
             PendingWorkspaceAction::AddSelectionToChat { target, input } => {
-                self.activate_existing_terminal(target.terminal_id.clone(), cx);
+                self.activate_existing_terminal(target.tid.clone(), cx);
                 self.schedule_add_to_chat_after_activation(target, input, cx);
                 platform_bridge::dismiss_custom_sheet();
             }
@@ -2763,17 +2779,17 @@ impl Workspace {
             // Let the terminal activation paint before the selected text is pasted.
             cx.background_executor().timer(ADD_TO_CHAT_SEND_DELAY).await;
 
-            let kind = target.kind;
-            let mut adapter = agent::make_adapter(kind);
+            let slug = target.slug.clone();
+            let mut adapter = agent::adapter(&slug);
             let mut term = AgentTerminalTermCtx {
-                tid: target.terminal_id,
+                tid: target.tid,
                 cwd: target.cwd.map(PathBuf::from),
                 input_tx: target.input_tx,
             };
             let mut app = WorkspaceAgentApp;
 
             if let Err(error) = adapter.add_to_chat(input, &mut term, &mut app) {
-                warn!(?kind, error = %error, "agent: add selection to chat failed");
+                warn!(agent = slug, error = %error, "agent: add selection to chat failed");
             }
         })
         .detach();
@@ -2841,17 +2857,14 @@ impl Workspace {
             .filter(|terminal_id| terminal_id != TERMINAL_PENDING_ID)
             .filter_map(|terminal_id| {
                 let meta = self.terminal_state.read(cx).meta(&terminal_id);
-                let kind = meta.agent_kind?;
-                if kind == agent::Kind::Shell || !agent::make_adapter(kind).caps().add_to_chat {
-                    return None;
-                }
+                let slug = meta.agent_slug?;
 
                 let terminal = self.terminal_by_id(&terminal_id, cx)?;
                 let input_tx = terminal.read(cx).input_sender(cx)?;
 
                 Some(AddToChatTarget {
-                    terminal_id,
-                    kind,
+                    tid: terminal_id,
+                    slug,
                     title: meta.plain_title,
                     cwd: meta.cwd,
                     input_tx,
@@ -3015,7 +3028,7 @@ fn workspace_relative_path(path: &str, workdir: &str) -> String {
 
 fn add_to_chat_target_button(index: usize, target: &AddToChatTarget) -> AlertButton {
     let title = add_to_chat_target_title(index, target.title.as_deref(), target.cwd.as_deref());
-    let presentation = agent::make_adapter(target.kind).target_presentation(&title);
+    let presentation = agent::adapter(&target.slug).target_presentation(&title);
     let button = AlertButton::default(presentation.label);
     if let Some(image_name) = presentation.image_name {
         button.image(image_name)
@@ -3214,6 +3227,7 @@ mod tests {
             "terminal-1",
             "/repo/project",
             None,
+            None,
         ));
 
         assert_eq!(
@@ -3231,12 +3245,13 @@ mod tests {
             "terminal-1",
             "",
             None,
+            None,
         ));
         assert_eq!(terminal_state.meta("terminal-1").cwd, None);
     }
 
     #[::core::prelude::v1::test]
-    fn host_created_terminal_seeds_agent_icon_from_launch_command() {
+    fn host_created_terminal_seeds_shell_state_not_identity() {
         let mut terminal_state = TerminalState::new();
 
         assert!(seed_host_created_terminal_meta(
@@ -3244,11 +3259,14 @@ mod tests {
             "terminal-1",
             "/repo/project",
             Some("claude --resume session"),
+            None,
         ));
 
         let meta = terminal_state.meta("terminal-1");
-        assert_eq!(meta.agent_icon, Some("icons/claude.svg"));
-        assert_eq!(meta.agent_kind, Some(agent::Kind::Claude));
+        // Identity is host-resolved: without a slug in the event, none is derived
+        // locally from the launch command (it would arrive via a later change).
+        assert_eq!(meta.agent_icon, None);
+        assert_eq!(meta.agent_slug, None);
         assert_eq!(meta.shell_state, crate::terminal_state::ShellState::Running);
         assert_eq!(
             meta.current_command.as_deref(),
@@ -3257,21 +3275,40 @@ mod tests {
     }
 
     #[::core::prelude::v1::test]
-    fn pending_launch_terminal_seeds_title_and_agent_icon() {
+    fn host_created_terminal_seeds_identity_from_agent_slug() {
+        let mut terminal_state = TerminalState::new();
+
+        assert!(seed_host_created_terminal_meta(
+            &mut terminal_state,
+            "terminal-1",
+            "/repo/project",
+            Some("codex resume 019e"),
+            Some("codex"),
+        ));
+
+        let meta = terminal_state.meta("terminal-1");
+        // Host-resolved slug from the launch command shows the icon immediately,
+        // without waiting for a reconnect or OSC identity change.
+        assert_eq!(meta.agent_slug.as_deref(), Some("codex"));
+        assert_eq!(meta.agent_icon.as_deref(), Some("icons/openai.svg"));
+    }
+
+    #[::core::prelude::v1::test]
+    fn pending_launch_terminal_seeds_identity_when_slug_known() {
         let mut terminal_state = TerminalState::new();
 
         seed_pending_launch_terminal_meta(
             &mut terminal_state,
             TERMINAL_PENDING_ID,
             "Launching Codex...".to_string(),
+            None,
             Some("codex"),
         );
 
         let meta = terminal_state.meta(TERMINAL_PENDING_ID);
         assert_eq!(meta.title.as_deref(), Some("Launching Codex..."));
-        assert_eq!(meta.agent_icon, Some("icons/openai.svg"));
-        assert_eq!(meta.agent_kind, Some(agent::Kind::Codex));
-        assert_eq!(meta.shell_state, crate::terminal_state::ShellState::Running);
+        assert_eq!(meta.agent_icon.as_deref(), Some("icons/openai.svg"));
+        assert_eq!(meta.agent_slug.as_deref(), Some("codex"));
     }
 
     #[::core::prelude::v1::test]
@@ -3375,8 +3412,8 @@ mod tests {
     fn add_to_chat_target_button_uses_adapter_label_without_terminal_prefix() {
         let (input_tx, _input_rx) = mpsc::channel(1);
         let target = AddToChatTarget {
-            terminal_id: "terminal-1".into(),
-            kind: agent::Kind::OpenCode,
+            tid: "terminal-1".into(),
+            slug: "opencode".into(),
             title: Some("opencode: /repo".into()),
             cwd: Some("/repo".into()),
             input_tx,
@@ -3391,8 +3428,8 @@ mod tests {
     fn add_to_chat_target_button_uses_adapter_native_icon() {
         let (input_tx, _input_rx) = mpsc::channel(1);
         let target = AddToChatTarget {
-            terminal_id: "terminal-1".into(),
-            kind: agent::Kind::Codex,
+            tid: "terminal-1".into(),
+            slug: "codex".into(),
             title: Some("codex".into()),
             cwd: None,
             input_tx,

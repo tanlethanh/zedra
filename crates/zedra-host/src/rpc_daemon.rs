@@ -7,7 +7,7 @@
 //   Health:         Ping (every 2s, foreground only, 5 misses = client reconnects)
 
 use crate::agent;
-use crate::agent_cache;
+use crate::agent::cache as agent_cache;
 use crate::docs_tree::{
     build_snapshot, docs_tree_cache_key, docs_tree_limit, snapshot_page_result,
     validate_docs_tree_offset,
@@ -39,11 +39,11 @@ use std::sync::atomic::Ordering;
 use std::sync::Arc;
 use std::time::{SystemTime, UNIX_EPOCH};
 use zedra_rpc::proto::*;
-use zedra_rpc::proto_v2::{ZedraProtoV2, ZEDRA_ALPN_V2};
+use zedra_rpc::proto_v3::{ZedraProtoV3, ZEDRA_ALPN_V3};
 use zedra_telemetry::Event;
 
 /// Log a decode failure with the leading discriminant varint (the RPC's index in
-/// `ZedraProto`/`ZedraProtoV2`) and a payload preview.
+/// `ZedraProto`/`ZedraProtoV3`) and a payload preview.
 fn log_decode_failure(alpn: &[u8], buf: &[u8], err: &postcard::Error) {
     // Metadata only — never log payload bytes; client frames can carry paths,
     // file contents, or tokens.
@@ -56,7 +56,7 @@ fn log_decode_failure(alpn: &[u8], buf: &[u8], err: &postcard::Error) {
     );
 }
 
-/// Read one request, decoding with the negotiated version (`zedra/rpc/2` lifts to
+/// Read one request, decoding with the negotiated version (`zedra/rpc/3` lifts to
 /// the live message). Mirrors `irpc_iroh::read_request` but decodes locally so a
 /// failure can name the RPC (see `log_decode_failure`).
 async fn read_zedra_message(
@@ -65,7 +65,7 @@ async fn read_zedra_message(
     use std::io;
 
     // The negotiated ALPN is the only version seam; keep it local to decoding.
-    let is_v2 = conn.alpn() == ZEDRA_ALPN_V2;
+    let is_v3 = conn.alpn() == ZEDRA_ALPN_V3;
 
     let (send, mut recv) = match conn.accept_bi().await {
         Ok(pair) => pair,
@@ -92,8 +92,8 @@ async fn read_zedra_message(
         .await
         .map_err(|e| io::Error::new(io::ErrorKind::UnexpectedEof, e))?;
 
-    if is_v2 {
-        match postcard::from_bytes::<ZedraProtoV2>(&buf) {
+    if is_v3 {
+        match postcard::from_bytes::<ZedraProtoV3>(&buf) {
             Ok(proto) => Ok(Some(proto.with_remote_channels(recv, send).into_live())),
             Err(e) => {
                 log_decode_failure(conn.alpn(), &buf, &e);
@@ -265,6 +265,7 @@ fn initial_host_meta(opts: &SpawnOptions) -> HostTermMeta {
         // Spawned terminals never emit 633;E for the launch command itself.
         meta.current_command = Some(command.clone());
         meta.shell_state = TermShellState::Running;
+        meta.refresh_agent_slug();
     }
     meta
 }
@@ -1755,6 +1756,10 @@ pub async fn create_terminal(
         .await;
 
     let term_id = id.clone();
+    // Captured so the blocking PTY reader can push host-resolved agent identity
+    // changes back onto the session's event channel.
+    let event_session = session.clone();
+    let rt = tokio::runtime::Handle::current();
     tokio::task::spawn_blocking(move || {
         let mut reader = pty_reader;
         let mut buf = [0u8; 8192];
@@ -1786,11 +1791,43 @@ pub async fn create_terminal(
                     // cache up to date. This runs on every PTY
                     // chunk so the host always has the latest values even after
                     // old backlog entries have been evicted.
-                    if let Ok(mut m) = host_meta.lock() {
+                    let agent_identity_change = if let Ok(mut m) = host_meta.lock() {
                         let events = m.scanner.feed(&data);
+                        // Identity is derived only from the foreground command and
+                        // OSC 1 icon name, so skip the allocating re-resolve unless
+                        // one of those changed (most chunks carry no OSC at all).
+                        let identity_relevant = events.iter().any(|ev| {
+                            matches!(
+                                ev,
+                                zedra_osc::OscEvent::CommandLine(_)
+                                    | zedra_osc::OscEvent::IconName(_)
+                                    | zedra_osc::OscEvent::CommandEnd { .. }
+                            )
+                        });
                         for ev in events {
                             m.apply_osc_event(&ev);
                         }
+                        // Recompute identity under the same lock; emit only on change.
+                        identity_relevant
+                            .then(|| {
+                                m.refresh_agent_slug()
+                                    .then(|| m.agent_slug.map(str::to_string))
+                            })
+                            .flatten()
+                    } else {
+                        None
+                    };
+                    if let Some(agent_slug) = agent_identity_change {
+                        let session = event_session.clone();
+                        let terminal_id = term_id.clone();
+                        rt.spawn(async move {
+                            session
+                                .push_event(HostEvent::TerminalAgentChanged {
+                                    terminal_id,
+                                    agent_slug,
+                                })
+                                .await;
+                        });
                     }
 
                     // Push to per-terminal backlog (Fix 1: sync, no rt.block_on).
@@ -3144,7 +3181,7 @@ async fn dispatch(
             let workdir = session.workdir.as_ref().unwrap_or(&state.workdir);
             let result = agent::list_agent_sessions(
                 &state.agent_cache,
-                msg.kind,
+                &msg.slug,
                 workdir,
                 Some(&session),
                 msg.limit,
@@ -3162,11 +3199,17 @@ async fn dispatch(
 
         ZedraMessage::AgentFiles(msg) => {
             session.touch().await;
-            let kind = msg.kind;
+            let slug = msg.slug.clone();
             // File reads are blocking; keep them off the async dispatch path.
-            let result = tokio::task::spawn_blocking(move || agent::agent_files(kind))
+            let result = tokio::task::spawn_blocking(move || agent::agent_files(&slug))
                 .await
-                .map(|files| AgentFilesResult { files, error: None })
+                .map(|files| match files {
+                    Ok(files) => AgentFilesResult { files, error: None },
+                    Err(error) => AgentFilesResult {
+                        files: Vec::new(),
+                        error: Some(error),
+                    },
+                })
                 .unwrap_or_else(|e| AgentFilesResult {
                     files: Vec::new(),
                     error: Some(e.to_string()),
@@ -3180,7 +3223,7 @@ async fn dispatch(
                 .workdir
                 .clone()
                 .or_else(|| Some(state.workdir.clone()));
-            let launch_cmd = agent::resume_launch_command(msg.kind, &msg.session_id);
+            let launch_cmd = agent::resume_launch_command(&msg.slug, &msg.session_id);
             let Some(launch_cmd) = launch_cmd else {
                 let _ = msg
                     .tx

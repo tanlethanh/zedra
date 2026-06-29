@@ -1,342 +1,169 @@
-# Adding a Managed Agent
+# Adding an Agent
 
-This document is the reference for wiring a new agent into the Zedra managed-agent system. Read it alongside an existing agent implementation (Claude or Codex for full-featured agents, Pi or Hermes for simpler ones).
+Agents are actor-based on both sides of the connection. The host side is the
+**actor** (`AgentActor`, `crates/zedra-host/src/agent/`); the app side is the
+**adapter** (`AgentAdapter`, `crates/zedra/src/agent/`). There is no agent enum
+in the live RPC protocol — an actor is identified by its stable slug, sent over
+the wire as a `String`. Adding an agent never changes the ALPN version, touches
+a match table, or adds a detection word list.
 
-## What "managed agent" means
+Adding an agent is at most three steps:
 
-A managed agent is an AI coding or personal agent whose sessions Zedra can list, resume, and observe via hook events. The system has two loosely coupled halves:
+1. **Host actor** (`crates/zedra-host/src/agent/<slug>.rs`) — identity and the
+   probes the host supports. Required.
+2. **App adapter** (`crates/zedra/src/agent/mod.rs`) — optional; only for custom
+   in-app behavior or icon branding. A plain agent gets the generic adapter.
+3. **Assets** — `icons/<slug>.svg` and the native picker image. Both fall back
+   to a generic icon, so a new agent renders before assets ship.
 
-- **Session scanning** — read local session state (files, DBs) and surface it in the Zedra UI.
-- **Hook receiving** — receive lifecycle events fired by the agent's hook system and forward them as push notifications and RPC events to connected mobile clients.
+## Ownership
 
-An agent can support one or both halves independently.
+Each feature is owned by the side where it must run.
 
-## File map
+**Host** (source of truth, sent to the app as data):
 
-| Path | Purpose |
-|------|---------|
-| `crates/zedra-rpc/src/proto.rs` | `AgentKind` enum variant |
-| `crates/zedra-host/src/agent_<name>.rs` | Session scanning, event normalization, config reading |
-| `crates/zedra-host/src/agent.rs` | `ManagedAgent` trait impl + dispatch registration |
-| `crates/zedra-host/src/agent_utils.rs` | `program_name`, `display_name` entries |
-| `crates/zedra-host/src/agent_hook_recv.rs` | `<Name>HookReceiver` — Delta notification logic |
-| `crates/zedra-host/src/api.rs` | Hook dispatch arm |
-| `crates/zedra-host/src/agent_cli.rs` | CLI kind, synthetic payload, optional `install_hooks` support |
+- agent list / picker, info, usage, account, session history
+- session resume, setup, lifecycle hooks
+- identity detection (foreground command → slug) and status
+  (running / waiting / idle, from hook events)
 
-## Step 1 — Add `AgentKind` variant
+**App** (needs local latency, runs in-process):
 
-In `crates/zedra-rpc/src/proto.rs`, add the variant to the `AgentKind` enum. It must also be handled in every `match kind` in `proto.rs` (serialization helpers, display, etc.) and in `docs/PROTOCOL_SPECS.md`.
+- add-to-chat / ask — normalize a file range into the agent's prompt format and
+  paste it
+- `should_notify` — which hook events raise a notification
+- icon branding overrides
 
-```rust
-// proto.rs
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
-pub enum AgentKind {
-    Claude,
-    Codex,
-    OpenCode,
-    Pi,
-    Hermes,
-    YourAgent, // new
-}
-```
+Everything else the app shows comes from host data.
 
-This is a breaking protocol change. Bump the relevant protocol version if clients and hosts need to stay in sync.
+## Detect-only agent
 
-## Step 2 — Create `agent_<name>.rs`
-
-Create `crates/zedra-host/src/agent_<name>.rs`. Implement the functions expected by the `ManagedAgent` trait. At minimum:
+Recognized in terminals (icon, version probe, installed-agent list) but no
+managed sessions, setup, or hooks. Most agents (`amp`, `cline`, `cursor`,
+`gemini`, ...) are this — one macro line in its own file
+`crates/zedra-host/src/agent/<slug>.rs`:
 
 ```rust
-use zedra_rpc::proto::{AgentEventKind, AgentLifecycleStatus, AgentKind, /* ... */};
-use crate::agent_utils::command_on_path;
-
-/// True when the agent is installed or its data directory exists.
-pub fn cli_available() -> bool {
-    command_on_path("youragent") || sessions_root().is_dir()
-}
-
-/// Map the agent's hook event name strings to canonical kinds/statuses.
-/// Return None for unknown or uninteresting events; the hook pipeline drops those.
-pub fn normalize_event(event_name: &str) -> Option<(AgentEventKind, AgentLifecycleStatus)> {
-    Some(match event_name {
-        "session_start" => (AgentEventKind::SessionStarted, AgentLifecycleStatus::Starting),
-        "session_end" | "done" => (AgentEventKind::TurnCompleted, AgentLifecycleStatus::Completed),
-        "permission_request" => (AgentEventKind::PermissionRequested, AgentLifecycleStatus::WaitingForPermission),
-        "error" | "failed" => (AgentEventKind::TurnFailed, AgentLifecycleStatus::Failed),
-        _ => return None,
-    })
-}
+simple_actor!(
+    AmpActor,           // actor type name
+    "amp",              // slug: stable identity, sent over RPC
+    "Amp",              // display name
+    "AgentAmp",         // native icon asset (iOS image set name)
+    ["amp"],            // programs: executables that launch it, preference order
+    ["amp", "ampcode"]  // detect aliases: substrings matched in the foreground command
+);
 ```
 
-### Session scanning functions
+Register it in `crates/zedra-host/src/agent/mod.rs`: add `mod <slug>;`, add
+`&<slug>::<Name>Actor,` to the `ACTORS` array, and bump the array length
+`static ACTORS: [&dyn AgentActor; N]`.
 
-The trait requires `session_counts` and `sessions`. Both return typed structs; see `agent_claude.rs` or `agent_pi.rs` for reference. If the agent has no local session storage, return empty counts and an empty slice.
+`programs` drives the `--version` probe and the installed-agent list.
+`detect_aliases` match as whole words/phrases inside the foreground command, so
+they handle `amp`, `cursor-agent`, `npx @openai/codex`. For short tokens that
+double as common words or flag values (`pi`, `hermes`), use `detect_exact`
+instead — those match only when they are the entire command. The macro sets
+`detect_aliases`; to set `detect_exact`, hand-write the `impl` instead of using
+the macro.
 
-### Account fields
+## Fully integrated agent
 
-`account_fields` returns a flat list of `AgentInfoField` rows shown in the agent detail panel. Include auth state, model defaults, and plan info where available. Never include raw tokens or secrets.
+Managed sessions, resume, setup/hooks, account, and usage — only `claude`,
+`codex`, `opencode`, `pi`, `hermes`. Create
+`crates/zedra-host/src/agent/<slug>.rs` and implement `AgentActor` by hand;
+register it the same way (`mod`, `ACTORS`, length bump).
 
-## Step 3 — Register in `agent.rs`
+`AgentActor` defaults every optional operation to unsupported, so override only
+the methods the provider actually exposes:
 
-Add a `struct YourAgentAgent;` block implementing `ManagedAgent` and wire it into `dispatch`:
+- identity — `slug`, `display_name`, `icon_name`, `programs`, `detect_aliases` /
+  `detect_exact` (required identity; the rest are optional)
+- availability — `cli_available`, `cli_version_summary`
+- sessions — `session_counts`, `sessions`, `resume_launch_command`,
+  `scan_data_source`, `session_scan_cli`
+- setup/hooks — `setup` (the single mutable op: writes the hook runner and
+  provider config, returns written paths), `setup_summary`, `receive_hook`,
+  `hook_test_payload`
+- account/usage — `account_fields`, `subscription_plan`, `account_usage`,
+  `extra`, `config_files`
+- `is_global` — return `true` only for agents whose sessions ignore the workdir
+  (Hermes)
 
-```rust
-struct YourAgentAgent;
-impl ManagedAgent for YourAgentAgent {
-    fn kind(&self) -> AgentKind { AgentKind::YourAgent }
+Per-agent session-count types convert into the shared `SessionCounts` via the
+`session_counts_from!` macro near the top of `agent/mod.rs`; add a line for your
+type if you carry one.
 
-    fn normalize_event(&self, event: &str) -> Option<(AgentEventKind, AgentLifecycleStatus)> {
-        agent_youragent::normalize_event(event)
-    }
+The local REST API, host cache, CLI scans, hook dispatch, and installed-agent
+list all resolve actors through the `ACTORS` registry. Do not add per-agent
+`match` arms at those call sites.
 
-    fn cli_available(&self, _workdir: &Path) -> bool {
-        agent_youragent::cli_available()
-    }
+## App adapter
 
-    fn session_counts(&self, ctx: &ScanCtx) -> Result<SessionCounts, String> {
-        Ok(agent_youragent::session_counts(ctx.workdir)?.into())
-    }
+The app keys on the host slug and needs no per-agent code by default:
+`adapter()` returns a `GenericAdapter` for any unknown slug, resolving the icon
+from `assets/icons/<slug>.svg` (falling back to `terminal.svg`) and the display
+name from the slug.
 
-    fn sessions(&self, ctx: &ScanCtx, limit: usize) -> Result<(Vec<AgentSessionSummary>, usize), String> {
-        agent_youragent::sessions(ctx.workdir, ctx.cli, limit)
-    }
+Add a specialized `AgentAdapter` only for custom branding or chat behavior, then
+register it in the `adapter()` match. Override the relevant methods:
 
-    fn account_fields(&self, workdir: &Path) -> Vec<AgentInfoField> {
-        agent_youragent::account_fields(workdir)
-    }
+- `icon_path` — bundled SVG when it differs from `<slug>.svg` (Codex uses
+  `openai.svg`)
+- `native_image_name` — iOS image set name for the native picker; `None` shows
+  no icon
+- `should_notify` — which provider hook event names raise a notification
+- `add_to_chat` / `ask` — custom paste format (Claude uses `@file#Lstart-Lend`
+  mentions instead of the generic fenced context)
 
-    fn command_matches(&self, command: &str) -> bool {
-        command_program_is(&command.to_ascii_lowercase(), "youragent")
-    }
+App navigation and RPC calls carry the slug as a `String`; an unknown slug must
+degrade to an unsupported feature, never require a new protocol variant.
 
-    fn infer_session_id(&self, tokens: &[&str]) -> Option<String> {
-        value_after_flag(tokens, "--session")
-    }
+## Icon resolution
 
-    fn resume_launch_command(&self, quoted: &str) -> String {
-        format!("youragent --session {quoted}")
-    }
-}
+The terminal/card icon is an embedded SVG. `AssetSource::load` returns nothing
+for a missing file and GPUI renders blank — there is no automatic fallback, so
+resolution checks existence at the call site rather than chaining a resolution
+order:
 
-// In dispatch():
-fn dispatch(kind: AgentKind) -> &'static dyn ManagedAgent {
-    match kind {
-        // ...existing arms...
-        AgentKind::YourAgent => &YourAgentAgent,
-    }
-}
+```
+icon(slug):
+    specialized adapter overrides icon_path() -> that            # branding
+    else if ZedraAssets::get("icons/{slug}.svg") exists -> that  # slug convention
+    else -> "icons/terminal.svg"                                 # generic fallback
 ```
 
-If the agent's sessions are not scoped to a workspace (like Hermes), override `is_global` to return `true`. The scan machinery will cache results across workspace switches.
+`ZedraAssets::get` (rust-embed) is a compile-time-embedded lookup, so the check
+is free. Branding overrides must be struct-based: the bundle ships both
+`codex.svg` and `openai.svg`, so the slug default would pick the wrong one —
+Codex keeps a small adapter purely to override `icon_path()`.
 
-## Step 4 — Add `program_name` and `display_name`
+The host `AgentSummary.icon_name` hint is a **native** asset name (`Agent<Pascal>`)
+for the native picker only, not the SVG terminal/card icon. Native picker images
+have no runtime fallback in UIKit, so the picker shows a label-only button when
+the per-agent native image is missing.
 
-In `crates/zedra-host/src/agent_utils.rs`:
+## Assets
 
-```rust
-pub fn program_name(kind: AgentKind) -> &'static str {
-    match kind {
-        // ...
-        AgentKind::YourAgent => "youragent",
-    }
-}
+- App SVG: `crates/zedra/assets/icons/<slug>.svg` (lowercase slug). Required for
+  the generic adapter to show a real icon.
+- iOS native: `ios/Zedra/Assets.xcassets/Agent<Name>.imageset`. The name must
+  match the host actor's `icon_name` and the app adapter's `native_image_name`.
 
-pub fn display_name(kind: AgentKind) -> &'static str {
-    match kind {
-        // ...
-        AgentKind::YourAgent => "YourAgent",
-    }
-}
-```
+## RPC contract
 
-## Step 5 — Add `<Name>HookReceiver` in `agent_hook_recv.rs`
+The live protocol (`zedra/rpc/4`) uses slug strings in `AgentSummary`,
+`AgentSessionSummary`, agent session/resume/file requests, and hook events.
+Usage display lines are host-formatted into `AgentUsageSnapshot.extra` and
+rendered verbatim, so per-agent display rules stay host-side. The frozen
+`zedra/rpc/3` module (`proto_v3.rs`) still carries the historical `AgentKind`
+enum and filters out agents it cannot represent — do not change that frozen
+schema. Adding an actor may need new icon assets and manual-test steps, but it
+must not bump the ALPN version solely because a new slug exists.
 
-Add a struct for the hook receiver. How much context to include in the notification depends on whether the agent exposes session title information at hook time.
-
-**Minimal receiver (no title enrichment):**
-
-```rust
-pub struct YourAgentHookReceiver;
-
-impl YourAgentHookReceiver {
-    pub async fn receive(&self, event: AgentEventSummary, ctx: HookContext) {
-        let session = ctx.session().await;
-        if push_rpc(AgentKind::YourAgent, &event, session).await {
-            return;
-        }
-        if ctx.terminal_id.is_none() {
-            return;
-        }
-        let Some(delta) = DeltaHookClient::from_client(ctx.delta) else {
-            return;
-        };
-        delta.send(self.build_notification(&event)).await;
-    }
-
-    fn build_notification(&self, event: &AgentEventSummary) -> HookNotification {
-        let agent = agent_utils::display_name(AgentKind::YourAgent);
-        HookNotification {
-            title: event_title(agent, event.kind),
-            body: None,
-            content_state: serde_json::json!({
-                "agent": agent,
-                "event": format!("{:?}", event.kind),
-            }),
-        }
-    }
-}
-```
-
-**With session title enrichment (like `CodexHookReceiver`):**
-
-If the agent stores session titles locally (transcript JSONL, SQLite DB), look them up in a `spawn_blocking` call using the `event.session_id`:
-
-```rust
-let session_id = event.session_id.clone();
-let workdir = ctx.workdir.clone();
-let body = tokio::task::spawn_blocking(move || {
-    session_id.as_deref()
-        .and_then(|id| agent_youragent::title_for_session(&workdir, id))
-})
-.await
-.unwrap_or(None);
-```
-
-The `terminal_id` guard (`ctx.terminal_id.is_none() → return`) keeps Delta notifications scoped to terminals that were spawned from within a Zedra session. Hooks from unrelated processes sharing the same workdir should not produce mobile notifications.
-
-## Step 6 — Wire the API dispatch arm
-
-In `crates/zedra-host/src/api.rs`, add the import and dispatch arm:
-
-```rust
-// At the top with other hook receiver imports:
-use crate::agent_hook_recv::{
-    ClaudeHookReceiver, CodexHookReceiver, HookContext, OpenCodeHookReceiver,
-    YourAgentHookReceiver, // new
-};
-
-// In receive_agent_hook_handler, inside the tokio::spawn:
-match kind {
-    AgentKind::Claude => ClaudeHookReceiver { transcript_path }.receive(event, ctx).await,
-    AgentKind::Codex => CodexHookReceiver.receive(event, ctx).await,
-    AgentKind::OpenCode => OpenCodeHookReceiver.receive(event, ctx).await,
-    AgentKind::YourAgent => YourAgentHookReceiver.receive(event, ctx).await, // new
-    _ => {}
-}
-```
-
-## Step 7 — Add CLI support
-
-In `crates/zedra-host/src/agent_cli.rs`:
-
-**Add `CliManagedAgentKind` variant:**
-
-```rust
-#[derive(Clone, Copy, Debug, ValueEnum)]
-pub enum CliManagedAgentKind {
-    // ...
-    YourAgent,
-}
-
-impl CliManagedAgentKind {
-    fn slug(self) -> &'static str {
-        match self {
-            // ...
-            Self::YourAgent => "youragent",
-        }
-    }
-}
-
-impl From<CliManagedAgentKind> for AgentKind {
-    fn from(value: CliManagedAgentKind) -> Self {
-        match value {
-            // ...
-            CliManagedAgentKind::YourAgent => AgentKind::YourAgent,
-        }
-    }
-}
-```
-
-**Add a synthetic hook payload for `zedra agent hook test`:**
-
-```rust
-fn synthetic_hook_payload(kind: CliManagedAgentKind, event_name: &str, workdir: &Path) -> serde_json::Value {
-    match kind {
-        // ...
-        CliManagedAgentKind::YourAgent => {
-            let cwd = workdir.to_string_lossy();
-            serde_json::json!({
-                "event": event_name,
-                "sessionId": "zedra-test-session",
-                "cwd": cwd,
-            })
-        }
-    }
-}
-```
-
-**Add `install_hooks` support (optional):**
-
-If the agent has a documented hook configuration format, add a `write_youragent_hook_config` function and register it in `install_hooks`. If not, add a warning and skip:
-
-```rust
-CliManagedAgentKind::YourAgent => {
-    eprintln!("warning: YourAgent hook config format is undocumented; skipping");
-}
-```
-
-## Step 8 — Add to `scan_bench` and `scan_usage`
-
-In `agent_cli.rs`, `scan_bench` and `scan_usage` iterate over a fixed list of agent kinds. Add `AgentKind::YourAgent` to both lists.
-
-## Step 9 — Validate
+## Validation
 
 ```sh
-cargo check -p zedra-rpc -p zedra-session -p zedra-terminal -p zedra-host
-cargo test -p zedra-host -- agent
+cargo fmt
+cargo check -p zedra-rpc -p zedra-session -p zedra-host
+cargo check -p zedra
 ```
-
-Smoke-test the hook path end-to-end with the daemon running:
-
-```sh
-zedra agent hook test youragent session_start --workdir .
-zedra agent hook test youragent error --workdir .
-```
-
-Add a `normalize_event` test in `agent_youragent.rs` following the pattern in `agent_claude.rs` and `agent_opencode.rs`.
-
----
-
-## Hook event name conventions
-
-When defining `normalize_event`, match the exact strings the agent fires. Common patterns across agents:
-
-| Agent style | Example event names |
-|-------------|---------------------|
-| Claude (PascalCase) | `SessionStart`, `Stop`, `PermissionRequest`, `PostToolUse` |
-| OpenCode (dot.case) | `session.status`, `session.idle`, `tool.execute.before` |
-| Codex (PascalCase) | `SessionStart`, `PermissionRequest`, `PostToolUse`, `Stop` |
-| Pi (snake_case, normalized in the extension) | native `before_agent_start`, `agent_end`, `session_shutdown` → wire `UserPromptSubmit`, `Stop` |
-| Generic (snake_case) | `session_start`, `session_end`, `permission_request`, `error` |
-
-Map to `AgentEventKind` variants. Only handle events the agent actually fires. Unknown events return `None` and are dropped — that is intentional and keeps the pipeline clean.
-
-### Pi: extension-based hook delivery
-
-Pi has no shell-hook config file. Instead `zedra setup pi` writes a TypeScript
-extension to `~/.pi/agent/extensions/zedra-agent-hooks.ts`, which pi
-auto-discovers at session start. The extension shells back into the zedra binary
-(`zedra agent hook receive --agent pi`) on lifecycle events, mirroring the
-OpenCode plugin pattern. It is a no-op outside a Zedra terminal (no
-`ZEDRA_TERMINAL_ID`) and for non-interactive pi runs (`ctx.hasUI === false`).
-Pi exposes no approval/permission event, so `PiHookReceiver` only drives
-`Running`/`Completed` state and notifies on `Stop`. See `pi_hook_extension` in
-`setup.rs` and `pi_hooks_installed` in `agent_setup.rs`.
-
-## Global vs workspace-scoped agents
-
-Most agents (Claude, Codex, OpenCode, Pi) scope their sessions to a workspace directory. Pass the `workdir` through to session scans and per-project config reads.
-
-**Global agents** (currently Hermes) ignore `workdir` for sessions because their history is stored in a single user-level directory. Override `is_global() -> bool` to return `true`. The scan cache machinery will not invalidate these results on workspace switches.
-
-Even for global agents, `HookContext.workdir` is still set in the hook receiver — it reflects the daemon's working directory and can be used for logging or correlation.
