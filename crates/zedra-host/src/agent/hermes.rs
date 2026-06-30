@@ -1,8 +1,9 @@
 //! Hermes is a global personal agent: sessions are not scoped to a workspace
 //! (flat `~/.hermes/sessions/*.json`, no `cwd`), so every scan ignores the
 //! workdir and returns all sessions. Beyond sessions we surface Hermes's
-//! config/memory layer (SOUL.md, USER.md, MEMORY.md, config.yaml, .env,
-//! cron/jobs.json) read-only via [`config_files`].
+//! config/memory layer (SOUL.md, USER.md, MEMORY.md, config.yaml,
+//! cron/jobs.json) read-only via [`config_files`]. `.env` is deliberately
+//! excluded so secrets never reach the client.
 
 use std::path::{Path, PathBuf};
 
@@ -15,8 +16,8 @@ use super::utils::{
     resume_summary, session_title, spawn_blocking_opt, user_message_text,
 };
 
-/// Cap per-file content shipped to the client. Hermes `.env` and memory files
-/// are small, but the cap bounds a pathological file from bloating the reply.
+/// Cap per-file content shipped to the client. Hermes memory/config files are
+/// small, but the cap bounds a pathological file from bloating the reply.
 const FILE_VIEW_MAX_BYTES: usize = 256 * 1024;
 
 pub struct SessionCounts {
@@ -180,12 +181,13 @@ impl HermesActor {
 
     fn config_files_in(home: &Path) -> Vec<AgentFile> {
         // `label` doubles as the relative path under HERMES_HOME.
+        // `.env` is intentionally excluded: it holds API keys/tokens and
+        // `read_view_file` would ship its contents to the client.
         const VIEW_FILES: &[&str] = &[
             "SOUL.md",
             "USER.md",
             "MEMORY.md",
             "config.yaml",
-            ".env",
             "cron/jobs.json",
         ];
         VIEW_FILES
@@ -668,7 +670,18 @@ impl AgentActor for HermesActor {
 
     fn setup_summary(&self, available: bool, workdir: &Path) -> AgentSetupSummary {
         let _ = workdir;
-        setup_status(available, false, false, false, None)
+        // Mirror what `setup()` installs: the global hook script plus a config.yaml
+        // that references it. Without this the UI stays "setup incomplete" forever.
+        let home = Self::hermes_home();
+        let script_installed = home
+            .join("agent-hooks")
+            .join("zedra-agent-hooks.sh")
+            .is_file();
+        let config_mentions_hook = std::fs::read_to_string(home.join("config.yaml"))
+            .map(|config| config.contains("zedra-agent-hooks"))
+            .unwrap_or(false);
+        let hooks_installed = super::hooks_enabled() && script_installed && config_mentions_hook;
+        setup_status(available, false, false, hooks_installed, None)
     }
 
     fn resume_launch_command(&self, quoted: &str) -> Option<String> {
