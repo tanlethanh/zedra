@@ -576,8 +576,10 @@ fn strip_ansi(input: &[u8]) -> String {
 }
 
 /// Returns the expected byte length of a UTF-8 character given its leading byte.
+/// Stray continuation bytes (`0x80..=0xBF`) are not valid leads, so they count as
+/// one invalid byte and never consume the following character.
 fn utf8_char_len(b: u8) -> usize {
-    if b < 0x80 {
+    if b < 0x80 || (0x80..=0xBF).contains(&b) {
         1
     } else if b < 0xE0 {
         2
