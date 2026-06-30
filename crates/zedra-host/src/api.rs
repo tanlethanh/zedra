@@ -477,8 +477,9 @@ async fn resume_agent_handler(
             {
                 tracing::warn!("Failed to record terminal metrics: {}", e);
             }
-            let agent_slug = crate::agent::detect::resolve_terminal_agent(Some(&launch_cmd), None)
-                .map(str::to_string);
+            // `actor` was already validated from the route slug; re-detecting from
+            // launch_cmd would drop the identity for wrapper commands.
+            let agent_slug = Some(actor.slug().to_string());
             session
                 .push_event(HostEvent::TerminalCreated {
                     id: terminal_id.clone(),

@@ -3225,11 +3225,19 @@ async fn dispatch(
                 .or_else(|| Some(state.workdir.clone()));
             let launch_cmd = agent::resume_launch_command(&msg.slug, &msg.session_id);
             let Some(launch_cmd) = launch_cmd else {
+                // `None` collapses three causes; report the specific one.
+                let error = if agent::actor(&msg.slug).is_none() {
+                    format!("unknown agent: {}", msg.slug)
+                } else if msg.session_id.trim().is_empty() {
+                    "missing session id".to_string()
+                } else {
+                    format!("agent {} does not support resume", msg.slug)
+                };
                 let _ = msg
                     .tx
                     .send(AgentResumeResult {
                         terminal_id: String::new(),
-                        error: Some("missing session id".to_string()),
+                        error: Some(error),
                     })
                     .await;
                 return Ok(());
