@@ -1499,6 +1499,10 @@ impl ClaudeActor {
 }
 
 impl AgentActor for ClaudeActor {
+    fn shows_detail(&self) -> bool {
+        true
+    }
+
     fn slug(&self) -> &'static str {
         "claude"
     }

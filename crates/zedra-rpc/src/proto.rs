@@ -1209,6 +1209,8 @@ pub struct AgentSummary {
     pub account: AgentAccountSummary,
     /// Live rate-limit snapshot fetched from the provider's API.
     pub usage: Option<AgentUsageSnapshot>,
+    /// Host-owned: agent aggregates sessions/account/usage worth a detail screen.
+    pub shows_detail: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Default)]
@@ -1642,6 +1644,7 @@ mod tests {
                 }],
                 account: AgentAccountSummary::default(),
                 usage: None,
+                shows_detail: true,
             }],
             error: None,
         };

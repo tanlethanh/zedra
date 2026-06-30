@@ -219,6 +219,7 @@ fn degraded_agent_summary(actor: &dyn AgentActor, workdir: &Path) -> AgentSummar
         }],
         account: account_summary(actor, workdir),
         usage: None,
+        shows_detail: actor.shows_detail(),
     }
 }
 
@@ -341,6 +342,7 @@ fn agent_summary_scan(actor: &dyn AgentActor, workdir: &Path) -> AgentSummary {
         warnings,
         account: account_summary(actor, workdir),
         usage: None,
+        shows_detail: actor.shows_detail(),
     }
 }
 
@@ -510,6 +512,12 @@ pub trait AgentActor: Sync {
             hooks_installed: false,
             error: None,
         }
+    }
+
+    /// List this agent on the app's manage screen. True for integrated agents
+    /// that aggregate sessions; detect-only actors have no detail to show.
+    fn shows_detail(&self) -> bool {
+        false
     }
 
     fn session_counts(&self, _ctx: &ScanCtx) -> Result<SessionCounts, String> {

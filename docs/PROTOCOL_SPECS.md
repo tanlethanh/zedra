@@ -379,6 +379,7 @@ unsupported actor methods return their default empty or unsupported result. Most
 their history per workspace; `hermes` is global.
 
 - `AgentListResult.agents` returns one `AgentSummary` for every registered actor, even when the CLI is missing or no sessions exist. `AgentSummary.slug` is the canonical identity; clients resolve the icon from the slug (see `InstalledAgentEntry.icon_name` for the launcher's native asset).
+- `AgentSummary.shows_detail` is host-owned and marks actors that aggregate sessions/account/usage worth a detail screen (`claude`, `codex`, `opencode`, `pi`, `hermes`). Detect-only actors return `false`; the app's manage-agents list shows only CLI-detected agents with `shows_detail = true`.
 - `AgentListReq.refresh` and `AgentInstalledListReq.refresh` default to `false`. When `false`, the host serves its startup cache; when `true`, the host rescans synchronous fields before responding.
 - `AgentInstalledList` is a launch-oriented projection of the same actor registry.
 - `AgentSessionsReq.slug`, `AgentResumeReq.slug`, and `AgentFilesReq.slug` select an actor. Unknown or unsupported features return typed errors; `AgentSessionsResult.sessions` contains the latest workspace-matching sessions and `total` is the full match count before applying `limit`.

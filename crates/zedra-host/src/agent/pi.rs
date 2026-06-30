@@ -694,6 +694,10 @@ use super::{
 pub(super) struct PiActor;
 
 impl AgentActor for PiActor {
+    fn shows_detail(&self) -> bool {
+        true
+    }
+
     fn slug(&self) -> &'static str {
         "pi"
     }

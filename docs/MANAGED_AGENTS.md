@@ -61,6 +61,8 @@ Override only the methods the provider supports:
 - account/usage: `account_fields`, `subscription_plan`, `account_usage`,
   `extra`, `config_files`
 - global behavior: `is_global`
+- detail screen: `shows_detail` — return `true` to list the agent on the app's
+  manage screen (defaults `false`; detect-only actors stay hidden)
 
 `setup` is the only mutable setup operation. It writes the hook runner and
 provider config, then returns the written paths.

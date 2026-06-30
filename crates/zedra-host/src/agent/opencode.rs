@@ -703,6 +703,10 @@ use super::{
 pub(super) struct OpenCodeActor;
 
 impl AgentActor for OpenCodeActor {
+    fn shows_detail(&self) -> bool {
+        true
+    }
+
     fn slug(&self) -> &'static str {
         "opencode"
     }

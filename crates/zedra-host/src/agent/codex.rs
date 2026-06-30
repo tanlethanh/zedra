@@ -679,6 +679,10 @@ use super::{
 pub(super) struct CodexActor;
 
 impl AgentActor for CodexActor {
+    fn shows_detail(&self) -> bool {
+        true
+    }
+
     fn slug(&self) -> &'static str {
         "codex"
     }

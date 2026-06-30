@@ -620,6 +620,10 @@ impl HermesActor {
 }
 
 impl AgentActor for HermesActor {
+    fn shows_detail(&self) -> bool {
+        true
+    }
+
     fn slug(&self) -> &'static str {
         "hermes"
     }

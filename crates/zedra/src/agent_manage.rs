@@ -119,7 +119,13 @@ impl AgentManage {
 impl Render for AgentManage {
     fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let agent_state = self.agent_state.clone();
-        let agents = self.agents.clone();
+        // Host marks which agents expose detail; only list those that are CLI-detected.
+        let agents: Vec<AgentSummary> = self
+            .agents
+            .iter()
+            .filter(|agent| agent.cli.available && agent.shows_detail)
+            .cloned()
+            .collect();
 
         let body: AnyElement = match agent_state {
             LoadState::Loading => {
@@ -127,6 +133,10 @@ impl Render for AgentManage {
             }
             LoadState::Error(message) => {
                 subscreen_padded_body(empty_text(message, cx)).into_any_element()
+            }
+            LoadState::Ready if agents.is_empty() => {
+                subscreen_padded_body(empty_text("No managed agents detected", cx))
+                    .into_any_element()
             }
             LoadState::Ready => render_list_body(&agents, cx).into_any_element(),
         };
