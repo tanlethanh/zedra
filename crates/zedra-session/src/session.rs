@@ -434,8 +434,9 @@ impl Session {
                 agent_slug,
             } => {
                 info!(
-                    "HostEvent: terminal agent changed terminal={terminal_id} \
-                     agent_slug={agent_slug:?}"
+                    terminal_id = %terminal_id,
+                    agent_slug = ?agent_slug,
+                    "HostEvent: terminal agent changed"
                 );
             }
         }
