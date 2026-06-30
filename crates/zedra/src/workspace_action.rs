@@ -118,6 +118,7 @@ pub struct CreateAgent;
 pub struct SpawnAgentTerminal {
     pub launch_cmd: String,
     pub initial_title: String,
+    pub agent_slug: String,
 }
 
 #[derive(Clone, PartialEq, Action)]

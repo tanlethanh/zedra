@@ -89,12 +89,13 @@ impl AgentPicker {
             })
             .collect();
 
-        let launch_targets: Vec<(String, Option<String>)> = agents
+        let launch_targets: Vec<(String, Option<String>, String)> = agents
             .iter()
             .map(|a| {
                 (
                     format!("Launching {}...", a.display_name),
                     a.launch_cmd.clone(),
+                    a.slug.clone(),
                 )
             })
             .collect();
@@ -106,12 +107,15 @@ impl AgentPicker {
             picker_items,
             move |selection| {
                 let Some(index) = selection else { return };
-                let Some((initial_title, Some(cmd))) = launch_targets.get(index).cloned() else {
+                let Some((initial_title, Some(cmd), agent_slug)) =
+                    launch_targets.get(index).cloned()
+                else {
                     return;
                 };
                 pending.set(PendingWorkspaceAction::SpawnAgentTerminal {
                     launch_cmd: cmd,
                     initial_title,
+                    agent_slug,
                 });
             },
         );

@@ -150,6 +150,7 @@ pub(crate) enum PendingWorkspaceAction {
     SpawnAgentTerminal {
         launch_cmd: String,
         initial_title: String,
+        agent_slug: String,
     },
 }
 
@@ -2262,7 +2263,7 @@ impl Workspace {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        self.spawn_terminal("user_action", None, None, window, cx);
+        self.spawn_terminal("user_action", None, None, None, window, cx);
     }
 
     fn handle_create_agent(
@@ -2288,6 +2289,7 @@ impl Workspace {
             "create_agent",
             Some(action.launch_cmd.clone()),
             Some(action.initial_title.clone()),
+            Some(action.agent_slug.clone()),
             window,
             cx,
         );
@@ -2298,6 +2300,7 @@ impl Workspace {
         telemetry_source: &'static str,
         launch_cmd: Option<String>,
         initial_title: Option<String>,
+        agent_slug: Option<String>,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
@@ -2321,7 +2324,7 @@ impl Workspace {
                     TERMINAL_PENDING_ID,
                     title,
                     launch_cmd.as_deref(),
-                    None,
+                    agent_slug.as_deref(),
                 );
                 cx.notify();
             });
@@ -2379,7 +2382,7 @@ impl Workspace {
                             &terminal_id,
                             title,
                             launch_cmd_for_meta.as_deref(),
-                            None,
+                            agent_slug.as_deref(),
                         );
                         state.remove(TERMINAL_PENDING_ID);
                         cx.notify();
@@ -2752,6 +2755,7 @@ impl Workspace {
             PendingWorkspaceAction::SpawnAgentTerminal {
                 launch_cmd,
                 initial_title,
+                agent_slug,
             } => {
                 cx.spawn(async move |this, cx| {
                     let _ = this.update_in(cx, |workspace, window, cx| {
@@ -2759,6 +2763,7 @@ impl Workspace {
                             "create_agent",
                             Some(launch_cmd),
                             Some(initial_title),
+                            Some(agent_slug),
                             window,
                             cx,
                         );
