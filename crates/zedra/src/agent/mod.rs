@@ -442,9 +442,12 @@ pub fn icon(slug: &str) -> String {
 }
 
 pub fn bracketed_paste(text: &str) -> Vec<u8> {
-    let mut bytes = Vec::with_capacity(text.len() + 12);
+    // Neutralize embedded ESC so file/prompt content can't smuggle a `\x1b[201~`
+    // terminator and break out of paste mode into raw terminal input.
+    let sanitized = text.replace('\x1b', "␛");
+    let mut bytes = Vec::with_capacity(sanitized.len() + 12);
     bytes.extend_from_slice(b"\x1b[200~");
-    bytes.extend_from_slice(text.as_bytes());
+    bytes.extend_from_slice(sanitized.as_bytes());
     bytes.extend_from_slice(b"\x1b[201~");
     bytes
 }
