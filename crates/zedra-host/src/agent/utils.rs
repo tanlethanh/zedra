@@ -22,7 +22,17 @@ where
     T: Send + 'static,
     F: FnOnce() -> Option<T> + Send + 'static,
 {
-    Box::pin(async move { tokio::task::spawn_blocking(probe).await.ok().flatten() })
+    Box::pin(async move {
+        match tokio::task::spawn_blocking(probe).await {
+            Ok(result) => result,
+            Err(err) => {
+                // A join error is a probe panic or runtime shutdown, not "no data";
+                // surface it so probe regressions don't vanish silently.
+                tracing::info!("[debug:agent] blocking probe join failed: {err}");
+                None
+            }
+        }
+    })
 }
 
 pub fn command_on_path(program: &str) -> bool {
@@ -135,7 +145,10 @@ pub fn session_title(stored: Option<String>) -> Option<String> {
 }
 
 pub fn resume_summary(slug: &str, session_id: &str) -> AgentResumeSummary {
-    let available = !session_id.trim().is_empty();
+    // Trim once so availability and the `slug:id` payload agree; a padded id must
+    // not be reported resumable and then serialized with whitespace downstream.
+    let session_id = session_id.trim();
+    let available = !session_id.is_empty();
     AgentResumeSummary {
         available,
         unavailable_reason: (!available).then(|| "missing session id".to_string()),
