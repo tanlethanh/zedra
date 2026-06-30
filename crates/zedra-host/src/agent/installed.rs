@@ -1,4 +1,3 @@
-use std::path::{Path, PathBuf};
 use std::sync::Mutex;
 use zedra_rpc::proto::{AgentInstalledListResult, InstalledAgentEntry};
 
@@ -41,50 +40,13 @@ pub fn list_installed_agents() -> AgentInstalledListResult {
     }
 }
 
+/// Resolve the launch command the same way `AgentActor::cli_available` does, so
+/// `InstalledAgentEntry.available` never drifts from the actor's own probe.
 fn resolve_program(programs: &[&str]) -> Option<String> {
     programs
         .iter()
-        .find(|program| program_on_path(program))
+        .find(|program| agent::utils::command_on_path(program))
         .map(|program| program.to_string())
-}
-
-fn program_on_path(program: &str) -> bool {
-    if program.contains('/') {
-        return is_executable_file(Path::new(program));
-    }
-    path_lookup(program).is_some()
-}
-
-fn path_lookup(program: &str) -> Option<PathBuf> {
-    let path = std::env::var_os("PATH")?;
-    for dir in std::env::split_paths(&path) {
-        let candidate = dir.join(program);
-        if is_executable_file(&candidate) {
-            return Some(candidate);
-        }
-    }
-    None
-}
-
-/// A PATH entry only counts as an installed agent CLI if it is an executable
-/// regular file; a non-executable file of the same name (a stray note, a
-/// partial download) must not mark the agent as available.
-fn is_executable_file(path: &Path) -> bool {
-    let Ok(meta) = std::fs::metadata(path) else {
-        return false;
-    };
-    if !meta.is_file() {
-        return false;
-    }
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::PermissionsExt;
-        meta.permissions().mode() & 0o111 != 0
-    }
-    #[cfg(not(unix))]
-    {
-        true
-    }
 }
 
 #[cfg(test)]

@@ -451,11 +451,22 @@ pub trait AgentActor: Sync {
     }
 
     fn cli_version_summary(&self) -> AgentCliSummary {
-        let Some(program) = self.programs().first() else {
+        // Probe the first program that actually resolves on PATH, matching
+        // `cli_available`, so a fallback binary isn't reported as broken.
+        let Some(program) = self
+            .programs()
+            .iter()
+            .copied()
+            .find(|program| utils::command_on_path(program))
+        else {
             return AgentCliSummary {
                 available: false,
                 version: None,
-                error: Some("agent has no launch command".to_string()),
+                error: Some(if self.programs().is_empty() {
+                    "agent has no launch command".to_string()
+                } else {
+                    "agent CLI not found on PATH".to_string()
+                }),
             };
         };
         match Command::new(program).arg("--version").output() {
