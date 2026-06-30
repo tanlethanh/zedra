@@ -681,15 +681,20 @@ fn install_hooks(args: AgentHookInstallArgs) -> Result<()> {
             .collect::<Result<Vec<_>>>()?
     };
     let written = install_hook_actors(&actors, &workdir, args.force, install_all)?;
+    // Only `pi`/`hermes` write global assets; show the workspace hook script line
+    // only when an actor actually prepared it.
+    let has_local_script = written.iter().any(|path| path == &script_path);
 
     println!("Local Agent Hooks Prepared\n");
-    println!(
-        "{}",
+    let summary = if has_local_script {
         utils::render_key_values(&[
             ("Workdir", workdir.display().to_string()),
             ("Hook Script", script_path.display().to_string()),
         ])
-    );
+    } else {
+        utils::render_key_values(&[("Workdir", workdir.display().to_string())])
+    };
+    println!("{summary}");
     println!();
     println!("Files");
     for path in written {
@@ -724,15 +729,16 @@ fn install_hook_actors(
 
 pub(crate) fn write_hook_script(workdir: &Path, force: bool) -> Result<PathBuf> {
     let path = workdir.join(".zedra/agent-hooks/zedra-agent-hook.sh");
-    if path.exists() && !force {
-        return Ok(path);
+    // Skip the rewrite when the script already exists, but still repair the exec
+    // bit below so a script that lost +x doesn't leave a non-runnable hook.
+    if !path.exists() || force {
+        write_file_checked(
+            &path,
+            &hook_script_contents(workdir)?,
+            force,
+            "agent hook script",
+        )?;
     }
-    write_file_checked(
-        &path,
-        &hook_script_contents(workdir)?,
-        force,
-        "agent hook script",
-    )?;
     #[cfg(unix)]
     {
         use std::os::unix::fs::PermissionsExt;

@@ -87,8 +87,10 @@ impl HookContext {
         notification: HookNotification,
     ) -> Result<()> {
         let body = notification.body.and_then(|b| {
-            let first = b.lines().next().unwrap_or("").trim();
-            (!first.is_empty()).then(|| utils::truncate_chars(first, 100))
+            b.lines()
+                .map(str::trim)
+                .find(|line| !line.is_empty())
+                .map(|line| utils::truncate_chars(line, 100))
         });
         // Deeplink pushes go out at high priority so a backgrounded device wakes promptly
         // and the tap navigates; plain notifications stay normal. The caller (host) picks
