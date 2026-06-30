@@ -191,11 +191,28 @@ impl PiActor {
         }
         candidates.sort_by(|a, b| b.1.cmp(&a.1).then_with(|| b.0.cmp(&a.0)));
 
-        let take = limit.unwrap_or(candidates.len());
-        let mut files = Vec::with_capacity(take.min(candidates.len()));
-        for (path, mtime) in candidates.into_iter().take(take) {
+        // head-only scans trust mtime order and may take `limit` up front. A full
+        // scan must parse every candidate first, since transcript `last_activity_at`
+        // can reorder past the mtime ranking, then apply `limit` to the sorted result.
+        let scan_limit = if head_only {
+            limit.unwrap_or(candidates.len())
+        } else {
+            candidates.len()
+        };
+        let mut files = Vec::with_capacity(scan_limit.min(candidates.len()));
+        for (path, mtime) in candidates.into_iter().take(scan_limit) {
             let file = Self::read_session_file(&path, mtime, head_only)?;
             files.push(file);
+        }
+        if !head_only {
+            files.sort_by(|a, b| {
+                b.last_activity_at
+                    .cmp(&a.last_activity_at)
+                    .then_with(|| b.path.cmp(&a.path))
+            });
+            if let Some(limit) = limit {
+                files.truncate(limit);
+            }
         }
         Ok(files)
     }
