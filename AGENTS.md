@@ -50,6 +50,7 @@ Mobile remote editor for iOS and Android. Primary platform is iOS (`gpui_ios` + 
 
 ## Documentation
 
+- Read `docs/WRITING.md` before writing or editing documentation.
 - Write docs in a practical, direct style: start with the goal, put common actions first, and avoid promotional or apologetic wording.
 - Use complete working examples. Use `sh` fences for terminal command blocks and backticks for inline commands, paths, settings, and keybindings.
 - Keep repo guidance high-signal. New rules should be non-obvious, repeatedly encountered, and specific enough to act on; crate-specific rules belong in that crate's `AGENTS.md`.
