@@ -789,6 +789,10 @@ impl AgentActor for PiActor {
         })
     }
 
+    fn supports_setup(&self) -> bool {
+        true
+    }
+
     fn setup(&self, _workdir: &Path, force: bool) -> anyhow::Result<Vec<PathBuf>> {
         Ok(vec![super::cli::write_pi_hook_extension(force)?])
     }

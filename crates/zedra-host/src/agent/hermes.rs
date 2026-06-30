@@ -727,6 +727,10 @@ impl AgentActor for HermesActor {
         })
     }
 
+    fn supports_setup(&self) -> bool {
+        true
+    }
+
     fn setup(&self, _workdir: &Path, force: bool) -> anyhow::Result<Vec<PathBuf>> {
         super::cli::write_hermes_hook_config(force)
     }

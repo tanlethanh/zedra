@@ -593,6 +593,12 @@ pub trait AgentActor: Sync {
 
     /// Perform mutable provider setup (hook runner and provider config). Read
     /// only setup state remains available through `setup_summary`.
+    /// Actors that override `setup` must opt in so default installs can skip
+    /// unsupported actors without swallowing real setup failures.
+    fn supports_setup(&self) -> bool {
+        false
+    }
+
     fn setup(&self, _workdir: &Path, _force: bool) -> anyhow::Result<Vec<std::path::PathBuf>> {
         anyhow::bail!("{} does not support setup", self.slug())
     }

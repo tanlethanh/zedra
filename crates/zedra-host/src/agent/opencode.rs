@@ -781,6 +781,10 @@ impl AgentActor for OpenCodeActor {
         })
     }
 
+    fn supports_setup(&self) -> bool {
+        true
+    }
+
     fn setup(&self, workdir: &Path, force: bool) -> anyhow::Result<Vec<PathBuf>> {
         let script_path = super::cli::write_hook_script(workdir, force)?;
         let config_path = super::cli::write_opencode_hook_config(workdir, &script_path, force)?;

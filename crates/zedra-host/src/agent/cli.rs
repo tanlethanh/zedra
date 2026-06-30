@@ -667,7 +667,8 @@ fn install_hooks(args: AgentHookInstallArgs) -> Result<()> {
     }
     let workdir = resolve_workdir(&args.workdir);
     let script_path = workdir.join(".zedra/agent-hooks/zedra-agent-hook.sh");
-    let actors = if args.providers.is_empty() {
+    let install_all = args.providers.is_empty();
+    let actors = if install_all {
         agent::actors().to_vec()
     } else {
         args.providers
@@ -679,16 +680,7 @@ fn install_hooks(args: AgentHookInstallArgs) -> Result<()> {
             })
             .collect::<Result<Vec<_>>>()?
     };
-    let mut written = Vec::new();
-    for actor in actors {
-        match actor.setup(&workdir, args.force) {
-            Ok(mut paths) => written.append(&mut paths),
-            Err(error) if args.providers.is_empty() => {
-                tracing::debug!(agent = actor.slug(), %error, "agent has no hook installer")
-            }
-            Err(error) => return Err(error),
-        }
-    }
+    let written = install_hook_actors(&actors, &workdir, args.force, install_all)?;
 
     println!("Local Agent Hooks Prepared\n");
     println!(
@@ -704,6 +696,30 @@ fn install_hooks(args: AgentHookInstallArgs) -> Result<()> {
         println!("  {}", path.display());
     }
     Ok(())
+}
+
+fn install_hook_actors(
+    actors: &[&dyn agent::AgentActor],
+    workdir: &Path,
+    force: bool,
+    skip_unsupported: bool,
+) -> Result<Vec<PathBuf>> {
+    let mut written = Vec::new();
+    for actor in actors {
+        if !actor.supports_setup() {
+            if skip_unsupported {
+                tracing::debug!(agent = actor.slug(), "agent has no hook installer");
+                continue;
+            }
+            bail!("{} does not support setup", actor.slug());
+        }
+
+        // Default install mode skips unsupported actors, but supported actor setup
+        // failures mean hooks were requested and not installed.
+        let mut paths = actor.setup(workdir, force)?;
+        written.append(&mut paths);
+    }
+    Ok(written)
 }
 
 pub(crate) fn write_hook_script(workdir: &Path, force: bool) -> Result<PathBuf> {
@@ -1468,6 +1484,61 @@ fn suffix(value: Option<&str>) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    struct UnsupportedSetupActor;
+
+    impl agent::AgentActor for UnsupportedSetupActor {
+        fn slug(&self) -> &'static str {
+            "unsupported"
+        }
+
+        fn display_name(&self) -> &'static str {
+            "Unsupported"
+        }
+
+        fn icon_name(&self) -> &'static str {
+            "unsupported"
+        }
+    }
+
+    struct FailingSetupActor;
+
+    impl agent::AgentActor for FailingSetupActor {
+        fn slug(&self) -> &'static str {
+            "failing"
+        }
+
+        fn display_name(&self) -> &'static str {
+            "Failing"
+        }
+
+        fn icon_name(&self) -> &'static str {
+            "failing"
+        }
+
+        fn supports_setup(&self) -> bool {
+            true
+        }
+
+        fn setup(&self, _workdir: &Path, _force: bool) -> anyhow::Result<Vec<PathBuf>> {
+            bail!("setup failed")
+        }
+    }
+
+    #[test]
+    fn install_hook_actors_reports_supported_setup_failures() {
+        let temp = tempfile::tempdir().unwrap();
+        let unsupported = UnsupportedSetupActor;
+        let failing = FailingSetupActor;
+        let actors: [&dyn agent::AgentActor; 2] = [&unsupported, &failing];
+
+        let error = install_hook_actors(&actors, temp.path(), false, true).unwrap_err();
+
+        assert!(
+            error.to_string().contains("setup failed"),
+            "unexpected error: {error:#}"
+        );
+    }
 
     #[test]
     fn parses_empty_hook_payload() {
