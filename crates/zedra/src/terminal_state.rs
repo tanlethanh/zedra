@@ -65,6 +65,13 @@ impl TerminalState {
     /// Apply host-resolved agent identity (`None` clears). Sets icon from slug;
     /// defaults title to the display name when the terminal has none.
     pub fn set_agent_slug(&mut self, id: &str, slug: Option<String>) {
+        // Title the previous identity seeded; if the current title still equals it,
+        // the identity owns the title and we replace/clear it when the slug changes.
+        let previous_default_title = self
+            .entries
+            .get(id)
+            .and_then(|e| e.agent_slug.as_deref())
+            .map(agent::name);
         // Adapter applies branding overrides (e.g. Codex -> OpenAI) + slug-asset fallback.
         let resolved = slug.as_deref().map(|slug| {
             let adapter = agent::adapter(slug);
@@ -76,13 +83,21 @@ impl TerminalState {
         let icon = resolved.as_ref().map(|(icon, _)| icon.clone());
         let default_title = resolved.map(|(_, name)| name);
         let e = self.entry(id);
+        let title_was_agent_default = previous_default_title.as_deref() == e.title.as_deref();
         e.agent_slug = slug;
         e.agent_icon = icon;
-        if e.title.is_none()
-            && let Some(title) = default_title
-        {
-            e.title = Some(title.clone());
-            e.plain_title = plain_terminal_title(&title);
+        match default_title {
+            // Seed when untitled, or overwrite a stale agent-default on slug switch.
+            Some(title) if e.title.is_none() || title_was_agent_default => {
+                e.title = Some(title.clone());
+                e.plain_title = plain_terminal_title(&title);
+            }
+            // Cleared identity (None) drops the old agent-default but keeps user titles.
+            None if title_was_agent_default => {
+                e.title = None;
+                e.plain_title = None;
+            }
+            _ => {}
         }
     }
 
