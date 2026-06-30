@@ -52,9 +52,18 @@ impl AgentSessions {
             let mut errors = Vec::new();
             match handle.agent_list(refresh).await {
                 Ok(agents) => {
-                    for agent in agents {
-                        let slug = agent.slug;
-                        match handle.agent_sessions(slug.clone(), refresh, 0).await {
+                    // Fan out per-agent scans so one slow agent doesn't gate the rest.
+                    let results = futures::future::join_all(agents.into_iter().map(|agent| {
+                        let handle = handle.clone();
+                        async move {
+                            let slug = agent.slug;
+                            let result = handle.agent_sessions(slug.clone(), refresh, 0).await;
+                            (slug, result)
+                        }
+                    }))
+                    .await;
+                    for (slug, result) in results {
+                        match result {
                             Ok(mut rows) => sessions.append(&mut rows),
                             Err(err) => errors.push(format!("{slug}: {err}")),
                         }
