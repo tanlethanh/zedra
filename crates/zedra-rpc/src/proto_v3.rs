@@ -435,7 +435,7 @@ fn agent_slug_to_live(kind: AgentKind) -> String {
 /// Best-effort capabilities for the removed `v3` registry. Live actors expose
 /// the underlying features directly, so this reports the full set with a
 /// usage snapshot only for the providers that surfaced one.
-fn legacy_agent_capabilities(kind: AgentKind) -> AgentCapabilities {
+fn legacy_agent_capabilities(kind: AgentKind, usage_snapshot: bool) -> AgentCapabilities {
     AgentCapabilities {
         list_sessions: true,
         resume_session: true,
@@ -443,7 +443,7 @@ fn legacy_agent_capabilities(kind: AgentKind) -> AgentCapabilities {
         confirm_action: !matches!(kind, AgentKind::Pi),
         select_action: true,
         lifecycle_events: true,
-        usage_snapshot: matches!(kind, AgentKind::Claude),
+        usage_snapshot,
     }
 }
 
@@ -481,12 +481,15 @@ impl From<AgentFilesReq> for proto::AgentFilesReq {
 /// at `v4` is dropped via the usage conversion.
 fn agent_summary_v3(a: proto::AgentSummary) -> Option<AgentSummary> {
     let kind = agent_kind(&a.slug)?;
+    // Derive usage support from the converted summary so a v3 client never sees
+    // `usage: Some(..)` while `capabilities.usage_snapshot` stays false.
+    let usage_snapshot = a.usage.is_some();
     Some(AgentSummary {
         kind,
         display_name: a.display_name,
         cli: a.cli,
         setup: a.setup,
-        capabilities: legacy_agent_capabilities(kind),
+        capabilities: legacy_agent_capabilities(kind, usage_snapshot),
         workspace: a.workspace,
         sessions: a.sessions,
         last_activity_at: a.last_activity_at,
