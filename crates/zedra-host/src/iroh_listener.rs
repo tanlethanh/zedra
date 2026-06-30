@@ -9,7 +9,7 @@ use std::sync::Arc;
 use crate::rpc_daemon::{self, DaemonState};
 use crate::session_registry::SessionRegistry;
 use zedra_rpc::proto::ZEDRA_ALPN;
-use zedra_rpc::proto_v2::ZEDRA_ALPN_V2;
+use zedra_rpc::proto_v3::ZEDRA_ALPN_V3;
 use zedra_telemetry::Event;
 
 use crate::identity::SharedIdentity;
@@ -65,7 +65,7 @@ pub async fn create_endpoint(
     let mut builder = iroh::Endpoint::builder()
         .secret_key(identity.iroh_secret_key().clone())
         // Current ALPN first; the previous one keeps older clients connecting.
-        .alpns(vec![ZEDRA_ALPN.to_vec(), ZEDRA_ALPN_V2.to_vec()])
+        .alpns(vec![ZEDRA_ALPN.to_vec(), ZEDRA_ALPN_V3.to_vec()])
         .relay_mode(relay_mode);
     if relay_only {
         // Skip pkarr address publishing — no direct addresses to advertise.

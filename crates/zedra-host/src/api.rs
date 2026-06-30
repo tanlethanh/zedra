@@ -30,18 +30,15 @@ use serde::{Deserialize, Serialize};
 use tokio::net::TcpListener;
 
 use crate::agent;
-use crate::agent_hook_recv::{
-    ClaudeHookReceiver, CodexHookReceiver, HermesHookReceiver, HookContext, HookReceiver,
-    OpenCodeHookReceiver, PiHookReceiver,
-};
-use crate::agent_utils::payload_string;
+use crate::agent::hook::HookContext;
+use crate::agent::utils::payload_string;
 use crate::metrics;
 use crate::pty::SpawnOptions;
 use crate::qr;
 use crate::rpc_daemon::{create_terminal, DaemonState};
 use crate::session_registry::{PairingSlotMode, ServerSession, SessionRegistry};
 use zedra_rpc::encode_endpoint_identity;
-use zedra_rpc::proto::{AgentKind, AgentResumeResult, HostEvent, TerminalColorScheme};
+use zedra_rpc::proto::{AgentResumeResult, HostEvent, TerminalColorScheme};
 use zedra_rpc::ZedraPairingTicket;
 use zedra_telemetry::Event;
 
@@ -320,10 +317,16 @@ async fn create_terminal_handler(
             });
 
             // Push TerminalCreated event to the subscribed client (if any).
+            // Resolve identity from the launch command (no OSC 1 yet at spawn)
+            // so the client shows the agent icon immediately.
+            let agent_slug =
+                crate::agent::detect::resolve_terminal_agent(launch_cmd.as_deref(), None)
+                    .map(str::to_string);
             session
                 .push_event(HostEvent::TerminalCreated {
                     id: id.clone(),
                     launch_cmd,
+                    agent_slug,
                 })
                 .await;
             let session_id = session.id.clone();
@@ -349,10 +352,10 @@ fn unauthorized() -> axum::response::Response {
         .into_response()
 }
 
-fn invalid_agent(kind: &str) -> axum::response::Response {
+fn invalid_agent(slug: &str) -> axum::response::Response {
     (
         StatusCode::BAD_REQUEST,
-        Json(serde_json::json!({"error": format!("unsupported managed agent: {kind}")})),
+        Json(serde_json::json!({"error": format!("unsupported agent: {slug}")})),
     )
         .into_response()
 }
@@ -385,13 +388,13 @@ async fn list_agents_handler(State(s): State<ApiState>, headers: HeaderMap) -> i
 async fn list_agent_sessions_handler(
     State(s): State<ApiState>,
     headers: HeaderMap,
-    AxumPath(kind): AxumPath<String>,
+    AxumPath(slug): AxumPath<String>,
 ) -> impl IntoResponse {
     if !verify_token(&headers, &s.token) {
         return unauthorized();
     }
-    let Some(kind) = agent::managed_kind_from_slug(&kind) else {
-        return invalid_agent(&kind);
+    let Some(actor) = agent::actor(&slug) else {
+        return invalid_agent(&slug);
     };
 
     let Some((session, workdir)) = agent_session_context(&s).await else {
@@ -404,7 +407,7 @@ async fn list_agent_sessions_handler(
     Json(
         agent::list_agent_sessions(
             &s.daemon_state.agent_cache,
-            kind,
+            actor.slug(),
             &workdir,
             Some(&session),
             0,
@@ -427,14 +430,14 @@ pub struct ResumeAgentReq {
 async fn resume_agent_handler(
     State(s): State<ApiState>,
     headers: HeaderMap,
-    AxumPath(kind): AxumPath<String>,
+    AxumPath(slug): AxumPath<String>,
     Json(req): Json<ResumeAgentReq>,
 ) -> impl IntoResponse {
     if !verify_token(&headers, &s.token) {
         return unauthorized();
     }
-    let Some(kind) = agent::managed_kind_from_slug(&kind) else {
-        return invalid_agent(&kind);
+    let Some(actor) = agent::actor(&slug) else {
+        return invalid_agent(&slug);
     };
     let Some((session, workdir)) = agent_session_context(&s).await else {
         return (
@@ -443,7 +446,7 @@ async fn resume_agent_handler(
         )
             .into_response();
     };
-    let Some(launch_cmd) = agent::resume_launch_command(kind, &req.session_id) else {
+    let Some(launch_cmd) = agent::resume_launch_command(actor.slug(), &req.session_id) else {
         return (
             StatusCode::BAD_REQUEST,
             Json(serde_json::json!({"error": "missing session id"})),
@@ -474,10 +477,14 @@ async fn resume_agent_handler(
             {
                 tracing::warn!("Failed to record terminal metrics: {}", e);
             }
+            // `actor` was already validated from the route slug; re-detecting from
+            // launch_cmd would drop the identity for wrapper commands.
+            let agent_slug = Some(actor.slug().to_string());
             session
                 .push_event(HostEvent::TerminalCreated {
                     id: terminal_id.clone(),
                     launch_cmd: Some(launch_cmd),
+                    agent_slug,
                 })
                 .await;
             Json(AgentResumeResult {
@@ -508,14 +515,14 @@ pub struct AgentHookReq {
 async fn receive_agent_hook_handler(
     State(s): State<ApiState>,
     headers: HeaderMap,
-    AxumPath(kind): AxumPath<String>,
+    AxumPath(slug): AxumPath<String>,
     Json(req): Json<AgentHookReq>,
 ) -> impl IntoResponse {
     if !verify_token(&headers, &s.token) {
         return unauthorized();
     }
-    let Some(kind) = agent::managed_kind_from_slug(&kind) else {
-        return invalid_agent(&kind);
+    let Some(actor) = agent::actor(&slug) else {
+        return invalid_agent(&slug);
     };
 
     let Some(terminal_id) = req
@@ -551,13 +558,7 @@ async fn receive_agent_hook_handler(
             delta,
             workdir,
         };
-        let result = match kind {
-            AgentKind::Claude => ClaudeHookReceiver.receive(ctx).await,
-            AgentKind::Codex => CodexHookReceiver.receive(ctx).await,
-            AgentKind::OpenCode => OpenCodeHookReceiver.receive(ctx).await,
-            AgentKind::Pi => PiHookReceiver.receive(ctx).await,
-            AgentKind::Hermes => HermesHookReceiver.receive(ctx).await,
-        };
+        let result = actor.receive_hook(ctx).await;
         if let Err(err) = result {
             tracing::warn!(error = %err, "agent hook receiver failed");
         }

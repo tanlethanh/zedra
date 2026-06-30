@@ -35,7 +35,7 @@ The protocol layer includes:
 
 - Network transport: iroh QUIC.
 - RPC framing: `irpc` over iroh streams.
-- ALPN: `zedra/rpc/3` (see `ZEDRA_ALPN` in `crates/zedra-rpc/src/proto.rs`). Bump the trailing integer on any change that alters how existing bytes decode (see §2.4).
+- ALPN: `zedra/rpc/4` (see `ZEDRA_ALPN` in `crates/zedra-rpc/src/proto.rs`). Bump the trailing integer on any change that alters how existing bytes decode (see §2.4).
 
 ### 2.2 Serialization
 
@@ -105,9 +105,9 @@ problem has to be removed at the encoding layer. Candidate techniques:
 - **Versioned variants.** Add `FooReqV2` / `FooResultV2` rather than mutating a
   shipped struct (the `TermCreateReq` → `TermCreateReqV2` pattern).
 
-These are documented as the intended direction; `AgentKind` and the other
-growable enums currently use the plain derived discriminant and are gated by the
-ALPN bump above. Migrating them is tracked in issue #140.
+These remain the direction for growable enum fields. Agent identity is already
+different: the live agent APIs use stable slug strings, so registering a new
+agent actor does not change their postcard schema or require an ALPN bump.
 
 ---
 
@@ -309,8 +309,9 @@ Types that use non-string status fields or enum variants instead:
 - `SyncSessionResult.terminals` and `TermListResult.terminals` are ordered by host-owned terminal order. Creation order is the default until a client submits an explicit order.
 - `TerminalSyncEntry.position` and `TermListEntry.position` are zero-based positions in that host-owned order.
 - `TerminalSyncEntry.last_seq` is the host's latest backlog sequence observed for that terminal at sync time.
-- `TerminalSyncEntry` carries the host's full cached terminal metadata at sync time: `title`, `cwd`, `icon_name`, `agent_command`, `shell_state`, `last_exit_code`, and `agent_state`. Clients seed their terminal metadata from this snapshot on every sync; the host is the source of truth across reconnects. `TermAttach` still replays the same metadata as PTY bytes so normal terminal-event consumers are seeded through one path.
-- `TerminalSyncEntry.agent_command` is the foreground command latched at command start (or from the spawn launch command). It survives prompt-ready between agent turns and clears only on command end, so clients derive the agent identity (kind/icon) from it after reconnect.
+- `TerminalSyncEntry` carries the host's full cached terminal metadata at sync time: `title`, `cwd`, `icon_name`, `agent_command`, `shell_state`, `last_exit_code`, `agent_state`, and `agent_slug`. Clients seed their terminal metadata from this snapshot on every sync; the host is the source of truth across reconnects. `TermAttach` still replays the same metadata as PTY bytes so normal terminal-event consumers are seeded through one path.
+- `TerminalSyncEntry.agent_command` is the foreground command latched at command start (or from the spawn launch command). It survives prompt-ready between agent turns and clears only on command end.
+- `TerminalSyncEntry.agent_slug` is the host-resolved agent identity for that command (`None` for a plain shell). The host resolves it from `agent_command` (with `icon_name` as a fallback) using the registered actors' detection rules. Clients render this slug directly and must not re-detect agent identity from the command line; live changes arrive via `HostEvent::TerminalAgentChanged`.
 - Clients should keep local terminal tabs keyed by terminal id and use `last_seq` to seed reconnect `TermAttach` calls.
 
 ### SyncSession conventions
@@ -371,12 +372,16 @@ All Git result types carry `error: Option<String>`. Host sends error when git re
 
 ### Managed agent conventions
 
-**Terminology:** A *managed agent* is one of `AgentKind`: Claude Code (`Claude`), Codex (`Codex`), OpenCode (`OpenCode`), Pi (`Pi`), and Hermes (`Hermes`). This is narrower than `AgentInstalledList`, which lists every terminal agent CLI the host can launch (Amp, Cline, Cursor, etc.). Most agents scope sessions per workspace; `Hermes` is a global personal agent whose sessions are workspace-independent.
+**Terminology:** An *agent actor* is identified by a stable slug such as
+`claude`, `codex`, or `maki`. A single host registry supplies both managed
+features and installed-CLI metadata. Every actor appears in `AgentListResult`;
+unsupported actor methods return their default empty or unsupported result. Most session-capable actors scope
+their history per workspace; `hermes` is global.
 
-- `AgentListResult.agents` returns one `AgentSummary` for every managed agent, even when the CLI is missing or no sessions exist.
+- `AgentListResult.agents` returns one `AgentSummary` for every registered actor, even when the CLI is missing or no sessions exist. `AgentSummary.slug` is the canonical identity; clients resolve the icon from the slug (see `InstalledAgentEntry.icon_name` for the launcher's native asset).
 - `AgentListReq.refresh` and `AgentInstalledListReq.refresh` default to `false`. When `false`, the host serves its startup cache; when `true`, the host rescans synchronous fields before responding.
-- `AgentInstalledList` is for `TermCreate` launch commands only, not manage-agent views.
-- `AgentSessionsResult.sessions` returns the latest workspace-matching sessions for one managed agent. `AgentSessionsResult.total` is the full match count before applying `limit`.
+- `AgentInstalledList` is a launch-oriented projection of the same actor registry.
+- `AgentSessionsReq.slug`, `AgentResumeReq.slug`, and `AgentFilesReq.slug` select an actor. Unknown or unsupported features return typed errors; `AgentSessionsResult.sessions` contains the latest workspace-matching sessions and `total` is the full match count before applying `limit`.
 - `AgentSessionsReq.limit` defaults to `0`, which uses the host default (`50`, overridable with `ZEDRA_AGENT_SESSION_LIMIT`, max `200`).
 - `AgentSessionsReq.refresh` follows the same cache rule as `AgentListReq.refresh`.
 - `AgentResume` creates a new terminal and starts the provider-specific resume command on the host. Clients must not build provider shell commands from summary fields.
@@ -386,6 +391,7 @@ All Git result types carry `error: Option<String>`. Host sends error when git re
   - **Claude** (PTY fallback, unix host only): when there is no readable credentials file (typical Keychain-only CLI login). The host spawns `claude`, captures `/usage` text, and scrapes percentages and optional `resets_at`. This path is **best-effort**: Claude’s TUI layout is not a protocol contract; reset timestamps may be absent or approximate (host local time). Zedra does not read the macOS Keychain for Claude tokens. One PTY probe is cached ~60s and shared by usage + plan scans.
   - **Codex**: `rate_limit_five_hour_used_percent` (primary window), `rate_limit_seven_day_used_percent` (secondary window) — from `chatgpt.com/backend-api/wham/usage` using `~/.codex/auth.json`.
   - `None` when credentials are missing and the CLI PTY probe fails. When a credentials file token is present but the OAuth usage/profile call fails, the host falls back to the CLI PTY probe (still no Keychain read).
+  - `AgentUsageSnapshot.extra` carries host-formatted display lines (e.g. `"$0.42 spent · 12% of limit"`, `"+30 / -8 lines changed"`) rendered verbatim below the gauges. Each agent actor owns its `extra` lines (default derives from `total_cost_usd`/`context_used_percent`/`lines_*`; OpenCode shows spend only since its DB line sums are cumulative). Numeric fields stay for the CLI; clients read `extra` and need no per-agent rules.
 - `AgentSummary.account.fields` exposes locally discovered account/setup metadata for manage-agent detail views. Values must remain privacy-safe. Current fields per agent kind:
   - **Claude**: Logged in, Plan (from `~/.claude/.credentials.json` `subscriptionType` / `rateLimitTier`, refreshed from `api.anthropic.com/api/oauth/profile` when OAuth is available, or CLI PTY when the token lives in Keychain); Organization (OAuth profile only); Model, Effort, Permission mode (from `~/.claude/settings.json`); Total cost (USD), Today msgs (from `~/.claude/stats-cache.json` `dailyActivity`). Live rate limits and extra spend come from `AgentUsageSnapshot` on the summary (OAuth API or CLI PTY), not account fields.
   - **Codex**: Logged in, Account (name from JWT), Plan, Plan until (from `~/.codex/auth.json` `id_token` payload, re-read on async refresh); Model, Personality, Reasoning effort (from `~/.codex/config.toml`); Week threads, Total threads (from `~/.codex/state_5.sqlite`).
@@ -421,13 +427,15 @@ Current host event variants:
 - `GitChanged`
 - `FsChanged { path }`
 - `AgentInfoChanged { info }`
+- `TerminalAgentChanged { terminal_id, agent_slug }`
 
 Client rules:
 
 - `TerminalCreated`: attach/open terminal view if relevant.
 - `GitChanged`: invalidate cached git state and refresh when appropriate.
 - `FsChanged { path }`: invalidate cached file tree for the watched path and reload affected expanded nodes.
-- `AgentInfoChanged`: replace cached `AgentSummary` for `info.kind`. One event per managed agent per version refresh. Requires an active `Subscribe` stream.
+- `AgentInfoChanged`: replace cached `AgentSummary` for `info.slug`. One event per managed agent per version refresh. Requires an active `Subscribe` stream.
+- `TerminalAgentChanged`: update the terminal's agent identity to `agent_slug` (`None` clears it). Emitted when the host-resolved foreground agent for a terminal changes (command start/end). Authoritative — clients render it instead of re-detecting locally. Requires an active `Subscribe` stream.
 
 ---
 
@@ -481,34 +489,38 @@ If a breaking change is unavoidable:
 
 ### 7.4 Multi-ALPN Backward Compatibility
 
-Status: implemented. The host serves both `zedra/rpc/3` and `zedra/rpc/2`.
+Status: implemented. The host serves `zedra/rpc/4` and `zedra/rpc/3`.
 
 A `ZEDRA_ALPN` bump strands shipped apps on the old ALPN (§2.4) until App Store
 review clears the new build, so the host keeps serving the previous version.
 This is a scoped exception to the "host does not tailor responses per client"
 rule, and it **recurs on every bump** (v4 keeps v3, …; a chain if review windows
-overlap). The `v2`→`v3` delta is response-only — requests are append-only and the
-`v2` request set is a prefix of `v3`'s, so the auth handshake is unchanged.
+overlap). Only one previous version is kept: `zedra/rpc/2` was dropped at the
+`v4` bump once its traffic reached zero. The `v3`→`v4` delta is response-only —
+requests are append-only and the `v3` request set is a prefix of `v4`'s, so the
+auth handshake is unchanged.
 
 How it works:
 
 - **Advertise both ALPNs** in `iroh_listener.rs`
-  (`.alpns(vec![ZEDRA_ALPN, ZEDRA_ALPN_V2])`).
+  (`.alpns(vec![ZEDRA_ALPN, ZEDRA_ALPN_V3])`).
 - **`read_zedra_message(conn)` is the only version seam** — it reads
   `conn.alpn()`, decodes with the matching schema, and for a legacy ALPN calls
   `into_live()` to lift the request into `ZedraMessage`. Auth and dispatch then
   run one version-agnostic path; no version flag is threaded through.
-- **`proto_v2.rs`** freezes `ZedraProtoV2`/`ZEDRA_ALPN_V2` and only the diverged
+- **`proto_v3.rs`** freezes `ZedraProtoV3`/`ZEDRA_ALPN_V3` and only the diverged
   types; byte-identical messages reuse `crate::proto` (pinned by roundtrip
   tests). `into_live` rebuilds byte-identical variants via
   `(m.inner, m.tx, m.rx).into()` and wraps diverged senders with
   `with_map`/`with_filter_map` (running `From<live> for frozen`); diverged
   requests lift `From<frozen> for live`.
 
-Behavioral degradation for `v2` clients (all non-fatal): agent `live`/`provider`/
-`counters`/`flags` fields removed at `v3` come back empty; `Pi`/`Hermes` agents
-and the `v3`-only `HostEvent` variants are filtered out (an unknown discriminant
-would be undecodable and kill the stream, §2.4).
+Behavioral degradation for `v3` clients (all non-fatal): agents moved from the
+`AgentKind` enum to slug strings at `v4`, so actors outside the frozen five
+(`claude`/`codex`/`opencode`/`pi`/`hermes`) are filtered out and the removed
+`AgentCapabilities` is synthesized; the `agent_slug` field on `TerminalSyncEntry`,
+the `extra` usage lines, and the `v4`-only `TerminalAgentChanged` event are
+dropped (an unknown discriminant would be undecodable and kill the stream, §2.4).
 
 Exit: drop a frozen module + its `alpns(...)` entry once that version's traffic
 (tracked via the telemetry ALPN field) hits zero; record under §11. This is a
@@ -594,6 +606,45 @@ Any protocol-layer change must include all applicable steps:
 ---
 
 ## 11) Protocol Changelog
+
+### 2026-06-29
+
+- Bumped `ZEDRA_ALPN` to `zedra/rpc/4`. The slug-based agent rewrite (2026-06-24)
+  and host-driven agent identity (2026-06-26) change how existing bytes decode
+  (`AgentKind`/`AgentCapabilities` removed, `TerminalSyncEntry.agent_slug` and
+  `AgentUsageSnapshot.extra` added, `HostEvent::TerminalAgentChanged` added), so
+  they ship under `v4` rather than the previously documented "no bump".
+- Removed `zedra/rpc/2` support (deleted `proto_v2.rs` and its `alpns(...)` entry)
+  now that its traffic has reached zero. The host serves `zedra/rpc/4` and
+  `zedra/rpc/3` per §7.4.
+- Added `proto_v3.rs`: freezes the `v3` schema (enum-based agents) and lifts it
+  to live `v4`. Agents outside the frozen five (`claude`/`codex`/`opencode`/
+  `pi`/`hermes`) are filtered from `v3` responses; `agent_slug`, `usage.extra`,
+  and `TerminalAgentChanged` are dropped for `v3` clients.
+- Added `agent_slug` to `HostEvent::TerminalCreated`. A spawned launch command
+  emits no command-line OSC, so the host now resolves the agent identity from the
+  launch command and ships it with the create event; clients show the icon
+  immediately instead of waiting for a reconnect. Dropped for `v3` clients in
+  `host_event_v3`.
+
+### 2026-06-26
+
+- Host-driven agent identity. Added `TerminalSyncEntry.agent_slug` (host-resolved
+  foreground agent for a terminal) and `HostEvent::TerminalAgentChanged
+  { terminal_id, agent_slug }` (live identity updates). The host now resolves
+  agent identity from the foreground command (with OSC 1 `icon_name` fallback)
+  using the registered actors' detection rules; clients render the slug directly
+  instead of re-detecting, resolving the icon locally from the slug. Additive to
+  the unshipped `zedra/rpc/4` schema — no ALPN bump; the new `HostEvent` variant
+  is dropped for `zedra/rpc/2` clients in `host_event_v2`.
+
+### 2026-06-24
+
+- Replaced the live managed-agent enum with stable slug strings in agent RPC
+  requests, summaries, sessions, files, and hook events. This rewrites the
+  unshipped `zedra/rpc/4` schema without changing its ALPN. Future actor slugs
+  are data, not protocol variants, so adding an agent does not require another
+  ALPN bump. The frozen `zedra/rpc/2` enum remains unchanged for compatibility.
 
 ### 2026-06-20
 

@@ -6,7 +6,6 @@ use tracing::*;
 use uuid::Uuid;
 use zedra_rpc::proto::HostInfoSnapshot;
 
-use zedra_rpc::proto::AgentKind;
 use zedra_session::*;
 
 use crate::platform_bridge;
@@ -44,7 +43,7 @@ pub enum WorkspaceMainView {
     AgentSessions,
     AgentManage,
     AgentDetail {
-        kind: AgentKind,
+        slug: String,
     },
 }
 

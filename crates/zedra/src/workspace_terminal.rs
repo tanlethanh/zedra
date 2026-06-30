@@ -233,7 +233,9 @@ impl WorkspaceTerminal {
                         match event {
                             OscEvent::Title(title) => ts.set_title(&id, Some(title.clone())),
                             OscEvent::ResetTitle => ts.set_title(&id, None),
-                            OscEvent::IconName(name) => ts.set_icon_name(&id, name.clone()),
+                            // OSC 1 (icon name) no longer drives agent identity;
+                            // the host resolves identity and pushes it.
+                            OscEvent::IconName(_) => return,
                             OscEvent::Cwd(cwd) => ts.set_cwd(&id, cwd.clone()),
                             OscEvent::CommandLine(cmd) => ts.set_current_command(&id, cmd.clone()),
                             OscEvent::CommandStart => ts.set_command_started(&id),

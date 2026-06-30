@@ -15,6 +15,26 @@ pub fn home_path(parts: &[&str]) -> PathBuf {
     path
 }
 
+/// Run a blocking `Option`-returning probe on the blocking pool, mapping a join
+/// error to `None`. Shared by the agent actors' async account/usage methods.
+pub fn spawn_blocking_opt<T, F>(probe: F) -> super::ActorFuture<'static, Option<T>>
+where
+    T: Send + 'static,
+    F: FnOnce() -> Option<T> + Send + 'static,
+{
+    Box::pin(async move {
+        match tokio::task::spawn_blocking(probe).await {
+            Ok(result) => result,
+            Err(err) => {
+                // A join error is a probe panic or runtime shutdown, not "no data";
+                // surface it so probe regressions don't vanish silently.
+                tracing::info!("[debug:agent] blocking probe join failed: {err}");
+                None
+            }
+        }
+    })
+}
+
 pub fn command_on_path(program: &str) -> bool {
     if program.contains('/') {
         return Path::new(program).is_file();
@@ -60,13 +80,10 @@ pub fn string_field<'a>(record: &'a Value, names: &[&str]) -> Option<&'a str> {
         .filter(|value| !value.is_empty())
 }
 
-/// Trimmed text of a chat `message` when its role is `user`, or `None`.
-///
-/// Handles both content shapes agents emit: a bare string, or an array of
-/// content parts where the first `type == "text"` part wins. Markup-only text
-/// (leading `<`) and empty text are rejected so it is suitable as a session
-/// title source. Callers pass the message object itself (the JSONL record or an
-/// element of a `messages` array), not the enclosing envelope.
+/// Trimmed text of a `user`-role chat `message`, or `None`. Accepts both content shapes
+/// (bare string, or array where the first `type == "text"` part wins) and rejects empty or
+/// markup-only (leading `<`) text so it is title-safe. Pass the message object itself (JSONL
+/// record or `messages` element), not the envelope.
 pub fn user_message_text(message: &Value) -> Option<String> {
     if string_field(message, &["role"]) != Some("user") {
         return None;
@@ -115,46 +132,8 @@ pub fn sql_string_literal(value: &str) -> String {
     format!("'{}'", value.replace('\'', "''"))
 }
 
-pub fn kind_slug(kind: AgentKind) -> &'static str {
-    match kind {
-        AgentKind::Claude => "claude",
-        AgentKind::Codex => "codex",
-        AgentKind::OpenCode => "opencode",
-        AgentKind::Pi => "pi",
-        AgentKind::Hermes => "hermes",
-    }
-}
-
-pub fn program_name(kind: AgentKind) -> &'static str {
-    kind_slug(kind)
-}
-
-pub fn display_name(kind: AgentKind) -> &'static str {
-    match kind {
-        AgentKind::Claude => "Claude",
-        AgentKind::Codex => "Codex",
-        AgentKind::OpenCode => "OpenCode",
-        AgentKind::Pi => "Pi",
-        AgentKind::Hermes => "Hermes",
-    }
-}
-
-pub fn capabilities(kind: AgentKind) -> AgentCapabilities {
-    AgentCapabilities {
-        list_sessions: true,
-        resume_session: true,
-        live_binding: true,
-        confirm_action: true,
-        select_action: true,
-        lifecycle_events: true,
-        usage_snapshot: matches!(kind, AgentKind::Claude),
-    }
-}
-
-/// Generous upper bound on a stored session title. This is an anti-abuse clamp
-/// on payload size, not a display limit — the client trims titles to the row
-/// width at render time. Applies to every managed agent, since they all route
-/// titles through [`session_title`].
+/// Anti-abuse payload clamp on stored titles, not a display limit (the client trims to row width).
+/// Applies to every agent — all route titles through [`session_title`].
 pub const SESSION_TITLE_MAX_CHARS: usize = 200;
 
 pub fn session_title(stored: Option<String>) -> Option<String> {
@@ -165,12 +144,15 @@ pub fn session_title(stored: Option<String>) -> Option<String> {
         .or_else(|| Some("Unknown".to_string()))
 }
 
-pub fn resume_summary(kind: AgentKind, session_id: &str) -> AgentResumeSummary {
-    let available = !session_id.trim().is_empty();
+pub fn resume_summary(slug: &str, session_id: &str) -> AgentResumeSummary {
+    // Trim once so availability and the `slug:id` payload agree; a padded id must
+    // not be reported resumable and then serialized with whitespace downstream.
+    let session_id = session_id.trim();
+    let available = !session_id.is_empty();
     AgentResumeSummary {
         available,
         unavailable_reason: (!available).then(|| "missing session id".to_string()),
-        action_id: available.then(|| format!("{}:{session_id}", kind_slug(kind))),
+        action_id: available.then(|| format!("{slug}:{session_id}")),
     }
 }
 
@@ -293,34 +275,6 @@ pub fn push_json_string(
     fields.push(AgentInfoField {
         label: label.to_string(),
         value: text,
-    });
-}
-
-#[allow(dead_code)]
-pub fn push_json_u64(fields: &mut Vec<AgentInfoField>, label: &str, value: &Value, path: &[&str]) {
-    let Some(raw) = json_path(value, path) else {
-        return;
-    };
-    let Some(number) = raw.as_u64() else {
-        return;
-    };
-    fields.push(AgentInfoField {
-        label: label.to_string(),
-        value: number.to_string(),
-    });
-}
-
-#[allow(dead_code)]
-pub fn push_json_bool(fields: &mut Vec<AgentInfoField>, label: &str, value: &Value, path: &[&str]) {
-    let Some(raw) = json_path(value, path) else {
-        return;
-    };
-    let Some(flag) = raw.as_bool() else {
-        return;
-    };
-    fields.push(AgentInfoField {
-        label: label.to_string(),
-        value: if flag { "yes" } else { "no" }.to_string(),
     });
 }
 
