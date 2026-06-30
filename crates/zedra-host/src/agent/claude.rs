@@ -282,6 +282,12 @@ impl ClaudeActor {
         Ok(home.join(".claude"))
     }
 
+    /// `claude_config_dir()` but infallible: falls back to `~/.claude` so every
+    /// config read honors `CLAUDE_CONFIG_DIR` the same way session discovery does.
+    fn claude_config_dir_or_home() -> PathBuf {
+        Self::claude_config_dir().unwrap_or_else(|_| home_path(&[".claude"]))
+    }
+
     fn encoded_project_name(workdir: &Path) -> String {
         workdir
             .to_string_lossy()
@@ -821,7 +827,7 @@ impl ClaudeActor {
     }
 
     fn plan_from_credentials() -> Option<String> {
-        let path = home_path(&[".claude", ".credentials.json"]);
+        let path = Self::claude_config_dir_or_home().join(".credentials.json");
         let contents = std::fs::read_to_string(&path).ok()?;
         let root: Value = serde_json::from_str(&contents).ok()?;
         let oauth = root.get("claudeAiOauth")?;
@@ -1018,7 +1024,7 @@ impl ClaudeActor {
 
     /// Claude OAuth access token from `~/.claude/.credentials.json`; `None` if missing, malformed, or expired.
     fn read_oauth_token() -> Option<String> {
-        let path = home_path(&[".claude", ".credentials.json"]);
+        let path = Self::claude_config_dir_or_home().join(".credentials.json");
         let contents = std::fs::read_to_string(&path).ok()?;
         let root: Value = serde_json::from_str(&contents).ok()?;
         let oauth = root.get("claudeAiOauth")?;
@@ -1515,7 +1521,7 @@ impl AgentActor for ClaudeActor {
 
     fn cli_available(&self, workdir: &Path) -> bool {
         super::utils::command_on_path("claude")
-            || Self::project_dir_for_workdir(&home_path(&[".claude"]), workdir).is_dir()
+            || Self::project_dir_for_workdir(&Self::claude_config_dir_or_home(), workdir).is_dir()
     }
 
     fn session_counts(&self, ctx: &ScanCtx) -> Result<ActorSessionCounts, String> {
@@ -1548,7 +1554,8 @@ impl AgentActor for ClaudeActor {
     fn account_fields(&self, _workdir: &Path) -> Vec<AgentInfoField> {
         let mut fields = Vec::new();
         Self::append_auth_plan_fields(&mut fields);
-        let settings_path = home_path(&[".claude", "settings.json"]);
+        let config_dir = Self::claude_config_dir_or_home();
+        let settings_path = config_dir.join("settings.json");
         if let Ok(value) = read_json_file(&settings_path) {
             push_json_string(&mut fields, "Model", &value, &["model"]);
             push_json_string(&mut fields, "Effort", &value, &["effortLevel"]);
@@ -1559,7 +1566,7 @@ impl AgentActor for ClaudeActor {
                 &["permissions", "defaultMode"],
             );
         }
-        let stats_path = home_path(&[".claude", "stats-cache.json"]);
+        let stats_path = config_dir.join("stats-cache.json");
         if let Ok(value) = read_json_file(&stats_path) {
             if let Some(total_cost) = Self::total_cost_usd(&value) {
                 fields.push(AgentInfoField {
@@ -1583,7 +1590,9 @@ impl AgentActor for ClaudeActor {
     }
 
     fn setup_summary(&self, available: bool, workdir: &Path) -> AgentSetupSummary {
-        let path = home_path(&[".claude", "plugins", "installed_plugins.json"]);
+        let path = Self::claude_config_dir_or_home()
+            .join("plugins")
+            .join("installed_plugins.json");
         let (plugin_installed, plugin_hooks, error) = match std::fs::read_to_string(path) {
             Ok(contents) => Self::claude_setup_status_from_contents(&contents),
             Err(error) if error.kind() == std::io::ErrorKind::NotFound => (false, false, None),
@@ -1613,7 +1622,7 @@ impl AgentActor for ClaudeActor {
             let Some(event_name) = super::utils::payload_string(&ctx.payload, "hook_event_name")
             else {
                 // Do not log ctx.payload: it can carry user content (telemetry-privacy rule).
-                warn!("Claude hook payload missing or empty hook_event_name; ignoring");
+                warn!("claude: hook payload missing or empty hook_event_name; ignoring");
                 return Ok(());
             };
             let agent_session_id = super::utils::payload_string(&ctx.payload, "session_id");
