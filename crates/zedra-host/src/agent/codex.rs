@@ -100,8 +100,10 @@ impl CodexActor {
     }
 
     fn fetch_threads_from_db(workdir: &Path) -> Result<Vec<CodexThreadRow>, String> {
-        let db_path =
-            Self::state_db_path().ok_or_else(|| "Codex state database not found".to_string())?;
+        // A CLI-only install with no state DB yet is "zero sessions", not an error.
+        let Some(db_path) = Self::state_db_path() else {
+            return Ok(Vec::new());
+        };
         let cwd_keys = Self::workdir_keys(workdir);
         let cwd_filter = cwd_keys
             .iter()
@@ -404,10 +406,9 @@ struct ThreadCounts {
 
 impl CodexActor {
     fn thread_counts() -> Option<ThreadCounts> {
-        let db_path = home_path(&[".codex", "state_5.sqlite"]);
-        if !db_path.is_file() {
-            return None;
-        }
+        // Track the selected DB (highest `state_*.sqlite`) so rollups survive a
+        // version bump instead of pinning a stale `state_5.sqlite`.
+        let db_path = Self::state_db_path()?;
         let week_start = (Utc::now() - chrono::Duration::days(7))
             .format("%Y-%m-%d")
             .to_string();
