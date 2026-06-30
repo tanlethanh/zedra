@@ -145,10 +145,7 @@ impl OpenCodeActor {
             return Ok((json, "opencode sqlite"));
         }
 
-        let output = Command::new("opencode")
-            .args(["session", "list", "--format", "json", "--pure"])
-            .output()
-            .map_err(|error| error.to_string())?;
+        let output = Self::opencode_session_list_output()?;
         if output.status.success() && !output.stdout.is_empty() {
             return Ok((output.stdout, "opencode session list"));
         }
@@ -168,6 +165,62 @@ impl OpenCodeActor {
             .map_err(|fallback_error| {
                 format!("{cli_error}; sqlite fallback failed: {fallback_error}")
             })
+    }
+
+    /// Run `opencode session list` with a hard deadline. A stuck or interactive
+    /// CLI must not block the scan forever; on timeout we kill the child so the
+    /// caller can fall back to the SQLite reader. stdout/stderr are drained on
+    /// threads to avoid a full-pipe deadlock while we wait.
+    fn opencode_session_list_output() -> Result<std::process::Output, String> {
+        use std::io::Read;
+        use std::time::{Duration, Instant};
+
+        const SESSION_LIST_TIMEOUT: Duration = Duration::from_secs(10);
+
+        let mut child = Command::new("opencode")
+            .args(["session", "list", "--format", "json", "--pure"])
+            .stdout(std::process::Stdio::piped())
+            .stderr(std::process::Stdio::piped())
+            .spawn()
+            .map_err(|error| error.to_string())?;
+
+        let mut stdout_pipe = child.stdout.take();
+        let mut stderr_pipe = child.stderr.take();
+        let stdout_reader = std::thread::spawn(move || {
+            let mut buf = Vec::new();
+            if let Some(pipe) = stdout_pipe.as_mut() {
+                let _ = pipe.read_to_end(&mut buf);
+            }
+            buf
+        });
+        let stderr_reader = std::thread::spawn(move || {
+            let mut buf = Vec::new();
+            if let Some(pipe) = stderr_pipe.as_mut() {
+                let _ = pipe.read_to_end(&mut buf);
+            }
+            buf
+        });
+
+        let start = Instant::now();
+        let status = loop {
+            match child.try_wait().map_err(|error| error.to_string())? {
+                Some(status) => break status,
+                None if start.elapsed() >= SESSION_LIST_TIMEOUT => {
+                    let _ = child.kill();
+                    let _ = child.wait();
+                    return Err("`opencode session list` timed out".to_string());
+                }
+                None => std::thread::sleep(Duration::from_millis(50)),
+            }
+        };
+
+        let stdout = stdout_reader.join().unwrap_or_default();
+        let stderr = stderr_reader.join().unwrap_or_default();
+        Ok(std::process::Output {
+            status,
+            stdout,
+            stderr,
+        })
     }
 
     fn fetch_sessions_json_from_db() -> Result<Vec<u8>, String> {
