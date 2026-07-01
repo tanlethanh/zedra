@@ -599,6 +599,81 @@ mod file_search_tests {
         assert_eq!(result.entries.len(), 1);
         assert!(result.truncated);
     }
+
+    #[test]
+    fn file_search_discovers_git_worktrees_even_when_gitignored() {
+        let temp = tempfile::tempdir().unwrap();
+        let root = temp.path().canonicalize().unwrap();
+
+        // Init a real git repo so `git worktree add` works.
+        let init = std::process::Command::new("git")
+            .arg("-C")
+            .arg(&root)
+            .args(["init"])
+            .output()
+            .expect("git init failed");
+        assert!(init.status.success(), "git init: {}", String::from_utf8_lossy(&init.stderr));
+
+        // Commit something so HEAD exists (worktree add needs a valid HEAD).
+        write(root.join("README.md"), "# hello").unwrap();
+        let add = std::process::Command::new("git")
+            .arg("-C")
+            .arg(&root)
+            .args(["add", "README.md"])
+            .output()
+            .expect("git add failed");
+        assert!(add.status.success());
+        let commit = std::process::Command::new("git")
+            .arg("-C")
+            .arg(&root)
+            .args(["commit", "-m", "init", "--no-gpg-sign"])
+            .output()
+            .expect("git commit failed");
+        assert!(commit.status.success(), "git commit: {}", String::from_utf8_lossy(&commit.stderr));
+
+        // Gitignore the directory that will hold the worktree.
+        write(root.join(".gitignore"), ".claude/\n").unwrap();
+
+        // Add the gitignore to the index so the ignore rule is active.
+        let add_gi = std::process::Command::new("git")
+            .arg("-C")
+            .arg(&root)
+            .args(["add", ".gitignore"])
+            .output()
+            .expect("git add .gitignore failed");
+        assert!(add_gi.status.success());
+        let commit_gi = std::process::Command::new("git")
+            .arg("-C")
+            .arg(&root)
+            .args(["commit", "-m", "add gitignore", "--no-gpg-sign"])
+            .output()
+            .expect("git commit gitignore failed");
+        assert!(commit_gi.status.success());
+
+        // Create a worktree inside the gitignored path.
+        let wt_parent = root.join(".claude/worktrees");
+        create_dir_all(&wt_parent).unwrap();
+        let wt_path = wt_parent.join("wt");
+        let wt = std::process::Command::new("git")
+            .arg("-C")
+            .arg(&root)
+            .args(["worktree", "add", wt_path.to_str().unwrap()])
+            .output()
+            .expect("git worktree add failed");
+        assert!(wt.status.success(), "git worktree add: {}", String::from_utf8_lossy(&wt.stderr));
+
+        // Write a uniquely-named file in the worktree.
+        write(wt_path.join("wt_unique_file.rs"), "// unique").unwrap();
+
+        let result = search_files(&root, "wt_unique", 10).unwrap();
+
+        let hit = result
+            .entries
+            .iter()
+            .find(|entry| entry.path.ends_with("wt_unique_file.rs"))
+            .expect("expected wt_unique_file.rs to be found in gitignored worktree");
+        assert!(hit.match_indices.windows(2).all(|w| w[0] < w[1]));
+    }
 }
 
 #[allow(unused)]
@@ -760,6 +835,37 @@ fn fs_search_limit(limit: u32) -> usize {
     }) as usize
 }
 
+/// Discover git worktrees under or alongside the given root.
+///
+/// Parses `git worktree list --porcelain` to find additional working
+/// directories. The main worktree (== root) is skipped so it is not
+/// double-walked. Returns empty if root is not a git repo or the command
+/// fails.
+fn discover_git_worktrees(root: &Path) -> Vec<PathBuf> {
+    let output = match std::process::Command::new("git")
+        .arg("-C")
+        .arg(root)
+        .args(["worktree", "list", "--porcelain"])
+        .output()
+    {
+        Ok(o) if o.status.success() => o.stdout,
+        _ => return Vec::new(),
+    };
+
+    let mut worktrees = Vec::new();
+    for line in String::from_utf8_lossy(&output).lines() {
+        let Some(path_str) = line.strip_prefix("worktree ") else {
+            continue;
+        };
+        let path = PathBuf::from(path_str);
+        // Skip the main worktree (== root) to avoid duplicating results.
+        if path != root {
+            worktrees.push(path);
+        }
+    }
+    worktrees
+}
+
 fn is_file_search_ignored(entry: &ignore::DirEntry) -> bool {
     // Only filter directories; matched files should still surface as results.
     if !entry
@@ -801,7 +907,12 @@ fn search_files(root: &Path, query: &str, limit: u32) -> Result<FsSearchResult> 
     let mut visited = 0u32;
     let mut truncated = false;
 
+    let worktrees = discover_git_worktrees(root);
+
     let mut builder = ignore::WalkBuilder::new(root);
+    for wt in &worktrees {
+        builder.add(wt);
+    }
     builder
         .hidden(false)
         .follow_links(false)
@@ -823,6 +934,11 @@ fn search_files(root: &Path, query: &str, limit: u32) -> Result<FsSearchResult> 
         if entry.path() == root {
             continue;
         }
+        // Skip individual worktree root entries so they don't appear as empty
+        // result rows.
+        if worktrees.iter().any(|wt| entry.path() == wt.as_path()) {
+            continue;
+        }
 
         visited += 1;
         if visited > FS_SEARCH_MAX_VISITED_ENTRIES {
@@ -838,16 +954,29 @@ fn search_files(root: &Path, query: &str, limit: u32) -> Result<FsSearchResult> 
         }
 
         let path = entry.path().to_path_buf();
-        let match_path = path
-            .strip_prefix(root)
-            .unwrap_or(path.as_path())
-            .components()
-            .filter_map(|component| match component {
-                Component::Normal(part) => Some(part.to_string_lossy().into_owned()),
-                _ => None,
-            })
-            .collect::<Vec<_>>()
-            .join("/");
+        // Compute match_path relative to the nearest root (main root or worktree).
+        let match_path = if let Ok(rel) = path.strip_prefix(root) {
+            rel.components()
+                .filter_map(|component| match component {
+                    Component::Normal(part) => Some(part.to_string_lossy().into_owned()),
+                    _ => None,
+                })
+                .collect::<Vec<_>>()
+                .join("/")
+        } else if let Some(rel) = worktrees.iter().find_map(|wt| path.strip_prefix(wt).ok()) {
+            rel.components()
+                .filter_map(|component| match component {
+                    Component::Normal(part) => Some(part.to_string_lossy().into_owned()),
+                    _ => None,
+                })
+                .collect::<Vec<_>>()
+                .join("/")
+        } else {
+            // Fallback: use the file name only.
+            path.file_name()
+                .map(|n| n.to_string_lossy().into_owned())
+                .unwrap_or_default()
+        };
         candidates.push(FileSearchCandidate {
             path,
             is_dir: file_type.is_dir(),
