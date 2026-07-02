@@ -1229,7 +1229,14 @@ fn search_files(root: &Path, query: &str, limit: u32) -> Result<FsSearchResult> 
         .git_exclude(true)
         .parents(true)
         .ignore(true);
-    builder.filter_entry(|entry| !is_file_search_ignored(entry));
+    let worktree_paths: Vec<PathBuf> = worktrees.iter().map(|wt| wt.path.clone()).collect();
+    builder.filter_entry(move |entry| {
+        // Prune nested worktree copies from the main walk; added roots are exempt (filters skip depth 0).
+        if worktree_paths.iter().any(|wt| entry.path() == wt) {
+            return false;
+        }
+        !is_file_search_ignored(entry)
+    });
 
     for entry in builder.build() {
         let entry = match entry {
@@ -1239,12 +1246,8 @@ fn search_files(root: &Path, query: &str, limit: u32) -> Result<FsSearchResult> 
                 continue;
             }
         };
-        if entry.path() == root {
-            continue;
-        }
-        // Skip individual worktree root entries so they don't appear as empty
-        // result rows.
-        if worktrees.iter().any(|wt| entry.path() == wt.as_path()) {
+        // Depth 0 = a walk root (search root or worktree root); not a result row.
+        if entry.depth() == 0 {
             continue;
         }
 
@@ -1262,36 +1265,25 @@ fn search_files(root: &Path, query: &str, limit: u32) -> Result<FsSearchResult> 
         }
 
         let path = entry.path().to_path_buf();
-        // Compute match_path relative to the longest matching prefix (root or worktree).
-        // Longest prefix wins so nested worktrees are handled correctly.
-        let mut best_prefix: Option<&Path> = None;
-        if path.starts_with(root) {
-            best_prefix = Some(root);
-        }
-        for wt in &worktrees {
-            if path.starts_with(wt) {
-                if best_prefix.map_or(true, |bp| wt.as_os_str().len() > bp.as_os_str().len()) {
-                    best_prefix = Some(wt);
-                }
-            }
-        }
-        let match_path = best_prefix
-            .and_then(|prefix| path.strip_prefix(prefix).ok())
-            .map(|rel| {
-                rel.components()
-                    .filter_map(|component| match component {
-                        Component::Normal(part) => Some(part.to_string_lossy().into_owned()),
-                        _ => None,
-                    })
-                    .collect::<Vec<_>>()
-                    .join("/")
+        // Innermost containing worktree wins so nested worktrees are handled correctly.
+        let owner_worktree = worktrees
+            .iter()
+            .filter(|wt| path.starts_with(&wt.path))
+            .max_by_key(|wt| wt.path.as_os_str().len());
+        let (prefix, worktree) = match owner_worktree {
+            Some(wt) => (wt.path.as_path(), Some(wt.label.clone())),
+            None => (root, None),
+        };
+        let match_path = path
+            .strip_prefix(prefix)
+            .unwrap_or(path.as_path())
+            .components()
+            .filter_map(|component| match component {
+                Component::Normal(part) => Some(part.to_string_lossy().into_owned()),
+                _ => None,
             })
-            .unwrap_or_else(|| {
-                // Fallback: use the file name only.
-                path.file_name()
-                    .map(|n| n.to_string_lossy().into_owned())
-                    .unwrap_or_default()
-            });
+            .collect::<Vec<_>>()
+            .join("/");
         candidates.push(FileSearchCandidate {
             path,
             is_dir: file_type.is_dir(),
