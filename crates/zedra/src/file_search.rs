@@ -18,10 +18,24 @@ use crate::workspace_action;
 
 /// Debounce before issuing a remote search after the query changes.
 const SEARCH_DEBOUNCE: Duration = Duration::from_millis(180);
-/// Height of a single result row (two lines: name + path).
-const RESULT_ROW_HEIGHT: f32 = 52.0;
-/// Maximum number of result rows shown before the list scrolls.
-const MAX_VISIBLE_ROWS: usize = 8;
+/// Row line box, pinned via `.line_height()` so the derived heights below stay exact.
+const LINE_HEIGHT: f32 = 19.0;
+/// Row heights: vertical padding plus two or three pinned line boxes.
+const ROW_HEIGHT: f32 = 2.0 * theme::SPACING_SM + 2.0 * LINE_HEIGHT;
+const ROW_HEIGHT_WORKTREE: f32 = 2.0 * theme::SPACING_SM + 3.0 * LINE_HEIGHT;
+/// Maximum height of the results list before it scrolls (8 two-line rows).
+const LIST_MAX_HEIGHT: f32 = 8.0 * ROW_HEIGHT;
+/// Height of the placeholder/message area shown instead of results.
+const MESSAGE_HEIGHT: f32 = 2.0 * ROW_HEIGHT;
+
+/// Used for both the row element and the list viewport so they never drift.
+fn row_height(entry: &FsSearchEntry) -> f32 {
+    if entry.worktree.is_some() {
+        ROW_HEIGHT_WORKTREE
+    } else {
+        ROW_HEIGHT
+    }
+}
 
 #[derive(Clone, Debug)]
 pub enum FileSearchEvent {
@@ -34,7 +48,7 @@ impl EventEmitter<FileSearchEvent> for FileSearchPanel {}
 pub struct FileSearchPanel {
     session_handle: SessionHandle,
     focus_handle: FocusHandle,
-    scroll_handle: UniformListScrollHandle,
+    list_state: ListState,
     search_input: Entity<Input>,
     query: String,
     results: Vec<FsSearchEntry>,
@@ -67,7 +81,7 @@ impl FileSearchPanel {
         Self {
             session_handle,
             focus_handle: cx.focus_handle(),
-            scroll_handle: UniformListScrollHandle::new(),
+            list_state: ListState::new(0, ListAlignment::Top, px(LIST_MAX_HEIGHT)),
             search_input,
             query: String::new(),
             results: Vec::new(),
@@ -87,7 +101,7 @@ impl FileSearchPanel {
         self.error = None;
         self.truncated = false;
         self.epoch = self.epoch.wrapping_add(1);
-        self.scroll_handle.scroll_to_item(0, ScrollStrategy::Top);
+        self.list_state.reset(0);
         self.search_input
             .update(cx, |input, _cx| input.set_value(""));
         let input_focus = self.search_input.read(cx).focus_handle(cx);
@@ -104,7 +118,7 @@ impl FileSearchPanel {
         self.results.clear();
         self.error = None;
         self.truncated = false;
-        self.scroll_handle.scroll_to_item(0, ScrollStrategy::Top);
+        self.list_state.reset(0);
         if query.is_empty() {
             self.loading = false;
             return;
@@ -143,10 +157,23 @@ impl FileSearchPanel {
                         this.error = Some(error.to_string());
                     }
                 }
+                this.list_state.reset(this.results.len());
                 cx.notify();
             });
         })
         .detach();
+    }
+
+    fn render_list_item(
+        &mut self,
+        index: usize,
+        _window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
+        let Some(entry) = self.results.get(index) else {
+            return Empty.into_any();
+        };
+        self.render_result_row(index, entry, cx)
     }
 
     fn render_result_row(
@@ -173,11 +200,14 @@ impl FileSearchPanel {
         div()
             .id(("file-search-row", index))
             .w_full()
-            .h(px(RESULT_ROW_HEIGHT))
+            .h(px(row_height(entry)))
+            .line_height(px(LINE_HEIGHT))
             .px(px(theme::SPACING_MD))
+            .py(px(theme::SPACING_SM))
             .flex()
             .flex_row()
-            .items_center()
+            // Top-align so the icon stays beside the filename on 3-line rows.
+            .items_start()
             .gap(px(8.0))
             .cursor_pointer()
             .on_press(cx.listener(move |_this, _event, window, cx| {
@@ -197,12 +227,18 @@ impl FileSearchPanel {
                 cx.emit(FileSearchEvent::Close);
             }))
             .child(
-                div().flex_shrink_0().child(
-                    svg()
-                        .path(icon)
-                        .size(px(theme::ICON_FILE))
-                        .text_color(rgb(theme::text_muted(cx))),
-                ),
+                // Match the filename's line box so the icon centers on the first line.
+                div()
+                    .flex_shrink_0()
+                    .h(px(LINE_HEIGHT))
+                    .flex()
+                    .items_center()
+                    .child(
+                        svg()
+                            .path(icon)
+                            .size(px(theme::ICON_FILE))
+                            .text_color(rgb(theme::text_muted(cx))),
+                    ),
             )
             .child(
                 div()
@@ -212,7 +248,6 @@ impl FileSearchPanel {
                     .flex_col()
                     .child(
                         div()
-                            .w_full()
                             .min_w_0()
                             .truncate()
                             .text_size(px(theme::FONT_BODY))
@@ -224,7 +259,35 @@ impl FileSearchPanel {
                         &entry.rel_path,
                         &entry.match_indices,
                         cx,
-                    )),
+                    ))
+                    // Worktree branch line disambiguates identical relative paths.
+                    .when_some(entry.worktree.clone(), |column, worktree| {
+                        column.child(
+                            div()
+                                .min_w_0()
+                                .flex()
+                                .flex_row()
+                                .items_center()
+                                .gap(px(4.0))
+                                .child(
+                                    svg()
+                                        .path("icons/git-branch.svg")
+                                        .size(px(theme::FONT_DETAIL))
+                                        .flex_none()
+                                        .text_color(rgb(theme::text_muted(cx))),
+                                )
+                                .child(
+                                    // `flex_1` gives a definite width; GPUI truncate ellipsizes everything without one.
+                                    div()
+                                        .flex_1()
+                                        .min_w_0()
+                                        .truncate()
+                                        .text_size(px(theme::FONT_DETAIL))
+                                        .text_color(rgb(theme::text_muted(cx)))
+                                        .child(worktree),
+                                ),
+                        )
+                    }),
             )
             .into_any_element()
     }
@@ -232,7 +295,7 @@ impl FileSearchPanel {
     fn render_message(&self, message: impl Into<SharedString>, cx: &App) -> AnyElement {
         div()
             .w_full()
-            .h(px(RESULT_ROW_HEIGHT * 2.0))
+            .h(px(MESSAGE_HEIGHT))
             .flex()
             .items_center()
             .justify_center()
@@ -250,7 +313,7 @@ impl FileSearchPanel {
         self.error = None;
         self.truncated = false;
         self.epoch = self.epoch.wrapping_add(1);
-        self.scroll_handle.scroll_to_item(0, ScrollStrategy::Top);
+        self.list_state.reset(0);
         self.search_input
             .update(cx, |input, _cx| input.set_value(""));
         let input_focus = self.search_input.read(cx).focus_handle(cx);
@@ -279,23 +342,15 @@ impl Render for FileSearchPanel {
         } else if self.results.is_empty() {
             self.render_message("No matching files", cx)
         } else {
-            let len = self.results.len();
-            let list_height = (len.min(MAX_VISIBLE_ROWS) as f32) * RESULT_ROW_HEIGHT;
-            let list = uniform_list(
-                "file-search-results",
-                len,
-                cx.processor(|this, range: std::ops::Range<usize>, _window, cx| {
-                    range
-                        .filter_map(|idx| {
-                            this.results
-                                .get(idx)
-                                .map(|entry| this.render_result_row(idx, entry, cx))
-                        })
-                        .collect::<Vec<_>>()
-                }),
+            // Variable-height `list` virtualizes the mixed-height rows; viewport = exact content height, capped.
+            let content_height: f32 = self.results.iter().map(row_height).sum();
+            let list = list(
+                self.list_state.clone(),
+                cx.processor(Self::render_list_item),
             )
-            .track_scroll(&self.scroll_handle)
-            .h(px(list_height));
+            .with_sizing_behavior(ListSizingBehavior::Auto)
+            .w_full()
+            .h(px(content_height.min(LIST_MAX_HEIGHT)));
 
             let footer = self.truncated.then(|| {
                 div()
