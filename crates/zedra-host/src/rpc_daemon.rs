@@ -612,10 +612,17 @@ mod file_search_tests {
             .args(["init"])
             .output()
             .expect("git init failed");
-        assert!(init.status.success(), "git init: {}", String::from_utf8_lossy(&init.stderr));
+        assert!(
+            init.status.success(),
+            "git init: {}",
+            String::from_utf8_lossy(&init.stderr)
+        );
 
         // Configure git identity (needed in CI environments without global config).
-        for (key, val) in [("user.name", "Test User"), ("user.email", "test@example.com")] {
+        for (key, val) in [
+            ("user.name", "Test User"),
+            ("user.email", "test@example.com"),
+        ] {
             let cfg = std::process::Command::new("git")
                 .arg("-C")
                 .arg(&root)
@@ -640,7 +647,11 @@ mod file_search_tests {
             .args(["commit", "-m", "init", "--no-gpg-sign"])
             .output()
             .expect("git commit failed");
-        assert!(commit.status.success(), "git commit: {}", String::from_utf8_lossy(&commit.stderr));
+        assert!(
+            commit.status.success(),
+            "git commit: {}",
+            String::from_utf8_lossy(&commit.stderr)
+        );
 
         // Gitignore the directory that will hold the worktree.
         write(root.join(".gitignore"), ".claude/\n").unwrap();
@@ -671,7 +682,11 @@ mod file_search_tests {
             .args(["worktree", "add", wt_path.to_str().unwrap()])
             .output()
             .expect("git worktree add failed");
-        assert!(wt.status.success(), "git worktree add: {}", String::from_utf8_lossy(&wt.stderr));
+        assert!(
+            wt.status.success(),
+            "git worktree add: {}",
+            String::from_utf8_lossy(&wt.stderr)
+        );
 
         // Write a uniquely-named file in the worktree.
         write(wt_path.join("wt_unique_file.rs"), "// unique").unwrap();
@@ -704,7 +719,10 @@ mod file_search_tests {
             .expect("git init failed");
         assert!(init.status.success());
 
-        for (key, val) in [("user.name", "Test User"), ("user.email", "test@example.com")] {
+        for (key, val) in [
+            ("user.name", "Test User"),
+            ("user.email", "test@example.com"),
+        ] {
             let cfg = std::process::Command::new("git")
                 .arg("-C")
                 .arg(&root)
@@ -739,14 +757,21 @@ mod file_search_tests {
             .args(["worktree", "add", outside_wt.to_str().unwrap()])
             .output()
             .expect("git worktree add failed");
-        assert!(wt.status.success(), "git worktree add: {}", String::from_utf8_lossy(&wt.stderr));
+        assert!(
+            wt.status.success(),
+            "git worktree add: {}",
+            String::from_utf8_lossy(&wt.stderr)
+        );
 
         write(outside_wt.join("outside_secret.rs"), "// secret").unwrap();
 
         let result = search_files(&root, "outside_secret", 10).unwrap();
 
         assert!(
-            !result.entries.iter().any(|entry| entry.path.ends_with("outside_secret.rs")),
+            !result
+                .entries
+                .iter()
+                .any(|entry| entry.path.ends_with("outside_secret.rs")),
             "files from a worktree outside root must NOT appear in search results"
         );
     }
@@ -769,7 +794,10 @@ mod file_search_tests {
             .expect("git init failed");
         assert!(init.status.success());
 
-        for (key, val) in [("user.name", "Test User"), ("user.email", "test@example.com")] {
+        for (key, val) in [
+            ("user.name", "Test User"),
+            ("user.email", "test@example.com"),
+        ] {
             let cfg = std::process::Command::new("git")
                 .arg("-C")
                 .arg(&root)
@@ -822,7 +850,11 @@ mod file_search_tests {
             .args(["worktree", "add", wt_path.to_str().unwrap()])
             .output()
             .expect("git worktree add failed");
-        assert!(wt.status.success(), "git worktree add: {}", String::from_utf8_lossy(&wt.stderr));
+        assert!(
+            wt.status.success(),
+            "git worktree add: {}",
+            String::from_utf8_lossy(&wt.stderr)
+        );
 
         write(wt_path.join("nested_file.rs"), "// nested").unwrap();
 
