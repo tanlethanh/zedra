@@ -308,7 +308,7 @@ impl Render for AgentDetail {
                         .child(render_detail_metadata(agent, cx))
                         .when_some(agent.usage.as_ref(), |col, usage| {
                             col.children(render_usage_row(usage, cx))
-                                .children(render_extra_row(usage, cx))
+                                .children(render_extra_row(&usage.extra, cx))
                         })
                         .when(!self.files.is_empty(), |col| {
                             col.child(self.render_files_section(&self.files, cx))

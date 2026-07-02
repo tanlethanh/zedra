@@ -282,8 +282,7 @@ impl ClaudeActor {
         Ok(home.join(".claude"))
     }
 
-    /// `claude_config_dir()` but infallible: falls back to `~/.claude` so every
-    /// config read honors `CLAUDE_CONFIG_DIR` the same way session discovery does.
+    /// Like `claude_config_dir()` but infallible, falling back to `~/.claude`.
     fn claude_config_dir_or_home() -> PathBuf {
         Self::claude_config_dir().unwrap_or_else(|_| home_path(&[".claude"]))
     }
@@ -738,9 +737,9 @@ impl ClaudeActor {
 // ---------- agent dispatcher integration ----------
 
 use super::utils::{
-    file_size_bytes, home_path, humanize_plan_token, parse_rfc3339, parse_usage_window_resets_at,
-    push_json_string, read_json_file, resume_summary, session_title, spawn_blocking_opt,
-    string_field,
+    file_size_bytes, home_path, humanize_plan_token, info_field, parse_rfc3339,
+    parse_usage_window_resets_at, push_json_string, read_json_file, resume_summary, session_title,
+    spawn_blocking_opt, string_field,
 };
 use zedra_rpc::proto::*;
 
@@ -985,40 +984,47 @@ impl ClaudeActor {
             return None;
         }
         let body: Value = resp.json().await.ok()?;
+        let window_pct = |obj: Option<&Value>| -> Option<f32> {
+            obj.and_then(|w| w.get("utilization"))
+                .and_then(|v| v.as_f64())
+                .map(|v| v as f32)
+        };
         let five_hour_obj = body.get("five_hour");
         let seven_day_obj = body.get("seven_day");
-        let five_hour = five_hour_obj
-            .and_then(|w| w.get("utilization"))
-            .and_then(|v| v.as_f64())
-            .map(|v| v as f32);
-        let seven_day = seven_day_obj
-            .and_then(|w| w.get("utilization"))
-            .and_then(|v| v.as_f64())
-            .map(|v| v as f32);
+        let five_hour = window_pct(five_hour_obj);
+        let seven_day = window_pct(seven_day_obj);
         let five_hour_resets_at = five_hour_obj.and_then(parse_usage_window_resets_at);
         let seven_day_resets_at = seven_day_obj.and_then(parse_usage_window_resets_at);
-        let extra = body.get("extra_usage");
-        let extra_used = extra
+
+        // Per-model weekly windows and extra credits, surfaced as `extra`.
+        let mut extra = Vec::new();
+        if let Some(pct) = window_pct(body.get("seven_day_opus")) {
+            extra.push(info_field("Opus weekly", &format!("{pct:.0}%")));
+        }
+        if let Some(pct) = window_pct(body.get("seven_day_sonnet")) {
+            extra.push(info_field("Sonnet weekly", &format!("{pct:.0}%")));
+        }
+        let credits = body.get("extra_usage");
+        let used_credits = credits
             .and_then(|e| e.get("used_credits"))
             .and_then(|v| v.as_f64());
-        let extra_limit = extra
+        let credit_limit = credits
             .and_then(|e| e.get("monthly_limit"))
             .and_then(|v| v.as_f64());
-        let extra_util = extra_used.zip(extra_limit).and_then(|(used, limit)| {
-            if limit > 0.0 {
-                Some((used / limit * 100.0) as f32)
-            } else {
-                None
-            }
-        });
+        if let Some(used) = used_credits {
+            let value = match credit_limit {
+                Some(limit) => format!("${used:.2} / ${limit:.2}"),
+                None => format!("${used:.2}"),
+            };
+            extra.push(info_field("Extra credits", &value));
+        }
+
         Some(AgentUsageSnapshot {
-            context_used_percent: extra_util,
-            total_cost_usd: extra_used,
             rate_limit_five_hour_used_percent: five_hour,
             rate_limit_seven_day_used_percent: seven_day,
             rate_limit_five_hour_resets_at: five_hour_resets_at,
             rate_limit_seven_day_resets_at: seven_day_resets_at,
-            ..Default::default()
+            extra,
         })
     }
 

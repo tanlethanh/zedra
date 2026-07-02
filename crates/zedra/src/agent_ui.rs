@@ -2,7 +2,9 @@
 use chrono::{DateTime, Utc};
 use gpui::prelude::FluentBuilder;
 use gpui::*;
-use zedra_rpc::proto::{AgentSessionSummary, AgentSetupState, AgentSummary, AgentUsageSnapshot};
+use zedra_rpc::proto::{
+    AgentInfoField, AgentSessionSummary, AgentSetupState, AgentSummary, AgentUsageSnapshot,
+};
 
 use crate::fonts;
 use crate::platform_bridge::{self, HapticFeedback};
@@ -179,9 +181,18 @@ pub fn render_agent_card(cx: &App, props: AgentCardProps<'_>) -> Stateful<Div> {
                             .child(text),
                     )
                 })
-                .when_some(usage, |el, snap| {
-                    el.children(render_usage_row(&snap, cx))
-                        .children(render_extra_row(&snap, cx))
+                .when_some(usage, |el, snap| el.children(render_usage_row(&snap, cx)))
+                .when(!agent.highlight.is_empty(), |el| {
+                    el.child(
+                        div()
+                            .w_full()
+                            .min_w_0()
+                            .overflow_hidden()
+                            .whitespace_nowrap()
+                            .text_size(px(theme::FONT_DETAIL))
+                            .text_color(rgb(theme::text_muted(cx)))
+                            .child(agent.highlight.clone()),
+                    )
                 }),
         )
 }
@@ -197,10 +208,10 @@ pub fn render_usage_row(snap: &AgentUsageSnapshot, cx: &App) -> Option<Div> {
     render_usage_gauges(snap, five_reset.as_deref(), seven_reset.as_deref(), cx)
 }
 
-/// Host-formatted extra lines (spend, lines changed) in a tight column, rendered
-/// verbatim — per-agent display rules live host-side. `None` when none.
-pub fn render_extra_row(snap: &AgentUsageSnapshot, cx: &App) -> Option<Div> {
-    if snap.extra.is_empty() {
+/// Render `label: value` fields (detail screen, e.g. `usage.extra`). The card
+/// uses `AgentSummary.highlight` instead. `None` when empty.
+pub fn render_extra_row(fields: &[AgentInfoField], cx: &App) -> Option<Div> {
+    if fields.is_empty() {
         return None;
     }
     Some(
@@ -210,11 +221,11 @@ pub fn render_extra_row(snap: &AgentUsageSnapshot, cx: &App) -> Option<Div> {
             .flex()
             .flex_col()
             .gap(px(3.0))
-            .children(snap.extra.iter().map(|line| {
+            .children(fields.iter().map(|field| {
                 div()
                     .text_size(px(theme::FONT_DETAIL))
                     .text_color(rgb(theme::text_muted(cx)))
-                    .child(line.clone())
+                    .child(format!("{}: {}", field.label, field.value))
             })),
     )
 }

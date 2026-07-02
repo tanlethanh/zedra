@@ -881,22 +881,24 @@ fn parse_usage_output(text: &str) -> Option<AgentUsageSnapshot> {
         return None;
     }
 
-    let context_used = credits_used.zip(credits_limit).and_then(|(u, l)| {
-        if l > 0.0 {
-            Some((u / l * 100.0) as f32)
-        } else {
-            None
-        }
-    });
+    let mut extra = Vec::new();
+    if let Some(used) = credits_used {
+        let value = match credits_limit {
+            Some(limit) => format!("${used:.2} / ${limit:.2}"),
+            None => format!("${used:.2}"),
+        };
+        extra.push(AgentInfoField {
+            label: "Extra credits".to_string(),
+            value,
+        });
+    }
 
     Some(AgentUsageSnapshot {
         rate_limit_five_hour_used_percent: session_pct,
         rate_limit_seven_day_used_percent: week_pct,
         rate_limit_five_hour_resets_at: session_resets_at,
         rate_limit_seven_day_resets_at: week_resets_at,
-        context_used_percent: context_used,
-        total_cost_usd: credits_used,
-        ..Default::default()
+        extra,
     })
 }
 

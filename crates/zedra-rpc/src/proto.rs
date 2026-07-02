@@ -1209,6 +1209,8 @@ pub struct AgentSummary {
     pub account: AgentAccountSummary,
     /// Live rate-limit snapshot fetched from the provider's API.
     pub usage: Option<AgentUsageSnapshot>,
+    /// One-line card highlight, composed host-side from `usage.extra`. Empty when none.
+    pub highlight: String,
     /// Host-owned: agent aggregates sessions/account/usage worth a detail screen.
     pub shows_detail: bool,
 }
@@ -1321,24 +1323,16 @@ pub struct AgentGitSummary {
     pub pr_repository: Option<String>,
 }
 
+/// The usage gauge: rate-limit windows only. Per-agent spend/credits/weekly
+/// windows go in `extra`, rendered as `label: value`.
 #[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq)]
 pub struct AgentUsageSnapshot {
-    pub context_used_percent: Option<f32>,
-    pub total_cost_usd: Option<f64>,
-    pub total_duration_ms: Option<u64>,
-    pub total_api_duration_ms: Option<u64>,
-    pub lines_added: Option<i64>,
-    pub lines_removed: Option<i64>,
     pub rate_limit_five_hour_used_percent: Option<f32>,
     pub rate_limit_seven_day_used_percent: Option<f32>,
-    /// Unix seconds at which the 5-hour rate-limit window resets. None when not provided by the API.
+    /// Unix seconds at which each rate-limit window resets. None when not provided by the API.
     pub rate_limit_five_hour_resets_at: Option<i64>,
-    /// Unix seconds at which the 7-day rate-limit window resets. None when not provided by the API.
     pub rate_limit_seven_day_resets_at: Option<i64>,
-    /// Host-formatted extra display lines for the usage card (e.g. spend,
-    /// lines changed), rendered verbatim below the gauges. Per-agent display
-    /// rules live host-side so clients stay agent-agnostic.
-    pub extra: Vec<String>,
+    pub extra: Vec<AgentInfoField>,
 }
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
@@ -1644,6 +1638,7 @@ mod tests {
                 }],
                 account: AgentAccountSummary::default(),
                 usage: None,
+                highlight: "Opus weekly: 8%".into(),
                 shows_detail: true,
             }],
             error: None,
@@ -1695,17 +1690,14 @@ mod tests {
                 pr_repository: None,
             }),
             usage: Some(AgentUsageSnapshot {
-                context_used_percent: Some(50.0),
-                total_cost_usd: Some(0.1),
-                total_duration_ms: Some(1000),
-                total_api_duration_ms: Some(900),
-                lines_added: Some(3),
-                lines_removed: Some(1),
-                rate_limit_five_hour_used_percent: None,
-                rate_limit_seven_day_used_percent: None,
+                rate_limit_five_hour_used_percent: Some(42.0),
+                rate_limit_seven_day_used_percent: Some(12.0),
                 rate_limit_five_hour_resets_at: None,
                 rate_limit_seven_day_resets_at: None,
-                extra: vec!["+3 / -1 lines changed".into()],
+                extra: vec![AgentInfoField {
+                    label: "Opus weekly".into(),
+                    value: "8%".into(),
+                }],
             }),
             transcript_size_bytes: Some(4096),
         };

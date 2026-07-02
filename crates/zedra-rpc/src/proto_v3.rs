@@ -391,14 +391,15 @@ impl From<proto::AuthProveResult> for AuthProveResult {
 
 impl From<proto::AgentUsageSnapshot> for AgentUsageSnapshot {
     fn from(u: proto::AgentUsageSnapshot) -> Self {
-        // Drops `extra` appended at `zedra/rpc/4`.
+        // `v4` keeps only the rate-limit gauge + `extra`; frozen `v3` fields with
+        // no upstream source map to `None`.
         Self {
-            context_used_percent: u.context_used_percent,
-            total_cost_usd: u.total_cost_usd,
-            total_duration_ms: u.total_duration_ms,
-            total_api_duration_ms: u.total_api_duration_ms,
-            lines_added: u.lines_added,
-            lines_removed: u.lines_removed,
+            context_used_percent: None,
+            total_cost_usd: None,
+            total_duration_ms: None,
+            total_api_duration_ms: None,
+            lines_added: None,
+            lines_removed: None,
             rate_limit_five_hour_used_percent: u.rate_limit_five_hour_used_percent,
             rate_limit_seven_day_used_percent: u.rate_limit_seven_day_used_percent,
             rate_limit_five_hour_resets_at: u.rate_limit_five_hour_resets_at,

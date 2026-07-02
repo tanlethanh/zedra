@@ -167,10 +167,8 @@ impl OpenCodeActor {
             })
     }
 
-    /// Run `opencode session list` with a hard deadline. A stuck or interactive
-    /// CLI must not block the scan forever; on timeout we kill the child so the
-    /// caller can fall back to the SQLite reader. stdout/stderr are drained on
-    /// threads to avoid a full-pipe deadlock while we wait.
+    /// Run `opencode session list` with a deadline, killing the child on timeout
+    /// so the SQLite fallback can run. Pipes drain on threads to avoid deadlock.
     fn opencode_session_list_output() -> Result<std::process::Output, String> {
         use std::io::Read;
         use std::time::{Duration, Instant};
@@ -508,7 +506,7 @@ impl OpenCodeActor {
         if !db_path.is_file() {
             return None;
         }
-        let query = "SELECT SUM(cost) as total_cost, SUM(summary_additions) as lines_added, SUM(summary_deletions) as lines_removed FROM session;";
+        let query = "SELECT SUM(cost) as total_cost FROM session;";
         let bytes = sqlite_readonly::query_json(&db_path, query).ok()?;
         let rows: Vec<Value> = serde_json::from_slice(&bytes).ok()?;
         let row = rows.first()?;
@@ -516,12 +514,12 @@ impl OpenCodeActor {
             .get("total_cost")
             .and_then(Value::as_f64)
             .filter(|v| *v > 0.0);
-        let lines_added = row.get("lines_added").and_then(Value::as_i64);
-        let lines_removed = row.get("lines_removed").and_then(Value::as_i64);
+        // OpenCode has no gauge; surface cumulative spend as an `extra` field.
+        let extra = total_cost
+            .map(|cost| vec![info_field("Spend", &format!("${cost:.2}"))])
+            .unwrap_or_default();
         Some(AgentUsageSnapshot {
-            total_cost_usd: total_cost,
-            lines_added,
-            lines_removed,
+            extra,
             ..Default::default()
         })
     }
@@ -786,15 +784,6 @@ impl AgentActor for OpenCodeActor {
 
     fn account_usage<'a>(&'a self) -> ActorFuture<'a, Option<AgentUsageSnapshot>> {
         spawn_blocking_opt(Self::fetch_account_usage)
-    }
-
-    fn extra(&self, snap: &AgentUsageSnapshot) -> Vec<String> {
-        // OpenCode's DB sums lines across all sessions; that cumulative total
-        // isn't meaningful here, so show spend only.
-        snap.total_cost_usd
-            .map(|usd| format!("${usd:.2} extra spend"))
-            .into_iter()
-            .collect()
     }
 
     fn receive_hook<'a>(&'a self, ctx: HookContext) -> ActorFuture<'a, anyhow::Result<()>> {

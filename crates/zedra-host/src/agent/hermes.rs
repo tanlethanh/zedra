@@ -181,8 +181,7 @@ impl HermesActor {
 
     fn config_files_in(home: &Path) -> Vec<AgentFile> {
         // `label` doubles as the relative path under HERMES_HOME.
-        // `.env` is intentionally excluded: it holds API keys/tokens and
-        // `read_view_file` would ship its contents to the client.
+        // `.env` excluded: it holds secrets `read_view_file` would ship to the client.
         const VIEW_FILES: &[&str] = &[
             "SOUL.md",
             "USER.md",
@@ -408,7 +407,7 @@ impl HermesActor {
                 .cost_usd
                 .filter(|c| *c > 0.0)
                 .map(|cost| AgentUsageSnapshot {
-                    total_cost_usd: Some(cost),
+                    extra: vec![info_field("Cost", &format!("${cost:.2}"))],
                     ..Default::default()
                 }),
             transcript_size_bytes: session.transcript_path.as_deref().and_then(file_size_bytes),
@@ -674,8 +673,7 @@ impl AgentActor for HermesActor {
 
     fn setup_summary(&self, available: bool, workdir: &Path) -> AgentSetupSummary {
         let _ = workdir;
-        // Mirror what `setup()` installs: the global hook script plus a config.yaml
-        // that references it. Without this the UI stays "setup incomplete" forever.
+        // Mirror what `setup()` installs: the hook script + a config.yaml referencing it.
         let home = Self::hermes_home();
         let script_installed = home
             .join("agent-hooks")

@@ -219,6 +219,7 @@ fn degraded_agent_summary(actor: &dyn AgentActor, workdir: &Path) -> AgentSummar
         }],
         account: account_summary(actor, workdir),
         usage: None,
+        highlight: String::new(),
         shows_detail: actor.shows_detail(),
     }
 }
@@ -342,6 +343,7 @@ fn agent_summary_scan(actor: &dyn AgentActor, workdir: &Path) -> AgentSummary {
         warnings,
         account: account_summary(actor, workdir),
         usage: None,
+        highlight: String::new(),
         shows_detail: actor.shows_detail(),
     }
 }
@@ -453,8 +455,7 @@ pub trait AgentActor: Sync {
     }
 
     fn cli_version_summary(&self) -> AgentCliSummary {
-        // Probe the first program that actually resolves on PATH, matching
-        // `cli_available`, so a fallback binary isn't reported as broken.
+        // Probe the first program on PATH (matches `cli_available`) so fallbacks work.
         let Some(program) = self
             .programs()
             .iter()
@@ -514,8 +515,7 @@ pub trait AgentActor: Sync {
         }
     }
 
-    /// List this agent on the app's manage screen. True for integrated agents
-    /// that aggregate sessions; detect-only actors have no detail to show.
+    /// List this agent on the manage screen; detect-only actors have no detail.
     fn shows_detail(&self) -> bool {
         false
     }
@@ -585,25 +585,6 @@ pub trait AgentActor: Sync {
 
     fn account_usage<'a>(&'a self) -> ActorFuture<'a, Option<AgentUsageSnapshot>> {
         Box::pin(async { None })
-    }
-
-    /// Extra display lines for the usage card, rendered verbatim by clients.
-    /// Default covers spend and lines-changed; actors override to shape their
-    /// own lines or suppress values that aren't meaningful for them.
-    fn extra(&self, snap: &AgentUsageSnapshot) -> Vec<String> {
-        let mut lines = Vec::new();
-        if let Some(usd) = snap.total_cost_usd {
-            lines.push(match snap.context_used_percent {
-                Some(pct) => format!("${usd:.2} spent · {pct:.0}% of limit"),
-                None => format!("${usd:.2} extra spend"),
-            });
-        }
-        if snap.lines_added.is_some() || snap.lines_removed.is_some() {
-            let added = snap.lines_added.unwrap_or(0);
-            let removed = snap.lines_removed.unwrap_or(0);
-            lines.push(format!("+{added} / -{removed} lines changed"));
-        }
-        lines
     }
 
     fn receive_hook<'a>(&'a self, _ctx: HookContext) -> ActorFuture<'a, anyhow::Result<()>> {
@@ -726,13 +707,7 @@ fn merge_account_fields(existing: &mut Vec<AgentInfoField>, remote: &[AgentInfoF
 pub async fn scan_account_usage() -> HashMap<String, AgentUsageSnapshot> {
     let mut tasks = tokio::task::JoinSet::new();
     for actor in actors() {
-        tasks.spawn(async move {
-            let snapshot = actor.account_usage().await.map(|mut snap| {
-                snap.extra = actor.extra(&snap);
-                snap
-            });
-            (actor.slug(), snapshot)
-        });
+        tasks.spawn(async move { (actor.slug(), actor.account_usage().await) });
     }
     let mut out = HashMap::new();
     // Drain all tasks: a refutable `while let` would stop at the first `None`.
@@ -750,6 +725,13 @@ pub fn apply_cached_account_usage(
 ) {
     for agent in agents {
         if let Some(snap) = snapshots.get(&agent.slug) {
+            // Card highlight = the usage extras joined into one line.
+            agent.highlight = snap
+                .extra
+                .iter()
+                .map(|field| format!("{}: {}", field.label, field.value))
+                .collect::<Vec<_>>()
+                .join(" · ");
             agent.usage = Some(snap.clone());
         }
     }

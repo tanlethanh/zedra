@@ -5,7 +5,6 @@ use chrono::{DateTime, Utc};
 use clap::{Args, Subcommand};
 use serde::de::DeserializeOwned;
 use serde::Serialize;
-use std::collections::HashMap;
 use std::io::{stderr, Read, Write};
 use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
@@ -427,72 +426,128 @@ fn scan_bench(args: AgentScanBenchArgs) -> Result<()> {
     Ok(())
 }
 
+/// `scan usage`: probe each actor concurrently, time usage and plan separately,
+/// report per agent keyed by slug.
 async fn scan_usage(args: AgentScanCommonArgs) -> Result<()> {
     let started = Instant::now();
-    let (snapshots, plans) =
-        tokio::join!(agent::scan_account_usage(), agent::scan_account_plans(),);
-    let elapsed = started.elapsed();
-    if !args.quiet {
-        writeln!(
-            stderr(),
-            "scan usage completed in {}ms",
-            elapsed.as_millis()
-        )?;
+
+    let mut tasks = tokio::task::JoinSet::new();
+    for actor in agent::actors() {
+        tasks.spawn(async move {
+            // Time usage and plan independently while running them concurrently.
+            let usage_fut = async {
+                let at = Instant::now();
+                (actor.account_usage().await, at.elapsed())
+            };
+            let plan_fut = async {
+                let at = Instant::now();
+                (actor.subscription_plan().await, at.elapsed())
+            };
+            let ((usage, usage_ms), (plan, plan_ms)) = tokio::join!(usage_fut, plan_fut);
+            (
+                actor.slug(),
+                actor.display_name(),
+                usage,
+                plan,
+                usage_ms,
+                plan_ms,
+            )
+        });
     }
-    if args.json {
-        #[derive(serde::Serialize)]
-        struct ScanUsageOutput<'a> {
-            usage: &'a HashMap<String, AgentUsageSnapshot>,
-            plans: &'a HashMap<String, Vec<AgentInfoField>>,
+
+    let mut agents: std::collections::BTreeMap<&'static str, ScanUsageAgent> =
+        std::collections::BTreeMap::new();
+    while let Some(joined) = tasks.join_next().await {
+        let Ok((slug, display_name, usage, plan, usage_ms, plan_ms)) = joined else {
+            continue;
+        };
+        let plan = plan.unwrap_or_default();
+        // Skip actors with nothing to report (the detect-only majority).
+        if usage.is_none() && plan.is_empty() {
+            continue;
         }
+        agents.insert(
+            slug,
+            ScanUsageAgent {
+                display_name,
+                usage,
+                plan,
+                timings_ms: ScanUsageTimings {
+                    usage: usage_ms.as_millis() as u64,
+                    plan: plan_ms.as_millis() as u64,
+                },
+            },
+        );
+    }
+
+    let total_ms = started.elapsed().as_millis();
+    if !args.quiet {
+        writeln!(stderr(), "scan usage completed in {total_ms}ms")?;
+    }
+
+    if args.json {
         println!(
             "{}",
             serde_json::to_string_pretty(&ScanUsageOutput {
-                usage: &snapshots,
-                plans: &plans,
+                scan: "usage",
+                agents: &agents,
+                total_ms,
             })?
         );
     } else {
-        for actor in agent::actors() {
-            let slug = actor.slug();
-            let label = actor.display_name();
-            match snapshots.get(slug) {
-                None => println!("{label}: no remote usage available"),
+        for (slug, agent) in &agents {
+            println!(
+                "{} ({slug})  [usage {}ms · plan {}ms]",
+                agent.display_name, agent.timings_ms.usage, agent.timings_ms.plan
+            );
+            for field in &agent.plan {
+                if matches!(
+                    field.label.as_str(),
+                    "Plan" | "Plan until" | "Account" | "Organization" | "Logged in"
+                ) {
+                    println!("  {}: {}", field.label, field.value);
+                }
+            }
+            match &agent.usage {
+                None => println!("  no remote usage available"),
                 Some(snap) => {
-                    println!("{label}:");
-                    if let Some(fields) = plans.get(slug) {
-                        for field in fields {
-                            if matches!(
-                                field.label.as_str(),
-                                "Plan" | "Plan until" | "Account" | "Organization" | "Logged in"
-                            ) {
-                                println!("  {}: {}", field.label, field.value);
-                            }
-                        }
-                    }
                     if let Some(v) = snap.rate_limit_five_hour_used_percent {
                         println!("  5h rate limit:  {v:.1}%");
                     }
                     if let Some(v) = snap.rate_limit_seven_day_used_percent {
                         println!("  7d rate limit:  {v:.1}%");
                     }
-                    if let Some(v) = snap.total_cost_usd {
-                        println!("  Total cost:     ${v:.2}");
-                    }
-                    if let Some(v) = snap.context_used_percent {
-                        println!("  Spend util:     {v:.1}%");
-                    }
-                    if let Some(v) = snap.lines_added {
-                        println!("  Lines added:    {v}");
-                    }
-                    if let Some(v) = snap.lines_removed {
-                        println!("  Lines removed:  {v}");
+                    for field in &snap.extra {
+                        println!("  {}: {}", field.label, field.value);
                     }
                 }
             }
         }
     }
     Ok(())
+}
+
+#[derive(Serialize)]
+struct ScanUsageTimings {
+    usage: u64,
+    plan: u64,
+}
+
+#[derive(Serialize)]
+struct ScanUsageAgent {
+    display_name: &'static str,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    usage: Option<AgentUsageSnapshot>,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    plan: Vec<AgentInfoField>,
+    timings_ms: ScanUsageTimings,
+}
+
+#[derive(Serialize)]
+struct ScanUsageOutput<'a> {
+    scan: &'static str,
+    agents: &'a std::collections::BTreeMap<&'static str, ScanUsageAgent>,
+    total_ms: u128,
 }
 
 struct ScanEmit {
@@ -681,8 +736,7 @@ fn install_hooks(args: AgentHookInstallArgs) -> Result<()> {
             .collect::<Result<Vec<_>>>()?
     };
     let written = install_hook_actors(&actors, &workdir, args.force, install_all)?;
-    // Only `pi`/`hermes` write global assets; show the workspace hook script line
-    // only when an actor actually prepared it.
+    // Show the workspace hook script line only when an actor prepared it (pi/hermes don't).
     let has_local_script = written.iter().any(|path| path == &script_path);
 
     println!("Local Agent Hooks Prepared\n");
