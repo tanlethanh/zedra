@@ -70,6 +70,9 @@ impl ClaudePtySession {
 
         let mut cmd = std::process::Command::new(claude_bin);
         cmd.args(["--allowed-tools", ""]);
+        // Disable the no-flicker alt-screen TUI; it collapses `/usage` onto one
+        // line. `0` keeps it line-by-line so windows parse.
+        cmd.env("CLAUDE_CODE_NO_FLICKER", "0");
         unsafe {
             cmd.stdin(std::process::Stdio::from_raw_fd(slave_stdin))
                 .stdout(std::process::Stdio::from_raw_fd(slave_stdout))
@@ -206,6 +209,77 @@ impl ClaudePtySession {
     fn finish(mut self) {
         let _ = self.child.kill();
         let _ = self.child.wait();
+    }
+}
+
+/// Strip ANSI escapes from a byte slice. Multi-byte UTF-8 is consumed whole by leading-byte
+/// length; sequences truncated at the buffer end (split reads) are dropped, not replaced.
+fn strip_ansi(input: &[u8]) -> String {
+    let mut out = String::with_capacity(input.len());
+    let mut i = 0;
+    while i < input.len() {
+        if input[i] == b'\x1b' {
+            i += 1;
+            if i >= input.len() {
+                break;
+            }
+            if input[i] == b'[' {
+                // CSI sequence: skip until a byte in 0x40–0x7E
+                i += 1;
+                while i < input.len() && !(0x40..=0x7e).contains(&input[i]) {
+                    i += 1;
+                }
+                i += 1; // skip final byte
+            } else if matches!(input[i], b']' | b'P' | b'^' | b'_' | b'X') {
+                // OSC / DCS / PM / APC / SOS: scan until BEL or ST (ESC \)
+                i += 1;
+                while i < input.len() {
+                    if input[i] == b'\x07' {
+                        i += 1;
+                        break;
+                    }
+                    if input[i] == b'\x1b' && i + 1 < input.len() && input[i + 1] == b'\\' {
+                        i += 2;
+                        break;
+                    }
+                    i += 1;
+                }
+            } else {
+                // Other two-byte escape sequence: skip one more byte
+                i += 1;
+            }
+        } else if input[i] < 0x20 && input[i] != b'\n' && input[i] != b'\r' && input[i] != b'\t' {
+            // Skip other control bytes (e.g. cursor movement OSC)
+            i += 1;
+        } else {
+            // Push the whole UTF-8 character by leading-byte width, not byte-by-byte.
+            let char_len = utf8_char_len(input[i]);
+            if i + char_len <= input.len() {
+                if let Ok(s) = std::str::from_utf8(&input[i..i + char_len]) {
+                    out.push_str(s);
+                }
+                // Skip every byte of the char even if invalid, so continuation bytes
+                // aren't treated as independent characters.
+                i += char_len;
+            } else {
+                break; // truncated char at buffer end
+            }
+        }
+    }
+    out
+}
+
+/// Expected UTF-8 char length from the leading byte; `0x80..=0xBF` (stray
+/// continuation) counts as 1 so it never consumes the next char.
+fn utf8_char_len(b: u8) -> usize {
+    if b < 0x80 || (0x80..=0xBF).contains(&b) {
+        1
+    } else if b < 0xE0 {
+        2
+    } else if b < 0xF0 {
+        3
+    } else {
+        4
     }
 }
 
@@ -518,78 +592,6 @@ fn which_claude() -> Option<std::path::PathBuf> {
         .find(|p| p.is_file())
 }
 
-/// Strip ANSI escapes from a byte slice. Multi-byte UTF-8 is consumed whole by leading-byte
-/// length; sequences truncated at the buffer end (split reads) are dropped, not replaced.
-fn strip_ansi(input: &[u8]) -> String {
-    let mut out = String::with_capacity(input.len());
-    let mut i = 0;
-    while i < input.len() {
-        if input[i] == b'\x1b' {
-            i += 1;
-            if i >= input.len() {
-                break;
-            }
-            if input[i] == b'[' {
-                // CSI sequence: skip until a byte in 0x40–0x7E
-                i += 1;
-                while i < input.len() && !(0x40..=0x7e).contains(&input[i]) {
-                    i += 1;
-                }
-                i += 1; // skip final byte
-            } else if matches!(input[i], b']' | b'P' | b'^' | b'_' | b'X') {
-                // OSC / DCS / PM / APC / SOS: scan until BEL or ST (ESC \)
-                i += 1;
-                while i < input.len() {
-                    if input[i] == b'\x07' {
-                        i += 1;
-                        break;
-                    }
-                    if input[i] == b'\x1b' && i + 1 < input.len() && input[i + 1] == b'\\' {
-                        i += 2;
-                        break;
-                    }
-                    i += 1;
-                }
-            } else {
-                // Other two-byte escape sequence: skip one more byte
-                i += 1;
-            }
-        } else if input[i] < 0x20 && input[i] != b'\n' && input[i] != b'\r' && input[i] != b'\t' {
-            // Skip other control bytes (e.g. cursor movement OSC)
-            i += 1;
-        } else {
-            // Push the whole UTF-8 character by leading-byte width, not byte-by-byte.
-            let char_len = utf8_char_len(input[i]);
-            if i + char_len <= input.len() {
-                if let Ok(s) = std::str::from_utf8(&input[i..i + char_len]) {
-                    out.push_str(s);
-                }
-                // Skip every byte of the char even if invalid, so continuation bytes
-                // aren't treated as independent characters.
-                i += char_len;
-            } else {
-                break; // truncated char at buffer end
-            }
-        }
-    }
-    out
-}
-
-/// Returns the expected byte length of a UTF-8 character given its leading byte.
-/// Stray continuation bytes (`0x80..=0xBF`) are not valid leads, so they count as
-/// one invalid byte and never consume the following character.
-fn utf8_char_len(b: u8) -> usize {
-    if b < 0x80 || (0x80..=0xBF).contains(&b) {
-        1
-    } else if b < 0xE0 {
-        2
-    } else if b < 0xF0 {
-        3
-    } else {
-        4
-    }
-}
-
 // CLI-only: parse `Resets …` lines after `/usage` window labels (fragile; see module docs).
 // CLI-only: parse `Resets …` lines after `/usage` window labels (fragile; see PTY note above).
 fn claude_session_label(lower: &str) -> bool {
@@ -644,11 +646,16 @@ fn is_other_current_section(line: &str, label_key: &str) -> bool {
 }
 fn parse_claude_reset_line(line: &str) -> Option<i64> {
     let lower = line.to_ascii_lowercase();
-    if !lower.contains("reset") {
-        return None;
+    if lower.contains("reset") {
+        let body = strip_claude_resets_prefix(line)?;
+        return parse_claude_reset_body(body);
     }
-    let body = strip_claude_resets_prefix(line)?;
-    parse_claude_reset_body(body)
+    // The \r redraw can corrupt the "Resets" word (e.g. "Reses11:40pm"); fall back
+    // to any line carrying a trailing "(timezone)" and parse the time within.
+    if split_trailing_timezone(line).1.is_some() {
+        return parse_claude_reset_body(line.trim());
+    }
+    None
 }
 
 fn strip_claude_resets_prefix(line: &str) -> Option<&str> {
@@ -666,87 +673,62 @@ fn strip_claude_resets_prefix(line: &str) -> Option<&str> {
 fn parse_claude_reset_body(body: &str) -> Option<i64> {
     let (text, _tz) = split_trailing_timezone(body);
     let text = normalize_claude_reset_text(text);
+    let tokens: Vec<&str> = text.split_whitespace().collect();
     let now = Local::now();
 
-    if let Some(ts) = parse_claude_reset_month_day_time(&text, now) {
-        return Some(ts);
-    }
+    // The clock value is the last token that parses as a time.
+    let time = tokens.iter().rev().find_map(|t| parse_reset_time(t))?;
 
-    let datetime_formats = [
-        "%b %d, %Y, %I:%M%p",
-        "%b %d, %Y, %I%p",
-        "%b %d %Y %I:%M%p",
-        "%b %d %Y %I%p",
-        "%b %d, %I:%M%p",
-        "%b %d, %I%p",
-        "%b %d %I:%M%p",
-        "%b %d %I%p",
-        "%b %d at %I:%M%p",
-        "%b %d at %I%p",
-        "%b %d, %H:%M",
-        "%b %d %H:%M",
-    ];
-    for fmt in datetime_formats {
-        if let Ok(ndt) = NaiveDateTime::parse_from_str(&text, fmt) {
-            let year = ndt.date().year();
-            if let Some(dt) = local_from_month_day_time(year, ndt.date(), ndt.time()) {
-                return Some(dt.timestamp());
-            }
-        }
-    }
-
-    let time_formats = ["%I:%M%p", "%I%p", "%H:%M"];
-    for fmt in time_formats {
-        if let Ok(time) = NaiveTime::parse_from_str(&text, fmt) {
+    // A leading `Mon Day` pins the date; otherwise it's the next occurrence of
+    // that wall-clock time (today, or tomorrow if already past).
+    let date = match parse_reset_month_day(&tokens, now.year()) {
+        Some(date) => date,
+        None => {
             let today = now.date_naive();
-            if let Some(dt) = local_from_month_day_time(now.year(), today, time) {
-                if dt < now {
-                    if let Some(tomorrow) = today.succ_opt() {
-                        if let Some(dt) = local_from_month_day_time(now.year(), tomorrow, time) {
-                            return Some(dt.timestamp());
-                        }
-                    }
-                }
-                return Some(dt.timestamp());
+            match local_from_month_day_time(now.year(), today, time) {
+                Some(dt) if dt < now => today.succ_opt().unwrap_or(today),
+                _ => today,
             }
         }
-    }
-    None
-}
-
-/// Parses `May 30 2pm` after spacing normalization (single-digit hours are common in CLI output).
-fn parse_claude_reset_month_day_time(text: &str, now: DateTime<Local>) -> Option<i64> {
-    let parts: Vec<&str> = text.split_whitespace().collect();
-    if parts.len() != 3 {
-        return None;
-    }
-    let year = now.year();
-    let date = format!("{} {} {}", parts[0], parts[1], year);
-    let date = NaiveDate::parse_from_str(&date, "%b %d %Y").ok()?;
-    let time = parse_claude_reset_ampm_token(parts[2])?;
-    local_from_month_day_time(year, date, time).map(|dt| dt.timestamp())
-}
-
-fn parse_claude_reset_ampm_token(token: &str) -> Option<NaiveTime> {
-    let lower = token.to_ascii_lowercase();
-    let (digits, pm) = if let Some(d) = lower.strip_suffix("pm") {
-        (d, true)
-    } else if let Some(d) = lower.strip_suffix("am") {
-        (d, false)
-    } else {
-        return None;
     };
-    let hour12: u32 = digits.parse().ok()?;
-    if !(1..=12).contains(&hour12) {
+    local_from_month_day_time(now.year(), date, time).map(|dt| dt.timestamp())
+}
+
+/// Parse a single clock token (`2pm`, `1:59pm`, `14:30`), tolerating leading
+/// garbage from a corrupted redraw (`Reses11:40pm`).
+fn parse_reset_time(token: &str) -> Option<NaiveTime> {
+    let token = token
+        .trim_start_matches(|c: char| !c.is_ascii_digit())
+        .to_ascii_lowercase();
+    let am_pm = token
+        .strip_suffix("pm")
+        .map(|d| (d, true))
+        .or_else(|| token.strip_suffix("am").map(|d| (d, false)));
+    let Some((digits, pm)) = am_pm else {
+        // 24-hour, e.g. "14:30".
+        return NaiveTime::parse_from_str(&token, "%H:%M").ok();
+    };
+    let (hour, minute) = match digits.split_once(':') {
+        Some((h, m)) => (h.parse().ok()?, m.parse().ok()?),
+        None => (digits.parse().ok()?, 0),
+    };
+    if !(1..=12).contains(&hour) || minute >= 60 {
         return None;
     }
-    let hour24 = match (hour12, pm) {
+    let hour24 = match (hour, pm) {
         (12, false) => 0,
         (12, true) => 12,
         (h, true) => h + 12,
         (h, false) => h,
     };
-    NaiveTime::from_hms_opt(hour24, 0, 0)
+    NaiveTime::from_hms_opt(hour24, minute, 0)
+}
+
+/// First adjacent `Mon Day` pair in the tokens, dated to `year`.
+fn parse_reset_month_day(tokens: &[&str], year: i32) -> Option<NaiveDate> {
+    tokens.windows(2).find_map(|w| {
+        NaiveDate::parse_from_str(&format!("{} {} {year}", w[0], w[1]), "%b %d %Y").ok()
+    })
 }
 
 fn split_trailing_timezone(body: &str) -> (&str, Option<&str>) {
@@ -852,7 +834,14 @@ fn parse_usage_output(text: &str) -> Option<AgentUsageSnapshot> {
     let mut credits_used: Option<f64> = None;
     let mut credits_limit: Option<f64> = None;
 
-    let lines: Vec<&str> = text.lines().collect();
+    // The alt-screen redraw separates panel rows with bare `\r`; treat each as a
+    // line break (and drop the empty rows it leaves) so labels, bars, and reset
+    // lines each land on their own line for the label/percent/reset scan.
+    let normalized = text.replace('\r', "\n");
+    let lines: Vec<&str> = normalized
+        .lines()
+        .filter(|line| !line.trim().is_empty())
+        .collect();
     let mut i = 0;
     while i < lines.len() {
         let line = lines[i];
@@ -1004,6 +993,41 @@ mod tests {
 
     fn parse_cli_plan_fields(status_text: &str) -> Option<Vec<AgentInfoField>> {
         identity_to_fields(parse_cli_identity("", status_text))
+    }
+
+    #[test]
+    fn reset_line_shapes_parse() {
+        // Every real `/usage` reset shape: bare time, month-day (whole hour and
+        // with minutes), spaced and glued, and a redraw-corrupted prefix.
+        for s in [
+            "Resets 6:40pm (Asia/Saigon)",
+            "Resets 4:39am (Asia/Saigon)",
+            "Resets2:40pm(Asia/Saigon)",
+            "Resets Jul 4 at 2pm (Asia/Saigon)",
+            "ResetsJul4at2pm(Asia/Saigon)",
+            "Resets Jul 4 at 1:59pm (Asia/Saigon)",
+            "ResetsJul4at1:59pm(Asia/Saigon)",
+            "ResetsMay30at2pm(Asia/Saigon)",
+            "Reses11:40pm (Asia/Saigon)",
+        ] {
+            assert!(parse_claude_reset_line(s).is_some(), "should parse: {s:?}");
+        }
+    }
+
+    #[test]
+    fn parses_cr_glued_corrupted_session_reset() {
+        // Real PTY shape: the 5h window collapses onto one line via `\r` with the
+        // "Resets" word corrupted to "Reses"; the 7d window spans separate `\r\n`
+        // rows (whose empty lines must not break the percent's next-line lookup).
+        let panel = "Current session\r████ 25%used\rReses11:40pm (Asia/Saigon)\nCurrent week (all models)\r\n████ 13%used\r\nResets Jul 4 at 2pm (Asia/Saigon)\r\n";
+        let snap = parse_usage_output(panel).unwrap();
+        assert_eq!(snap.rate_limit_five_hour_used_percent, Some(25.0));
+        assert_eq!(snap.rate_limit_seven_day_used_percent, Some(13.0));
+        assert!(
+            snap.rate_limit_five_hour_resets_at.is_some(),
+            "5h reset should parse from the cr-glued corrupted line"
+        );
+        assert!(snap.rate_limit_seven_day_resets_at.is_some());
     }
 
     #[test]
