@@ -692,8 +692,11 @@ pub async fn scan_account_plans() -> HashMap<String, Vec<AgentInfoField>> {
         tasks.spawn(async move { (actor.slug(), actor.subscription_plan().await) });
     }
     let mut out = HashMap::new();
-    while let Some(Ok((slug, Some(fields)))) = tasks.join_next().await {
-        out.insert(slug.to_string(), fields);
+    // Drain all tasks: a refutable `while let` would stop at the first `None`.
+    while let Some(joined) = tasks.join_next().await {
+        if let Ok((slug, Some(fields))) = joined {
+            out.insert(slug.to_string(), fields);
+        }
     }
     out
 }
@@ -732,8 +735,11 @@ pub async fn scan_account_usage() -> HashMap<String, AgentUsageSnapshot> {
         });
     }
     let mut out = HashMap::new();
-    while let Some(Ok((slug, Some(snapshot)))) = tasks.join_next().await {
-        out.insert(slug.to_string(), snapshot);
+    // Drain all tasks: a refutable `while let` would stop at the first `None`.
+    while let Some(joined) = tasks.join_next().await {
+        if let Ok((slug, Some(snapshot))) = joined {
+            out.insert(slug.to_string(), snapshot);
+        }
     }
     out
 }
