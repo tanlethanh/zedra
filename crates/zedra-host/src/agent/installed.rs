@@ -40,8 +40,7 @@ pub fn list_installed_agents() -> AgentInstalledListResult {
     }
 }
 
-/// Resolve the launch command the same way `AgentActor::cli_available` does, so
-/// `InstalledAgentEntry.available` never drifts from the actor's own probe.
+/// Resolve the launch command like `AgentActor::cli_available`, so availability matches.
 fn resolve_program(programs: &[&str]) -> Option<String> {
     programs
         .iter()

@@ -26,8 +26,7 @@ where
         match tokio::task::spawn_blocking(probe).await {
             Ok(result) => result,
             Err(err) => {
-                // A join error is a probe panic or runtime shutdown, not "no data";
-                // surface it so probe regressions don't vanish silently.
+                // A join error is a panic/shutdown, not "no data" — surface it.
                 tracing::info!("[debug:agent] blocking probe join failed: {err}");
                 None
             }
@@ -145,8 +144,7 @@ pub fn session_title(stored: Option<String>) -> Option<String> {
 }
 
 pub fn resume_summary(slug: &str, session_id: &str) -> AgentResumeSummary {
-    // Trim once so availability and the `slug:id` payload agree; a padded id must
-    // not be reported resumable and then serialized with whitespace downstream.
+    // Trim once so availability and the `slug:id` payload agree.
     let session_id = session_id.trim();
     let available = !session_id.is_empty();
     AgentResumeSummary {

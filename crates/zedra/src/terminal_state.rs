@@ -65,8 +65,8 @@ impl TerminalState {
     /// Apply host-resolved agent identity (`None` clears). Sets icon from slug;
     /// defaults title to the display name when the terminal has none.
     pub fn set_agent_slug(&mut self, id: &str, slug: Option<String>) {
-        // Title the previous identity seeded; if the current title still equals it,
-        // the identity owns the title and we replace/clear it when the slug changes.
+        // If the current title equals the previous identity's default, the identity
+        // owns it (replace/clear on change); otherwise it's user-authored, keep it.
         let previous_default_title = self
             .entries
             .get(id)

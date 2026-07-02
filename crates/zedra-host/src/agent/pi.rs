@@ -191,9 +191,8 @@ impl PiActor {
         }
         candidates.sort_by(|a, b| b.1.cmp(&a.1).then_with(|| b.0.cmp(&a.0)));
 
-        // head-only scans trust mtime order and may take `limit` up front. A full
-        // scan must parse every candidate first, since transcript `last_activity_at`
-        // can reorder past the mtime ranking, then apply `limit` to the sorted result.
+        // Full scan parses all candidates before limiting (`last_activity_at` can
+        // outrank mtime); head-only trusts mtime order and limits up front.
         let scan_limit = if head_only {
             limit.unwrap_or(candidates.len())
         } else {

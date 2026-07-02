@@ -477,8 +477,7 @@ async fn resume_agent_handler(
             {
                 tracing::warn!("Failed to record terminal metrics: {}", e);
             }
-            // `actor` was already validated from the route slug; re-detecting from
-            // launch_cmd would drop the identity for wrapper commands.
+            // Reuse the validated actor slug; re-detecting from launch_cmd drops wrappers.
             let agent_slug = Some(actor.slug().to_string());
             session
                 .push_event(HostEvent::TerminalCreated {

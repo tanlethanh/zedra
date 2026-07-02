@@ -406,8 +406,7 @@ struct ThreadCounts {
 
 impl CodexActor {
     fn thread_counts() -> Option<ThreadCounts> {
-        // Track the selected DB (highest `state_*.sqlite`) so rollups survive a
-        // version bump instead of pinning a stale `state_5.sqlite`.
+        // Use the selected DB so rollups survive a `state_*.sqlite` version bump.
         let db_path = Self::state_db_path()?;
         let week_start = (Utc::now() - chrono::Duration::days(7))
             .format("%Y-%m-%d")
