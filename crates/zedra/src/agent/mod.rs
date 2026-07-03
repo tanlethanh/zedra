@@ -460,9 +460,17 @@ fn source_range_label(input: &AddToChat) -> String {
     }
 }
 
+/// Fence longer than the longest backtick run in the payload, so a selection
+/// containing ``` cannot close the block early.
+fn code_fence(text: &str) -> String {
+    let longest_run = text.split(|ch| ch != '`').map(str::len).max().unwrap_or(0);
+    "`".repeat((longest_run + 1).max(3))
+}
+
 fn fenced_add_to_chat_context(input: &AddToChat) -> String {
+    let fence = code_fence(&input.text);
     format!(
-        "{}\n\n```text\n{}\n```",
+        "{}\n\n{fence}text\n{}\n{fence}",
         source_range_label(input),
         input.text
     )
@@ -668,6 +676,22 @@ mod tests {
         assert_eq!(
             take_paste_payload(&mut term),
             "src/lib.rs:L7\n\n```text\nlet value = 1;\n```"
+        );
+    }
+
+    #[test]
+    fn fenced_context_outruns_backticks_in_selection() {
+        // A selection containing ``` must not close the fence early.
+        let input = AddToChat {
+            file: PathBuf::from("/repo/docs/README.md"),
+            rel: PathBuf::from("docs/README.md"),
+            start: 1,
+            end: 3,
+            text: "```sh\nls\n```".to_string(),
+        };
+        assert_eq!(
+            fenced_add_to_chat_context(&input),
+            "docs/README.md:L1-L3\n\n````text\n```sh\nls\n```\n````"
         );
     }
 
