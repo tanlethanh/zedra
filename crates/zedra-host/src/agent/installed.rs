@@ -3,50 +3,31 @@ use zedra_rpc::proto::{AgentInstalledListResult, InstalledAgentEntry};
 use crate::agent;
 
 pub fn list_installed_agents() -> AgentInstalledListResult {
-    // Join each probe by hand so one panicking actor is dropped from the list
-    // instead of unwinding the whole scope. Join order preserves registry order.
-    let agents = std::thread::scope(|scope| {
-        let handles: Vec<_> = agent::actors()
-            .iter()
-            .map(|actor| {
-                scope.spawn(move || {
-                    let launch_cmd = resolve_program(actor.programs());
-                    InstalledAgentEntry {
-                        slug: actor.slug().to_string(),
-                        display_name: actor.display_name().to_string(),
-                        icon_name: actor.icon_name().to_string(),
-                        available: launch_cmd.is_some(),
-                        version: None,
-                        launch_cmd,
-                    }
-                })
-            })
-            .collect();
-        handles
-            .into_iter()
-            .zip(agent::actors())
-            .filter_map(|(handle, actor)| match handle.join() {
-                Ok(entry) => Some(entry),
-                Err(_) => {
-                    tracing::warn!("installed agent probe panicked for `{}`", actor.slug());
-                    None
+    // Probe behind catch_unwind so one panicking actor is dropped from the
+    // list instead of taking down the whole scan.
+    let agents = agent::actors()
+        .iter()
+        .filter_map(|actor| {
+            std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                let launch_cmd = actor.resolved_program();
+                InstalledAgentEntry {
+                    slug: actor.slug().to_string(),
+                    display_name: actor.display_name().to_string(),
+                    icon_name: actor.icon_name().to_string(),
+                    available: launch_cmd.is_some(),
+                    version: None,
+                    launch_cmd: launch_cmd.map(str::to_string),
                 }
-            })
-            .collect()
-    });
+            }))
+            .map_err(|_| tracing::warn!("installed agent probe panicked for `{}`", actor.slug()))
+            .ok()
+        })
+        .collect();
 
     AgentInstalledListResult {
         agents,
         error: None,
     }
-}
-
-/// Resolve the launch command like `AgentActor::cli_available`, so availability matches.
-fn resolve_program(programs: &[&str]) -> Option<String> {
-    programs
-        .iter()
-        .find(|program| agent::utils::command_on_path(program))
-        .map(|program| program.to_string())
 }
 
 #[cfg(test)]

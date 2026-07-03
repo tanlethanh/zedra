@@ -238,7 +238,7 @@ impl WorkspaceTerminal {
                             OscEvent::IconName(_) => return,
                             OscEvent::Cwd(cwd) => ts.set_cwd(&id, cwd.clone()),
                             OscEvent::CommandLine(cmd) => ts.set_current_command(&id, cmd.clone()),
-                            OscEvent::CommandStart => ts.set_command_started(&id),
+                            OscEvent::CommandStart => ts.set_shell_running(&id),
                             OscEvent::CommandEnd { exit_code } => {
                                 ts.set_shell_idle(&id, Some(*exit_code))
                             }

@@ -32,28 +32,21 @@ pub struct CodexThreadRow {
     pub model: Option<String>,
 }
 
-pub struct SessionCounts {
-    pub total: usize,
-    pub resumable: usize,
-    pub latest_session_id: Option<String>,
-    pub latest_session_title: Option<String>,
-    pub last_activity_at: Option<DateTime<Utc>>,
-}
-
 impl CodexActor {
     pub fn cli_available() -> bool {
         command_on_path("codex") || Self::state_db_path().is_some()
     }
 
-    pub fn session_counts(workdir: &Path) -> Result<SessionCounts, String> {
+    pub fn session_counts(workdir: &Path) -> Result<super::SessionCounts, String> {
         let threads = Self::threads_for_workdir(workdir)?;
         let latest = threads.first();
-        Ok(SessionCounts {
+        Ok(super::SessionCounts {
             total: threads.len(),
             resumable: threads.len(),
             latest_session_id: latest.map(|thread| thread.id.clone()),
             latest_session_title: latest.and_then(Self::title_from_thread),
             last_activity_at: latest.and_then(Self::thread_updated_at),
+            ..Default::default()
         })
     }
 
@@ -712,7 +705,7 @@ impl AgentActor for CodexActor {
     }
 
     fn session_counts(&self, ctx: &ScanCtx) -> Result<ActorSessionCounts, String> {
-        Ok(Self::session_counts(ctx.workdir)?.into())
+        Self::session_counts(ctx.workdir)
     }
 
     fn sessions(
@@ -778,24 +771,14 @@ impl AgentActor for CodexActor {
             }) else {
                 return Ok(());
             };
-            if ctx.client_in_foreground() {
-                return Ok(());
-            }
-            let Some(delta) = ctx.require_delta() else {
-                return Ok(());
-            };
-
             // Codex stores titles in its thread DB; look up by session id.
             let workdir = ctx.workdir.clone();
             let body = spawn_blocking_opt(move || {
                 agent_session_id
                     .as_deref()
                     .and_then(|id| Self::title_for_session(&workdir, id))
-            })
-            .await;
-
-            ctx.send_notification(&delta, ctx.notification(name, &event_name, title, body))
-                .await
+            });
+            ctx.notify(name, &event_name, title, body).await
         })
     }
 

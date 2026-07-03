@@ -53,7 +53,9 @@ impl AgentSessions {
             match handle.agent_list(refresh).await {
                 Ok(agents) => {
                     // Fan out per-agent scans so one slow agent doesn't gate the rest.
-                    let results = futures::future::join_all(agents.into_iter().map(|agent| {
+                    // Only detail-bearing agents have session lists; skip the rest.
+                    let agents = agents.into_iter().filter(|agent| agent.shows_detail);
+                    let results = futures::future::join_all(agents.map(|agent| {
                         let handle = handle.clone();
                         async move {
                             let slug = agent.slug;

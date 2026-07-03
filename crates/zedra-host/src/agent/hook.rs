@@ -1,3 +1,4 @@
+use std::future::Future;
 use std::path::PathBuf;
 use std::sync::atomic::Ordering;
 use std::sync::Arc;
@@ -79,6 +80,27 @@ impl HookContext {
         }
     }
 
+    /// Shared notification tail: no-op when the client has the app foregrounded
+    /// or Delta is not configured. `body` is awaited only when a push will go
+    /// out, so callers can defer transcript/DB reads into it.
+    pub async fn notify(
+        &self,
+        agent: &str,
+        event_name: &str,
+        title: String,
+        body: impl Future<Output = Option<String>>,
+    ) -> Result<()> {
+        if self.client_in_foreground() {
+            return Ok(());
+        }
+        let Some(delta) = self.require_delta() else {
+            return Ok(());
+        };
+        let body = body.await;
+        self.send_notification(&delta, self.notification(agent, event_name, title, body))
+            .await
+    }
+
     /// Shared Delta send: push notification to the previous signed-in client. Body is reduced to
     /// its first non-empty line and truncated to 100 chars.
     pub async fn send_notification(
@@ -86,11 +108,8 @@ impl HookContext {
         client: &DeltaClient,
         notification: HookNotification,
     ) -> Result<()> {
-        let body = notification.body.and_then(|b| {
-            b.lines()
-                .map(str::trim)
-                .find(|line| !line.is_empty())
-                .map(|line| utils::truncate_chars(line, 100))
+        let body = notification.body.as_deref().and_then(|b| {
+            super::utils::first_non_empty_line(b).map(|line| utils::truncate_chars(&line, 100))
         });
         // Deeplink pushes go out at high priority so a backgrounded device wakes promptly
         // and the tap navigates; plain notifications stay normal. The caller (host) picks

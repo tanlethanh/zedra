@@ -15,14 +15,6 @@ use super::utils::{
 
 const LIST_HEAD_SCAN_MAX_LINES: usize = 32;
 
-pub struct SessionCounts {
-    pub total: usize,
-    pub resumable: usize,
-    pub latest_session_id: Option<String>,
-    pub latest_session_title: Option<String>,
-    pub last_activity_at: Option<DateTime<Utc>>,
-}
-
 #[derive(Debug, Clone)]
 struct PiSessionFile {
     path: PathBuf,
@@ -40,17 +32,18 @@ impl PiActor {
         command_on_path("pi") || Self::pi_sessions_root().is_dir()
     }
 
-    pub fn session_counts(workdir: &Path) -> Result<SessionCounts, String> {
+    pub fn session_counts(workdir: &Path) -> Result<super::SessionCounts, String> {
         let files =
             Self::collect_session_files(workdir, Some(1), true).map_err(|e| e.to_string())?;
         let total = Self::count_session_files(workdir).map_err(|e| e.to_string())?;
         let latest = files.first();
-        Ok(SessionCounts {
+        Ok(super::SessionCounts {
             total,
             resumable: total,
             latest_session_id: latest.map(|f| f.session_id.clone()),
             latest_session_title: latest.and_then(|f| f.title.clone()),
             last_activity_at: latest.and_then(|f| f.last_activity_at),
+            ..Default::default()
         })
     }
 
@@ -723,7 +716,7 @@ impl AgentActor for PiActor {
     }
 
     fn session_counts(&self, ctx: &ScanCtx) -> Result<ActorSessionCounts, String> {
-        Ok(Self::session_counts(ctx.workdir)?.into())
+        Self::session_counts(ctx.workdir)
     }
 
     fn sessions(
@@ -738,8 +731,7 @@ impl AgentActor for PiActor {
         Self::account_fields(workdir)
     }
 
-    fn setup_summary(&self, available: bool, workdir: &Path) -> AgentSetupSummary {
-        let _ = workdir;
+    fn setup_summary(&self, available: bool, _workdir: &Path) -> AgentSetupSummary {
         setup_status(
             available,
             false,
@@ -785,26 +777,18 @@ impl AgentActor for PiActor {
 
             // Only notify on completion — pi has no approval event, and Stop is the
             // single user-meaningful turn boundary.
-            if event_name != "Stop" || ctx.client_in_foreground() {
+            if event_name != "Stop" {
                 return Ok(());
             }
-            let Some(delta) = ctx.require_delta() else {
-                return Ok(());
-            };
-
             let name = self.display_name();
-            let title = format!("{name} completed");
-
             // Pi stores transcripts per workdir; look up the session title for the body.
             let workdir = ctx.workdir.clone();
             let body = spawn_blocking_opt(move || {
                 agent_session_id
                     .as_deref()
                     .and_then(|id| Self::title_for_session(&workdir, id))
-            })
-            .await;
-
-            ctx.send_notification(&delta, ctx.notification(name, &event_name, title, body))
+            });
+            ctx.notify(name, &event_name, format!("{name} completed"), body)
                 .await
         })
     }

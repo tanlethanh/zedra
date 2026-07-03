@@ -101,26 +101,18 @@ impl TerminalState {
         }
     }
 
-    pub fn set_command_started(&mut self, id: &str) {
-        self.entry(id).shell_state = ShellState::Running;
-    }
-
     pub fn set_shell_idle(&mut self, id: &str, exit_code: Option<i32>) {
-        self.mark_shell_idle(id, exit_code);
-    }
-
-    pub fn set_prompt_ready(&mut self, id: &str) {
-        // OSC 133;A = prompt shown. Identity is host-driven, so only shell state updates.
-        self.mark_shell_idle(id, None);
-    }
-
-    fn mark_shell_idle(&mut self, id: &str, exit_code: Option<i32>) {
         let e = self.entry(id);
         e.shell_state = ShellState::Idle;
         if let Some(code) = exit_code {
             e.last_exit_code = Some(code);
         }
         e.current_command = None;
+    }
+
+    pub fn set_prompt_ready(&mut self, id: &str) {
+        // OSC 133;A = prompt shown. Identity is host-driven, so only shell state updates.
+        self.set_shell_idle(id, None);
     }
 
     pub fn set_current_command(&mut self, id: &str, command: String) {

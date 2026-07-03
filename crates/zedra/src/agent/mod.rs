@@ -326,90 +326,62 @@ impl ClaudeAdapter {
     }
 }
 
-/// Codex: fenced add-to-chat (generic), but prefers the OpenAI brand icon.
-#[derive(Default)]
-pub struct CodexAdapter;
+/// Agent whose only in-app specialization is branding and hook notification
+/// events; behavior stays the generic fenced paste.
+#[derive(Clone, Copy)]
+struct BrandedAdapter {
+    slug: &'static str,
+    display_name: &'static str,
+    icon_path: &'static str,
+    notify_events: &'static [&'static str],
+}
 
-impl AgentAdapter for CodexAdapter {
+impl AgentAdapter for BrandedAdapter {
     fn slug(&self) -> &str {
-        "codex"
+        self.slug
     }
 
     fn display_name(&self) -> &str {
-        "Codex"
+        self.display_name
     }
 
     fn icon_path(&self) -> &str {
-        "icons/openai.svg"
+        self.icon_path
     }
 
     fn should_notify(&self, event_name: &str) -> bool {
-        matches!(event_name, "Stop" | "PermissionRequest")
+        self.notify_events.contains(&event_name)
     }
 }
 
-#[derive(Default)]
-pub struct OpenCodeAdapter;
-
-impl AgentAdapter for OpenCodeAdapter {
-    fn slug(&self) -> &str {
-        "opencode"
-    }
-
-    fn display_name(&self) -> &str {
-        "OpenCode"
-    }
-
-    fn icon_path(&self) -> &str {
-        "icons/opencode.svg"
-    }
-
-    fn should_notify(&self, event_name: &str) -> bool {
-        matches!(event_name, "session.idle" | "permission.asked")
-    }
-}
-
-#[derive(Default)]
-pub struct PiAdapter;
-
-impl AgentAdapter for PiAdapter {
-    fn slug(&self) -> &str {
-        "pi"
-    }
-
-    fn display_name(&self) -> &str {
-        "Pi"
-    }
-
-    fn icon_path(&self) -> &str {
-        "icons/pi.svg"
-    }
-
-    fn should_notify(&self, event_name: &str) -> bool {
-        event_name == "Stop"
-    }
-}
-
-#[derive(Default)]
-pub struct HermesAdapter;
-
-impl AgentAdapter for HermesAdapter {
-    fn slug(&self) -> &str {
-        "hermes"
-    }
-
-    fn display_name(&self) -> &str {
-        "Hermes Agent"
-    }
-
-    fn icon_path(&self) -> &str {
-        "icons/hermesagent.svg"
-    }
-
-    fn should_notify(&self, event_name: &str) -> bool {
-        matches!(event_name, "post_llm_call" | "pre_approval_request")
-    }
-}
+/// Branding + notify-event table for agents without behavior overrides.
+/// Codex prefers the OpenAI brand icon over a codex-named asset.
+const BRANDED_ADAPTERS: &[BrandedAdapter] = &[
+    BrandedAdapter {
+        slug: "codex",
+        display_name: "Codex",
+        icon_path: "icons/openai.svg",
+        notify_events: &["Stop", "PermissionRequest"],
+    },
+    BrandedAdapter {
+        slug: "opencode",
+        display_name: "OpenCode",
+        icon_path: "icons/opencode.svg",
+        notify_events: &["session.idle", "permission.asked"],
+    },
+    BrandedAdapter {
+        slug: "pi",
+        display_name: "Pi",
+        icon_path: "icons/pi.svg",
+        notify_events: &["Stop"],
+    },
+    BrandedAdapter {
+        slug: "hermes",
+        display_name: "Hermes Agent",
+        icon_path: "icons/hermesagent.svg",
+        notify_events: &["post_llm_call", "pre_approval_request"],
+    },
+];
 
 /// Build the app-side adapter for a host slug. Always returns a working adapter:
 /// a specialized one for agents with custom in-app behavior or branding, else a
@@ -419,11 +391,10 @@ pub fn adapter(slug: &str) -> Box<dyn AgentAdapter> {
     match slug {
         "shell" => Box::<ShellAdapter>::default(),
         "claude" => Box::<ClaudeAdapter>::default(),
-        "codex" => Box::<CodexAdapter>::default(),
-        "opencode" => Box::<OpenCodeAdapter>::default(),
-        "pi" => Box::<PiAdapter>::default(),
-        "hermes" => Box::<HermesAdapter>::default(),
-        other => Box::new(GenericAdapter::new(other)),
+        other => match BRANDED_ADAPTERS.iter().find(|entry| entry.slug == other) {
+            Some(entry) => Box::new(*entry),
+            None => Box::new(GenericAdapter::new(other)),
+        },
     }
 }
 
@@ -436,9 +407,21 @@ pub fn name(slug: &str) -> String {
 
 /// Icon path for a slug, resolved through its adapter so branding overrides
 /// apply (e.g. Codex -> OpenAI icon) with the slug-asset fallback for unknown
-/// agents.
+/// agents. Memoized: called from render paths, and the generic fallback does an
+/// embedded-asset existence lookup per resolution.
 pub fn icon(slug: &str) -> String {
-    adapter(slug).icon_path().to_owned()
+    use std::collections::HashMap;
+    use std::sync::{Mutex, OnceLock};
+    static CACHE: OnceLock<Mutex<HashMap<String, String>>> = OnceLock::new();
+    let cache = CACHE.get_or_init(Mutex::default);
+    if let Some(path) = cache.lock().ok().and_then(|map| map.get(slug).cloned()) {
+        return path;
+    }
+    let path = adapter(slug).icon_path().to_owned();
+    if let Ok(mut map) = cache.lock() {
+        map.insert(slug.to_owned(), path.clone());
+    }
+    path
 }
 
 pub fn bracketed_paste(text: &str) -> Vec<u8> {

@@ -20,14 +20,6 @@ use super::utils::{
 /// small, but the cap bounds a pathological file from bloating the reply.
 const FILE_VIEW_MAX_BYTES: usize = 256 * 1024;
 
-pub struct SessionCounts {
-    pub total: usize,
-    pub resumable: usize,
-    pub latest_session_id: Option<String>,
-    pub latest_session_title: Option<String>,
-    pub last_activity_at: Option<DateTime<Utc>>,
-}
-
 #[derive(Debug, Clone, Default)]
 struct HermesSession {
     session_id: String,
@@ -49,15 +41,16 @@ impl HermesActor {
     }
 
     /// Sessions are global, so `workdir` is intentionally ignored.
-    pub fn session_counts(_workdir: &Path) -> Result<SessionCounts, String> {
+    pub fn session_counts(_workdir: &Path) -> Result<super::SessionCounts, String> {
         let total = Self::count_sessions();
         let latest = Self::collect_sessions(Some(1)).into_iter().next();
-        Ok(SessionCounts {
+        Ok(super::SessionCounts {
             total,
             resumable: total,
             latest_session_id: latest.as_ref().map(|s| s.session_id.clone()),
             latest_session_title: latest.as_ref().and_then(|s| s.title.clone()),
             last_activity_at: latest.and_then(|s| s.last_activity_at),
+            ..Default::default()
         })
     }
 
@@ -653,7 +646,7 @@ impl AgentActor for HermesActor {
     }
 
     fn session_counts(&self, ctx: &ScanCtx) -> Result<ActorSessionCounts, String> {
-        Ok(Self::session_counts(ctx.workdir)?.into())
+        Self::session_counts(ctx.workdir)
     }
 
     fn sessions(
@@ -671,8 +664,7 @@ impl AgentActor for HermesActor {
         Self::config_files()
     }
 
-    fn setup_summary(&self, available: bool, workdir: &Path) -> AgentSetupSummary {
-        let _ = workdir;
+    fn setup_summary(&self, available: bool, _workdir: &Path) -> AgentSetupSummary {
         // Mirror what `setup()` installs: the hook script + a config.yaml referencing it.
         let home = Self::hermes_home();
         let script_installed = home
@@ -730,14 +722,7 @@ impl AgentActor for HermesActor {
             }) else {
                 return Ok(());
             };
-            if ctx.client_in_foreground() {
-                return Ok(());
-            }
-            let Some(delta) = ctx.require_delta() else {
-                return Ok(());
-            };
-
-            ctx.send_notification(&delta, ctx.notification(name, &event_name, title, None))
+            ctx.notify(name, &event_name, title, std::future::ready(None))
                 .await
         })
     }

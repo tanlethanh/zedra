@@ -31,15 +31,6 @@ pub struct OpenCodeSessionJson {
     pub transcript_size_bytes: Option<i64>,
 }
 
-pub struct SessionCounts {
-    pub total: usize,
-    pub resumable: usize,
-    pub latest_session_id: Option<String>,
-    pub latest_session_title: Option<String>,
-    pub last_activity_at: Option<DateTime<Utc>>,
-    pub provider_project_id: Option<String>,
-}
-
 struct SessionCountSummary {
     total: usize,
     latest: Option<OpenCodeSessionJson>,
@@ -50,19 +41,15 @@ impl OpenCodeActor {
         Self::db_path().is_file() || command_on_path("opencode")
     }
 
-    pub fn session_counts(workdir: &Path, _cli: &AgentCliSummary) -> Result<SessionCounts, String> {
+    pub fn session_counts(
+        workdir: &Path,
+        _cli: &AgentCliSummary,
+    ) -> Result<super::SessionCounts, String> {
         if !Self::cli_available() {
-            return Ok(SessionCounts {
-                total: 0,
-                resumable: 0,
-                latest_session_id: None,
-                latest_session_title: None,
-                last_activity_at: None,
-                provider_project_id: None,
-            });
+            return Ok(super::SessionCounts::default());
         }
         let summary = Self::session_count_summary(workdir)?;
-        Ok(SessionCounts {
+        Ok(super::SessionCounts {
             total: summary.total,
             resumable: summary.total,
             latest_session_id: summary.latest.as_ref().map(|s| s.id.clone()),
@@ -734,7 +721,7 @@ impl AgentActor for OpenCodeActor {
     }
 
     fn session_counts(&self, ctx: &ScanCtx) -> Result<ActorSessionCounts, String> {
-        Ok(Self::session_counts(ctx.workdir, ctx.cli)?.into())
+        Self::session_counts(ctx.workdir, ctx.cli)
     }
 
     fn sessions(
@@ -815,14 +802,7 @@ impl AgentActor for OpenCodeActor {
             }) else {
                 return Ok(());
             };
-            if ctx.client_in_foreground() {
-                return Ok(());
-            }
-            let Some(delta) = ctx.require_delta() else {
-                return Ok(());
-            };
-
-            ctx.send_notification(&delta, ctx.notification(name, &event_name, title, None))
+            ctx.notify(name, &event_name, title, std::future::ready(None))
                 .await
         })
     }

@@ -2,7 +2,6 @@ use std::collections::HashMap;
 use std::fs::File;
 use std::io::{BufRead, BufReader};
 use std::path::{Path, PathBuf};
-use std::time::UNIX_EPOCH;
 
 use anyhow::{Context, Result};
 use chrono::{DateTime, Utc};
@@ -263,7 +262,7 @@ impl ClaudeActor {
                 candidates.push(TranscriptCandidate {
                     path,
                     worktree: worktree.clone(),
-                    sort_mtime_unix_secs: Self::transcript_mtime_unix_secs(&entry.path()),
+                    sort_mtime_unix_secs: mtime_unix_secs(&entry.path()),
                 });
             }
         }
@@ -325,7 +324,7 @@ impl ClaudeActor {
     ) -> Result<ClaudeSessionMetadata> {
         let file = File::open(path)
             .with_context(|| format!("failed to read transcript {}", path.display()))?;
-        let sort_mtime_unix_secs = Self::transcript_mtime_unix_secs(path);
+        let sort_mtime_unix_secs = mtime_unix_secs(path);
         let mut metadata = ClaudeSessionMetadata {
             session_id: String::new(),
             title: None,
@@ -669,16 +668,6 @@ impl ClaudeActor {
         }
     }
 
-    fn transcript_mtime_unix_secs(path: &Path) -> Option<u64> {
-        std::fs::metadata(path)
-            .ok()?
-            .modified()
-            .ok()?
-            .duration_since(UNIX_EPOCH)
-            .ok()
-            .map(|duration| duration.as_secs())
-    }
-
     fn list_head_scan_complete(metadata: &ClaudeSessionMetadata, _scanned_lines: usize) -> bool {
         let core_metadata = !metadata.session_id.is_empty()
             && metadata.cwd.is_some()
@@ -737,19 +726,11 @@ impl ClaudeActor {
 // ---------- agent dispatcher integration ----------
 
 use super::utils::{
-    file_size_bytes, home_path, humanize_plan_token, info_field, parse_rfc3339,
+    file_size_bytes, home_path, humanize_plan_token, info_field, mtime_unix_secs, parse_rfc3339,
     parse_usage_window_resets_at, push_json_string, read_json_file, resume_summary, session_title,
     spawn_blocking_opt, string_field,
 };
 use zedra_rpc::proto::*;
-
-pub struct SessionCounts {
-    pub total: usize,
-    pub resumable: usize,
-    pub latest_session_id: Option<String>,
-    pub latest_session_title: Option<String>,
-    pub last_activity_at: Option<chrono::DateTime<chrono::Utc>>,
-}
 
 impl ClaudeActor {
     fn session_summary(
@@ -1537,14 +1518,14 @@ impl AgentActor for ClaudeActor {
     fn session_counts(&self, ctx: &ScanCtx) -> Result<ActorSessionCounts, String> {
         let (total, latest) =
             Self::session_count_summary(ctx.workdir).map_err(|e| e.to_string())?;
-        Ok(SessionCounts {
+        Ok(ActorSessionCounts {
             total,
             resumable: total,
             latest_session_id: latest.as_ref().map(|s| s.session_id.clone()),
             latest_session_title: latest.as_ref().and_then(|s| s.title.clone()),
             last_activity_at: latest.and_then(|s| parse_rfc3339(s.last_activity_at.as_deref())),
-        }
-        .into())
+            ..Default::default()
+        })
     }
 
     fn sessions(
@@ -1659,16 +1640,13 @@ impl AgentActor for ClaudeActor {
             }) else {
                 return Ok(());
             };
-            if ctx.client_in_foreground() {
-                return Ok(());
-            }
-            let Some(delta) = ctx.require_delta() else {
-                return Ok(());
-            };
-
-            let body = Self::hook_notification_body(&ctx.payload).await;
-            ctx.send_notification(&delta, ctx.notification(name, &event_name, title, body))
-                .await
+            ctx.notify(
+                name,
+                &event_name,
+                title,
+                Self::hook_notification_body(&ctx.payload),
+            )
+            .await
         })
     }
 

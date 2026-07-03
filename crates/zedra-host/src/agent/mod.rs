@@ -192,36 +192,12 @@ pub fn scan_agent_list(workdir: &Path) -> AgentListResult {
 }
 
 fn degraded_agent_summary(actor: &dyn AgentActor, workdir: &Path) -> AgentSummary {
+    let warnings = vec![AgentWarning {
+        code: "session_scan_panicked".to_string(),
+        message: "agent session scan crashed; counts unavailable".to_string(),
+    }];
     let cli = actor.agent_list_cli_summary(workdir);
-    let setup = actor.setup_summary(cli.available, workdir);
-    AgentSummary {
-        slug: actor.slug().to_string(),
-        display_name: actor.display_name().to_string(),
-        cli,
-        setup,
-        workspace: AgentWorkspaceSummary {
-            workdir: workdir.to_string_lossy().into_owned(),
-            provider_project_id: None,
-            provider_project_key: None,
-        },
-        sessions: AgentSessionCounts {
-            total: 0,
-            resumable: 0,
-            latest_session_id: None,
-            latest_session_title: None,
-        },
-        last_activity_at: None,
-        updated_at: Utc::now(),
-        data_sources: vec![AgentDataSource::Cli, AgentDataSource::Setup],
-        warnings: vec![AgentWarning {
-            code: "session_scan_panicked".to_string(),
-            message: "agent session scan crashed; counts unavailable".to_string(),
-        }],
-        account: account_summary(actor, workdir),
-        usage: None,
-        highlight: String::new(),
-        shows_detail: actor.shows_detail(),
-    }
+    build_agent_summary(actor, workdir, cli, SessionCounts::default(), warnings)
 }
 
 pub fn scan_agent_sessions(slug: &str, workdir: &Path, limit: u32) -> AgentSessionsResult {
@@ -301,9 +277,7 @@ pub(crate) fn actor(raw: &str) -> Option<&'static dyn AgentActor> {
 // ---------------------------------------------------------------------------
 
 fn agent_summary_scan(actor: &dyn AgentActor, workdir: &Path) -> AgentSummary {
-    let now = Utc::now();
     let cli = actor.agent_list_cli_summary(workdir);
-    let setup = actor.setup_summary(cli.available, workdir);
     let mut warnings = Vec::new();
     let counts = match actor.session_counts(&ScanCtx { workdir, cli: &cli }) {
         Ok(counts) => counts,
@@ -315,12 +289,21 @@ fn agent_summary_scan(actor: &dyn AgentActor, workdir: &Path) -> AgentSummary {
             SessionCounts::default()
         }
     };
+    build_agent_summary(actor, workdir, cli, counts, warnings)
+}
 
+fn build_agent_summary(
+    actor: &dyn AgentActor,
+    workdir: &Path,
+    cli: AgentCliSummary,
+    counts: SessionCounts,
+    warnings: Vec<AgentWarning>,
+) -> AgentSummary {
+    let setup = actor.setup_summary(cli.available, workdir);
     let mut data_sources = vec![AgentDataSource::Cli, AgentDataSource::Setup];
     if counts.total > 0 {
         data_sources.push(actor.scan_data_source());
     }
-
     AgentSummary {
         slug: actor.slug().to_string(),
         display_name: actor.display_name().to_string(),
@@ -328,17 +311,17 @@ fn agent_summary_scan(actor: &dyn AgentActor, workdir: &Path) -> AgentSummary {
         setup,
         workspace: AgentWorkspaceSummary {
             workdir: workdir.to_string_lossy().into_owned(),
-            provider_project_id: counts.provider_project_id.clone(),
+            provider_project_id: counts.provider_project_id,
             provider_project_key: None,
         },
         sessions: AgentSessionCounts {
             total: counts.total,
             resumable: counts.resumable,
-            latest_session_id: counts.latest_session_id.clone(),
-            latest_session_title: counts.latest_session_title.clone(),
+            latest_session_id: counts.latest_session_id,
+            latest_session_title: counts.latest_session_title,
         },
         last_activity_at: counts.last_activity_at,
-        updated_at: now,
+        updated_at: Utc::now(),
         data_sources,
         warnings,
         account: account_summary(actor, workdir),
@@ -356,42 +339,6 @@ pub(crate) struct SessionCounts {
     latest_session_title: Option<String>,
     last_activity_at: Option<chrono::DateTime<chrono::Utc>>,
     provider_project_id: Option<String>,
-}
-
-// Most agents have no provider project id; only the OpenCode conversion below
-// carries one. The four identical conversions share this macro.
-macro_rules! session_counts_from {
-    ($t:ty) => {
-        impl From<$t> for SessionCounts {
-            fn from(c: $t) -> Self {
-                SessionCounts {
-                    total: c.total,
-                    resumable: c.resumable,
-                    latest_session_id: c.latest_session_id,
-                    latest_session_title: c.latest_session_title,
-                    last_activity_at: c.last_activity_at,
-                    provider_project_id: None,
-                }
-            }
-        }
-    };
-}
-session_counts_from!(claude::SessionCounts);
-session_counts_from!(codex::SessionCounts);
-session_counts_from!(pi::SessionCounts);
-session_counts_from!(hermes::SessionCounts);
-
-impl From<opencode::SessionCounts> for SessionCounts {
-    fn from(c: opencode::SessionCounts) -> Self {
-        SessionCounts {
-            total: c.total,
-            resumable: c.resumable,
-            latest_session_id: c.latest_session_id,
-            latest_session_title: c.latest_session_title,
-            last_activity_at: c.last_activity_at,
-            provider_project_id: c.provider_project_id,
-        }
-    }
 }
 
 // ---------------------------------------------------------------------------
@@ -448,20 +395,21 @@ pub(crate) trait AgentActor: Sync {
         false
     }
 
-    fn cli_available(&self, _workdir: &Path) -> bool {
+    /// First launch program found on PATH. The single availability probe:
+    /// `cli_available`, version probing, and the installed list all key on it.
+    fn resolved_program(&self) -> Option<&'static str> {
         self.programs()
-            .iter()
-            .any(|program| utils::command_on_path(program))
-    }
-
-    fn cli_version_summary(&self) -> AgentCliSummary {
-        // Probe the first program on PATH (matches `cli_available`) so fallbacks work.
-        let Some(program) = self
-            .programs()
             .iter()
             .copied()
             .find(|program| utils::command_on_path(program))
-        else {
+    }
+
+    fn cli_available(&self, _workdir: &Path) -> bool {
+        self.resolved_program().is_some()
+    }
+
+    fn cli_version_summary(&self) -> AgentCliSummary {
+        let Some(program) = self.resolved_program() else {
             return AgentCliSummary {
                 available: false,
                 version: None,

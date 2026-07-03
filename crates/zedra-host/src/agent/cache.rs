@@ -150,17 +150,32 @@ impl AgentCache {
         let installed = agent::scan_installed_agents();
         let agents = agent::scan_agent_list(workdir);
         let limit = agent::default_agent_session_limit() as u32;
+        // Only detail-bearing agents expose session lists; detect-only actors
+        // always scan empty and are served lazily on demand instead.
         let mut sessions = HashMap::new();
-        for actor in agent::actors() {
-            let slug = actor.slug().to_string();
-            sessions.insert(
-                slug.clone(),
-                CachedSessions {
-                    limit,
-                    result: agent::scan_agent_sessions(&slug, workdir, limit),
-                },
-            );
-        }
+        std::thread::scope(|scope| {
+            let handles: Vec<_> = agent::actors()
+                .iter()
+                .filter(|actor| actor.shows_detail())
+                .map(|actor| {
+                    let slug = actor.slug();
+                    (
+                        slug,
+                        scope.spawn(move || agent::scan_agent_sessions(slug, workdir, limit)),
+                    )
+                })
+                .collect();
+            for (slug, handle) in handles {
+                match handle.join() {
+                    Ok(result) => {
+                        sessions.insert(slug.to_string(), CachedSessions { limit, result });
+                    }
+                    Err(_) => {
+                        tracing::warn!(agent = slug, "agent session preload panicked");
+                    }
+                }
+            }
+        });
 
         let mut inner = self.inner.blocking_lock();
         inner.workdir = Some(workdir.to_path_buf());
@@ -311,27 +326,6 @@ impl AgentCache {
         agent::apply_cached_account_usage(&mut result.agents, &usage);
         agent::apply_cached_account_plans(&mut result.agents, &plans);
         result
-    }
-
-    async fn cached_agent_summary(
-        self: &Arc<Self>,
-        slug: &str,
-        _session: Option<&Arc<ServerSession>>,
-    ) -> Option<AgentSummary> {
-        let (mut agents, versions, usage, plans) = {
-            let inner = self.inner.lock().await;
-            let agents = inner.agents.as_ref()?.agents.clone();
-            (
-                agents,
-                inner.cli_versions.clone(),
-                inner.account_usage.clone(),
-                inner.account_plans.clone(),
-            )
-        };
-        agent::apply_cached_cli_versions(&mut agents, &versions);
-        agent::apply_cached_account_usage(&mut agents, &usage);
-        agent::apply_cached_account_plans(&mut agents, &plans);
-        agents.into_iter().find(|agent| agent.slug == slug)
     }
 
     async fn request_version_refresh(self: &Arc<Self>, session: Option<Arc<ServerSession>>) {
@@ -511,11 +505,11 @@ impl AgentCache {
     }
 
     async fn push_agent_info_changed(self: &Arc<Self>, session: &Arc<ServerSession>) {
-        for actor in agent::actors() {
-            let slug = actor.slug();
-            let Some(info) = self.cached_agent_summary(slug, Some(session)).await else {
-                continue;
-            };
+        // Merge the cached list once and push every summary from it, rather
+        // than re-merging the whole list per agent.
+        let list = self.agent_list_result(Some(session)).await;
+        for info in list.agents {
+            let slug = info.slug.clone();
             if session
                 .push_event(HostEvent::AgentInfoChanged { info })
                 .await
@@ -524,7 +518,7 @@ impl AgentCache {
             }
             tracing::debug!(
                 session_id = %session.id,
-                agent = slug,
+                agent = %slug,
                 "AgentInfoChanged dropped (no subscriber or channel full)"
             );
         }
