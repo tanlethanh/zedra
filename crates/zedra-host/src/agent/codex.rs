@@ -411,15 +411,16 @@ impl CodexActor {
         let week_start = (Utc::now() - chrono::Duration::days(7))
             .format("%Y-%m-%d")
             .to_string();
-        let week_ts = chrono::NaiveDate::parse_from_str(&week_start, "%Y-%m-%d")
+        let week_ts_ms = chrono::NaiveDate::parse_from_str(&week_start, "%Y-%m-%d")
             .ok()?
             .and_hms_opt(0, 0, 0)?
             .and_utc()
-            .timestamp();
+            .timestamp_millis();
+        // `created_at` is seconds; use `created_at_ms` like the session scan.
         let query = format!(
             "SELECT \
             (SELECT COUNT(*) FROM threads) AS total, \
-            (SELECT COUNT(*) FROM threads WHERE created_at/1000 >= {week_ts}) AS week;"
+            (SELECT COUNT(*) FROM threads WHERE created_at_ms >= {week_ts_ms}) AS week;"
         );
         let bytes = sqlite_readonly::query_json(&db_path, &query).ok()?;
         let rows: Vec<Value> = serde_json::from_slice(&bytes).ok()?;
