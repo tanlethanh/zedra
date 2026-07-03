@@ -121,6 +121,7 @@ mod tests {
         assert_eq!(detect("hermes"), Some("hermes"));
         assert_eq!(detect("hermes-agent"), Some("hermes"));
         assert_eq!(detect("junie"), Some("junie"));
+        // Kilo Code's CLI installs as bare `kilo` (`~/.kilo/bin/kilo`).
         assert_eq!(detect("kilo"), Some("kilocode"));
         assert_eq!(detect("kilo-code"), Some("kilocode"));
         assert_eq!(detect("kilocode"), Some("kilocode"));
