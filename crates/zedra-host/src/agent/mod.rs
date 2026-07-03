@@ -288,7 +288,7 @@ pub fn is_global(slug: &str) -> bool {
     actor(slug).is_some_and(AgentActor::is_global)
 }
 
-pub fn actor(raw: &str) -> Option<&'static dyn AgentActor> {
+pub(crate) fn actor(raw: &str) -> Option<&'static dyn AgentActor> {
     let slug = raw.trim().to_ascii_lowercase();
     actors()
         .iter()
@@ -405,7 +405,7 @@ pub(crate) struct ScanCtx<'a> {
     pub(crate) cli: &'a AgentCliSummary,
 }
 
-pub trait AgentActor: Sync {
+pub(crate) trait AgentActor: Sync {
     /// Stable cross-process identity. This is the only agent identifier sent
     /// over RPC, so adding an actor never changes postcard enum layout.
     fn slug(&self) -> &'static str;
@@ -633,7 +633,7 @@ static ACTORS: [&dyn AgentActor; 19] = [
     &zencoder::ZencoderActor,
 ];
 
-pub fn actors() -> &'static [&'static dyn AgentActor] {
+pub(crate) fn actors() -> &'static [&'static dyn AgentActor] {
     &ACTORS
 }
 
