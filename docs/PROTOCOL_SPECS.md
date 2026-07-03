@@ -425,7 +425,7 @@ CLI `--version` probes are slow and cached separately from the synchronous agent
 
 Current host event variants:
 
-- `TerminalCreated { id, launch_cmd }`
+- `TerminalCreated { id, launch_cmd, agent_slug }`
 - `GitChanged`
 - `FsChanged { path }`
 - `AgentInfoChanged { info }`
@@ -433,7 +433,7 @@ Current host event variants:
 
 Client rules:
 
-- `TerminalCreated`: attach/open terminal view if relevant.
+- `TerminalCreated`: attach/open terminal view if relevant. Seed the terminal's agent identity from `agent_slug` (`None` for a plain shell); a spawned launch command emits no command-line OSC, so this is the only identity signal until a later `TerminalAgentChanged`.
 - `GitChanged`: invalidate cached git state and refresh when appropriate.
 - `FsChanged { path }`: invalidate cached file tree for the watched path and reload affected expanded nodes.
 - `AgentInfoChanged`: replace cached `AgentSummary` for `info.slug`. One event per managed agent per version refresh. Requires an active `Subscribe` stream.

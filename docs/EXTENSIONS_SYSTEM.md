@@ -69,7 +69,7 @@ Most agents should be **manifest-only**. Adding an agent then means shipping a J
 
 ### Sketch
 
-```
+```text
 Host                          Client (app)
 ─────                         ────────────
 agent registry                manifest cache (by hash)
