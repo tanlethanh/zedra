@@ -10,6 +10,7 @@ Mobile remote editor for iOS and Android. Primary platform is iOS (`gpui_ios` + 
 - For normal feature work, prefer the smallest diff that fits the current design.
 - If the current structure is blocking quality, propose the refactor and wait for approval before doing broader cleanup.
 - Keep code concise, readable, and modular. Prefer clarifying code over adding comments.
+- Keep code comments to 1 line; allow up to 3 lines only for a genuinely complex or confusing part. Same rule for doc comments.
 - When fixing an edge case or an important regression-prone path, add a minimal code comment at the relevant block explaining the invariant or reason for the guard.
 - Prioritize correctness and clarity over cleverness or speed unless performance is the explicit problem.
 - Avoid panic-prone shortcuts such as unchecked indexing or `unwrap()` in normal code paths. Propagate or handle errors instead of discarding fallible results.
