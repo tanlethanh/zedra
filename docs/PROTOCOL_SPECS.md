@@ -255,7 +255,9 @@ Types that use non-string status fields or enum variants instead:
 - `path` is the workspace-relative directory to search from; clients usually send `"."`.
 - `query` fuzzy-matches file and directory paths case-insensitively. File contents are never read.
 - The host walks recursively with gitignore/global ignore support, does not follow symlink directories, and skips common generated directories such as `.git`, `node_modules`, `target`, `dist`, and `build`.
-- Each `FsSearchEntry` carries `rel_path` (search-root-relative) and `match_indices`: the host matcher's matched character positions into `rel_path`, sorted and deduplicated. Clients highlight using these indices rather than re-running a separate matcher.
+- Linked git worktrees nested under the search root (`git worktree list --porcelain`) are walked as additional roots, so their files are found even when the worktree directory itself is gitignored. Worktrees outside the root are ignored; entries are never reported twice.
+- Each `FsSearchEntry` carries `rel_path` and `match_indices`: the host matcher's matched character positions into `rel_path`, sorted and deduplicated. Clients highlight using these indices rather than re-running a separate matcher.
+- `rel_path` is relative to the entry's owning root: the innermost containing worktree, or the search root. `worktree` labels the owning worktree — its checked-out branch, or directory name when detached — and is `None` for main-root entries; clients render it to disambiguate identical relative paths.
 - `limit` is clamped to `FS_SEARCH_MAX_LIMIT`; `0` means `FS_SEARCH_DEFAULT_LIMIT`.
 - `truncated = true` means the result cap or visited-entry cap was hit before the host could prove there were no more matches.
 
@@ -594,6 +596,18 @@ Any protocol-layer change must include all applicable steps:
 ---
 
 ## 11) Protocol Changelog
+
+### 2026-07-02
+
+- `FsSearch` walks linked git worktrees nested under the search root as
+  additional roots, deduplicated against the main walk.
+- Appended `worktree: Option<String>` to `FsSearchEntry`: the owning worktree's
+  checked-out branch (directory name when detached), `None` for main-root
+  entries; `rel_path` for worktree hits is relative to that worktree.
+- **Temporary same-commit constraint:** the appended field changes `zedra/rpc/3`
+  decoding in place (§2.4). The ALPN bump to `zedra/rpc/4` plus the §7.4 frozen
+  `proto_v3.rs` land in a follow-up PR that must merge before the next release;
+  until then host and client must be built from the same commit.
 
 ### 2026-06-20
 

@@ -1465,6 +1465,27 @@ id in production). The trailing shows the aggregate `done/total` rollup.
 8. Confirm the old inline search bar no longer appears at the top of the file
    explorer list.
 
+### Worktree results
+
+1. In the workspace repo on the host, create a linked worktree under a
+   gitignored directory:
+
+   ```sh
+   mkdir -p .claude/worktrees
+   git worktree add .claude/worktrees/wt1
+   ```
+
+2. Search for a file that exists in the repo (so both the main checkout and the
+   worktree contain it, e.g. `README.md`).
+3. Expected: the worktree copy appears once with its path relative to the
+   worktree, plus a third muted line under the path showing a branch icon and
+   the worktree's branch name (`wt1` for the command above); the main-checkout
+   copy has no branch line and stays two lines tall. Long names, paths, and
+   branch labels truncate to one line each.
+4. Search for a file that exists only in the worktree and confirm it is found
+   even though `.claude/` is gitignored; tapping it opens the worktree file.
+5. Clean up with `git worktree remove .claude/worktrees/wt1`.
+
 ## Delta Sign-In and Notification Channel (iOS and Android)
 
 ### Google sign-in (Android)
