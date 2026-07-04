@@ -21,7 +21,7 @@ bun run build && bun run seo:audit
 | Indexed pages (`site:zedra.dev`) | Google | All sitemap URLs |
 | GSC impressions / clicks per week | Search Console | Registered + trending up |
 | Listicle / directory mentions | Manual (see outreach list) | ≥ 2 |
-| App Store ratings count | App Store Connect | ≥ 10 |
+| App Store ratings count (US) | App Store Connect | ≥ 10 |
 | App Store search impressions | App Store Connect | Baseline recorded |
 | GitHub stars | github.com/tanlethanh/zedra | Trend only, no target |
 
@@ -29,8 +29,10 @@ Position convention: record the ordinal of the first zedra.dev result on Google 
 
 ## Log
 
-| Date | claude code from phone | coding agent from iphone | best ios app | zedra app | Indexed | GSC clicks/wk | Mentions | AS ratings | Stars |
+| Date | claude code from phone | coding agent from iphone | best ios app | zedra app | Indexed | GSC clicks/wk | Mentions | AS ratings (US) | Stars |
 |------|-----------------------|--------------------------|--------------|-----------|---------|---------------|----------|------------|-------|
 | 2026-07-04 | — | — | — | 1 | n/a (pages not deployed) | n/a (GSC not registered) | 0 | 0 | — |
 
 Baseline notes (2026-07-04): intent SERPs are held by Anthropic's Remote Control docs, competitor listicles (tacticremote.com, getmoshi.app), and how-to guides. `zedra app`-shaped brand+category queries already resolve to zedra.dev #1. GSC registration and sitemap submission are the first actions after deploy — without them the GSC column stays empty.
+
+App Store ratings are per-storefront; track US because the target queries and competitor listings live there. At baseline the VN storefront has 2 ratings (5.0 average), the US storefront has zero. Listing at baseline: name "Zedra - Code from anywhere", subtitle "Remote control AI workspace" — proposed keyword-bearing replacements are in `OPTIMIZED_CONTENT.md` backlog item 1.

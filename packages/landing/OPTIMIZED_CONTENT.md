@@ -68,7 +68,11 @@ Competitor facts learned:
 
 ## Backlog (highest leverage first)
 
-1. **ASO.** App Store subtitle is "Code from anywhere" — zero search keywords. Add a keyword-bearing subtitle, fill the 100-char keyword field (claude, codex, opencode, terminal, agent, remote, git), and add an in-app rating prompt; the listing has 0 ratings and does not rank for "claude code remote". Urgent given the duplicate-name apps above.
+1. **ASO.** Verified 2026-07-04: name "Zedra - Code from anywhere" (26/30), subtitle "Remote control AI workspace" (27/30). Indexed terms are zedra/code/anywhere/remote/control/AI/workspace — no claude, codex, agent, or terminal, while competitors pack them into the *name* ("Omnara: Claude & Codex Mobile", "Happy: Codex & Claude Code App"), so that precedent passes App Review. Ratings are per-storefront: VN has 2 × 5.0, US — the market the target queries live in — has zero. Proposed changes in App Store Connect:
+   - Name: `Zedra: AI Coding Agent Remote` (29/30 — adds coding, agent, remote).
+   - Subtitle: `Claude Code, Codex & terminal` (29/30 — adds claude, codex, terminal).
+   - Keyword field (96/100, no repeats of name/subtitle words): `opencode,gemini,git,ssh,cli,ide,editor,mobile,dev,shell,tmux,mosh,diff,vibe,pair,phone,workspace`.
+   - In-app rating prompt (`SKStoreReviewController`) after a successful session — US ratings count is the biggest ranking drag.
 2. **Directory listings (free backlinks, no gatekeeper).** Submit Zedra to AlternativeTo (its "Happy Coder Alternatives" page ranks) and launch on Product Hunt (its "Claude Code Remote Control alternatives" page ranks). Both are self-serve.
 3. **Listicle outreach.** Ask for inclusion in the articles that already rank: tacticremote.com (`@tacticremote`), getmoshi.app (`@odd_joel`), zilliz.com, sealos.io, tonydehnke.com, agentsroom.dev.
 4. **How-to guide content.** Intent SERPs reward guides over product pages. Add a docs/blog guide per agent ("How to run Claude Code from your phone") that the `/claude-code` page links to.
