@@ -113,6 +113,78 @@ const socialLinks = [
 
 const demoVideo = "/zedra-demo-17-06.mp4";
 
+const supportedAgents = [
+  { name: "Claude Code", href: "/claude-code" },
+  { name: "Codex", href: "/codex" },
+  { name: "OpenCode", href: "/opencode" },
+  { name: "Pi" },
+  { name: "Hermes" },
+];
+
+const features = [
+  {
+    title: "Remote terminal",
+    body: "Run Claude Code, Codex, OpenCode, or any CLI in a real terminal. Send input, scroll history, answer approval prompts.",
+  },
+  {
+    title: "Code editor",
+    body: "Browse the repo and read what the agent changed, with GPU-accelerated rendering built on Zed's GPUI.",
+  },
+  {
+    title: "Git view",
+    body: "Review staged and unstaged diffs from your phone before anything lands.",
+  },
+  {
+    title: "Markdown preview",
+    body: "Read plans, specs, and agent reports rendered — not as raw text in a terminal.",
+  },
+  {
+    title: "Notifications",
+    body: "Agent hooks push to your phone when a run finishes or an agent is waiting for approval.",
+  },
+  {
+    title: "Workspaces",
+    body: "Each project directory is its own workspace. Switch projects without touching the desk.",
+  },
+];
+
+const faqItems = [
+  {
+    q: "Can I control Claude Code from my iPhone?",
+    a: "Yes. Zedra runs Claude Code in a real terminal on your machine and mirrors it to your phone: answer permission prompts, send follow-ups, and get a push notification when Claude is waiting. See the Claude Code setup at zedra.dev/claude-code.",
+  },
+  {
+    q: "Which coding agents does Zedra support?",
+    a: "Claude Code, Codex, OpenCode, Pi, and Hermes have first-class hooks via `zedra setup`. Beyond that, anything that runs in a terminal runs in Zedra.",
+  },
+  {
+    q: "Do I need a VPN or port forwarding?",
+    a: "No. Pair once by scanning a QR code. Phone and desktop connect directly over QUIC/UDP (Iroh); when a direct path is blocked, an encrypted relay forwards packets.",
+  },
+  {
+    q: "Is my code sent to a cloud server?",
+    a: "No. Your code and agents stay on your machine. The tunnel is end-to-end encrypted with TLS 1.3; relays only forward encrypted packets they cannot read.",
+  },
+  {
+    q: "Is Zedra free?",
+    a: "Yes. Zedra is free and open source under the MIT license.",
+  },
+  {
+    q: "Does Zedra work on Android?",
+    a: "Yes, in closed beta. Join through the Google Group linked above; iOS is on the App Store today.",
+  },
+];
+
+const faqSchema = {
+  "@context": "https://schema.org",
+  "@type": "FAQPage",
+  mainEntity: faqItems.map((item) => ({
+    "@type": "Question",
+    name: item.q,
+    acceptedAnswer: { "@type": "Answer", text: item.a.replace(/`/g, "") },
+  })),
+};
+
 const pageTitle = "Zedra — Remote control for AI coding agents";
 const pageDescription =
   "Zedra is a remote control for AI coding agents with terminal, editor, markdown, and git. Pair by QR for a direct, secure tunnel. No VPN or port forwarding.";
@@ -167,8 +239,14 @@ const canonicalUrl = "https://zedra.dev/";
         operatingSystem: "iOS, Android",
         offers: { "@type": "Offer", price: "0", priceCurrency: "USD" },
         author: { "@type": "Organization", name: "Zedra", url: canonicalUrl },
+        sameAs: [
+          "https://github.com/tanlethanh/zedra",
+          "https://x.com/zedradev",
+          "https://apps.apple.com/vn/app/zedra-code-from-anywhere/id6760534630",
+        ],
       })}
     />
+    <script type="application/ld+json" set:html={JSON.stringify(faqSchema)} />
     <style>
       @import url("https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500;600&family=Lora:wght@400&display=swap");
 
@@ -204,8 +282,8 @@ const canonicalUrl = "https://zedra.dev/";
         max-width: 1280px;
         margin: 0 auto;
         min-height: calc(100vh - 32px);
-        display: grid;
-        grid-template-rows: 1fr auto;
+        display: flex;
+        flex-direction: column;
         gap: 32px;
       }
 
@@ -236,6 +314,226 @@ const canonicalUrl = "https://zedra.dev/";
         grid-template-columns: minmax(0, 1.05fr) minmax(360px, 0.95fr);
         gap: 32px;
         align-items: stretch;
+        min-height: calc(100vh - 96px);
+      }
+
+      /* --- content sections below the hero ---
+         Idiom: hairline rules + whitespace, no filled cards. Section
+         markers read as terminal comments; h2 uses the logo serif. */
+
+      .section {
+        display: grid;
+        gap: 20px;
+        padding: 56px 0 24px;
+        border-top: 1px solid var(--border);
+        max-width: 980px;
+        width: 100%;
+        margin: 0 auto;
+      }
+
+      .section-label {
+        margin: 0;
+        color: var(--muted);
+        font-size: 13px;
+      }
+
+      .section-label::before {
+        content: "# ";
+      }
+
+      .section h2 {
+        margin: 0;
+        font-family: "Lora", Georgia, serif;
+        font-weight: 400;
+        font-size: 30px;
+        letter-spacing: 0.01em;
+      }
+
+      .section > p {
+        margin: 0;
+        color: var(--muted);
+        font-size: 15px;
+        line-height: 1.75;
+        max-width: 640px;
+      }
+
+      .section a {
+        color: var(--text);
+        text-decoration: underline;
+        text-underline-offset: 3px;
+        text-decoration-color: var(--muted);
+      }
+
+      .section a:hover {
+        text-decoration-color: var(--text);
+      }
+
+      .agents-row {
+        display: flex;
+        flex-wrap: wrap;
+        column-gap: 8px;
+        row-gap: 6px;
+        margin: 0;
+        padding: 0;
+        list-style: none;
+        font-size: 15px;
+      }
+
+      .agents-row li + li::before {
+        content: "/";
+        color: var(--muted);
+        margin-right: 8px;
+      }
+
+      .agents-row a {
+        text-decoration: none;
+        color: var(--text);
+        border-bottom: 1px solid var(--border-strong);
+        padding-bottom: 1px;
+      }
+
+      .agents-row a:hover {
+        border-bottom-color: var(--text);
+      }
+
+      .agents-row .agent-plain {
+        color: var(--muted);
+      }
+
+      .feature-list {
+        display: grid;
+      }
+
+      .feature-row {
+        display: grid;
+        grid-template-columns: 220px 1fr;
+        gap: 24px;
+        padding: 14px 0;
+        border-top: 1px solid var(--border);
+      }
+
+      .feature-row:first-child {
+        border-top: none;
+        padding-top: 0;
+      }
+
+      .feature-row h3 {
+        margin: 0;
+        font-size: 14px;
+        font-weight: 500;
+      }
+
+      .feature-row p {
+        margin: 0;
+        color: var(--muted);
+        font-size: 14px;
+        line-height: 1.7;
+        max-width: 560px;
+      }
+
+      .steps {
+        display: grid;
+        grid-template-columns: repeat(3, 1fr);
+        gap: 32px;
+        counter-reset: step;
+      }
+
+      .step {
+        display: grid;
+        gap: 12px;
+        align-content: start;
+      }
+
+      .step h3 {
+        margin: 0;
+        font-size: 14px;
+        font-weight: 500;
+        counter-increment: step;
+      }
+
+      .step h3::before {
+        content: "0" counter(step) " ";
+        color: var(--green);
+        margin-right: 4px;
+      }
+
+      .step p {
+        margin: 0;
+        color: var(--muted);
+        font-size: 13.5px;
+        line-height: 1.7;
+      }
+
+      .step pre {
+        margin: 0;
+        padding: 12px 14px;
+        border: 1px solid var(--border);
+        border-radius: 10px;
+        background: #111112;
+        font-size: 12.5px;
+        line-height: 1.6;
+        overflow-x: auto;
+      }
+
+      .faq-list {
+        display: grid;
+        max-width: 760px;
+      }
+
+      .faq-list details {
+        border-top: 1px solid var(--border);
+      }
+
+      .faq-list details:first-child {
+        border-top: none;
+      }
+
+      .faq-list summary {
+        cursor: pointer;
+        font-size: 14.5px;
+        padding: 14px 0;
+        list-style: none;
+        display: flex;
+        align-items: baseline;
+        gap: 12px;
+      }
+
+      .faq-list summary::-webkit-details-marker {
+        display: none;
+      }
+
+      .faq-list summary::before {
+        content: "+";
+        color: var(--muted);
+        flex-shrink: 0;
+      }
+
+      .faq-list details[open] summary::before {
+        content: "−";
+      }
+
+      .faq-list summary:hover {
+        color: var(--green);
+      }
+
+      .faq-list p {
+        margin: 0;
+        padding: 0 0 16px 25px;
+        color: var(--muted);
+        font-size: 14px;
+        line-height: 1.7;
+        max-width: 620px;
+      }
+
+      @media (max-width: 900px) {
+        .steps {
+          grid-template-columns: 1fr;
+        }
+
+        .feature-row {
+          grid-template-columns: 1fr;
+          gap: 6px;
+        }
       }
 
       .left {
@@ -595,6 +893,14 @@ const canonicalUrl = "https://zedra.dev/";
           gap: 24px;
         }
 
+        .hero {
+          min-height: auto;
+        }
+
+        .section {
+          padding-top: 32px;
+        }
+
         .install-card {
           height: auto;
           min-height: 180px;
@@ -852,6 +1158,97 @@ const canonicalUrl = "https://zedra.dev/";
           </div>
         </aside>
       </main>
+
+      <section class="section" aria-labelledby="agents-heading">
+        <p class="section-label">agents</p>
+        <h2 id="agents-heading">Works with the agents you already run</h2>
+        <p>
+          Your agents run on your machine, with your existing logins and plans. One
+          <code>zedra setup</code> installs hooks for every detected agent — or anything else that
+          runs in a terminal.
+        </p>
+        <ul class="agents-row">
+          {
+            supportedAgents.map((agent) => (
+              <li>
+                {agent.href ? (
+                  <a href={agent.href}>{agent.name}</a>
+                ) : (
+                  <span class="agent-plain">{agent.name}</span>
+                )}
+              </li>
+            ))
+          }
+        </ul>
+      </section>
+
+      <section class="section" aria-labelledby="features-heading">
+        <p class="section-label">workspace</p>
+        <h2 id="features-heading">A developer workspace, not a chat window</h2>
+        <p>
+          Steering an agent is half the job. The other half is reading what it did. Zedra puts
+          both on your phone.
+        </p>
+        <div class="feature-list">
+          {
+            features.map((feature) => (
+              <div class="feature-row">
+                <h3>{feature.title}</h3>
+                <p>{feature.body}</p>
+              </div>
+            ))
+          }
+        </div>
+      </section>
+
+      <section class="section" aria-labelledby="how-heading">
+        <p class="section-label">how-it-works</p>
+        <h2 id="how-heading">How it works</h2>
+        <div class="steps">
+          <div class="step">
+            <h3>Install the daemon</h3>
+            <pre><code>curl -fsSL zedra.dev/install.sh | sh
+zedra setup
+zedra start --detach</code></pre>
+            <p>Run it in each project directory you want to reach; each is its own workspace.</p>
+          </div>
+          <div class="step">
+            <h3>Pair by QR</h3>
+            <p>
+              Scan once per workspace. The QR carries your machine's public key and a one-time
+              secret — not your network address — so the connection survives IP changes.
+            </p>
+          </div>
+          <div class="step">
+            <h3>Code from anywhere</h3>
+            <p>
+              Phone and desktop connect directly over QUIC/UDP (Iroh) with TLS 1.3 end-to-end
+              encryption. When a direct path is blocked, an encrypted relay forwards packets. No
+              VPN, no port forwarding, no cloud copy of your code.
+            </p>
+          </div>
+        </div>
+        <p>
+          Full walkthrough in the <a href="/docs/installation/">installation guide</a>, or see how
+          Zedra <a href="/compare">compares to Happy, Omnara, and SSH + tmux</a>.
+        </p>
+      </section>
+
+      <section class="section" aria-labelledby="faq-heading">
+        <p class="section-label">faq</p>
+        <h2 id="faq-heading">FAQ</h2>
+        <div class="faq-list">
+          {
+            faqItems.map((item) => (
+              <details>
+                <summary>{item.q}</summary>
+                <p set:html={item.a.replace(/`([^`]+)`/g, "<code>$1</code>")} />
+              </details>
+            ))
+          }
+        </div>
+      </section>
+
       <footer>
         <div class="social-links" aria-label="Zedra social links">
           {
@@ -872,6 +1269,9 @@ const canonicalUrl = "https://zedra.dev/";
 
         <nav aria-label="Site links">
           <a href="/docs">Docs</a>
+          <a href="/claude-code">Claude Code</a>
+          <a href="/codex">Codex</a>
+          <a href="/compare">Compare</a>
           <a href="/privacy">Privacy</a>
           <a href="/support">Support</a>
         </nav>

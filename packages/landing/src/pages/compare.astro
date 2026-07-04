@@ -1,0 +1,180 @@
+---
+// Comparison page targeting "best iOS app for AI coding agents"-shaped queries.
+// Keep competitor claims factual and current; recheck them when editing.
+import MarketingLayout from "../layouts/MarketingLayout.astro";
+
+const title = "Zedra vs Happy vs Omnara vs SSH + tmux — mobile clients for AI coding agents";
+const description =
+  "How Zedra compares to Happy, Omnara, and a DIY SSH + tmux setup for controlling Claude Code, Codex, and other AI coding agents from your phone.";
+
+const rows = [
+  {
+    label: "Approach",
+    zedra: "Mobile dev workspace: terminal + editor + git + markdown",
+    happy: "Claude Code client with synced sessions",
+    omnara: "Agent command center with session dashboard",
+    ssh: "Plain terminal over SSH/mosh",
+  },
+  {
+    label: "Agents",
+    zedra: "Any CLI agent — Claude Code, Codex, OpenCode, Pi, Hermes",
+    happy: "Claude Code",
+    omnara: "Claude Code, Codex, and more",
+    ssh: "Any CLI agent",
+  },
+  {
+    label: "Connection",
+    zedra: "Direct P2P over QUIC (Iroh), TLS 1.3 E2E, encrypted relay fallback",
+    happy: "Relay server, end-to-end encrypted",
+    omnara: "Cloud backend",
+    ssh: "Your VPN / Tailscale / open port",
+  },
+  {
+    label: "Code review on phone",
+    zedra: "File browser, code editor, git diff view, markdown preview",
+    happy: "Terminal output",
+    omnara: "Session views, git worktrees",
+    ssh: "Terminal only (vim, git CLI)",
+  },
+  {
+    label: "Notifications",
+    zedra: "Push on approval prompts and finished runs (agent hooks)",
+    happy: "Push notifications",
+    omnara: "Push notifications",
+    ssh: "None built in",
+  },
+  {
+    label: "Rendering",
+    zedra: "GPU-accelerated native app (Zed's GPUI)",
+    happy: "React Native app",
+    omnara: "Native app + web",
+    ssh: "Depends on terminal app",
+  },
+  {
+    label: "Setup",
+    zedra: "Install script + QR scan; no VPN or port forwarding",
+    happy: "npm install + QR scan",
+    omnara: "CLI install + account",
+    ssh: "Keys, VPN/tailnet, tmux config",
+  },
+  {
+    label: "Price",
+    zedra: "Free, MIT-licensed",
+    happy: "Free, MIT-licensed",
+    omnara: "Free up to 10 sessions/month, then $9/month",
+    ssh: "Free",
+  },
+];
+
+const faq = [
+  {
+    q: "What is the best way to run Claude Code from a phone?",
+    a: "It depends on what you need. If you only steer one Claude Code session, Claude's built-in Remote Control or Happy work well. If you also want to browse files, read diffs, and run several different agents (Claude Code, Codex, OpenCode) in one place, Zedra gives you a full workspace instead of a single session view.",
+  },
+  {
+    q: "Why not just use SSH and tmux?",
+    a: "SSH + tmux works and stays fully in your control, but you assemble it yourself: VPN or tailnet, key management, tmux sessions, and a phone keyboard fighting a desktop TUI. Zedra keeps the agent on your machine with the same trust model, and adds pairing by QR, push notifications, and touch-native code review.",
+  },
+  {
+    q: "Does Zedra send my code to a cloud service?",
+    a: "No. Your code and agents stay on your machine. The phone connects over a direct P2P tunnel with TLS 1.3 end-to-end encryption; when a direct path is blocked, a relay forwards encrypted packets it cannot read.",
+  },
+];
+
+const faqSchema = {
+  "@context": "https://schema.org",
+  "@type": "FAQPage",
+  mainEntity: faq.map((item) => ({
+    "@type": "Question",
+    name: item.q,
+    acceptedAnswer: { "@type": "Answer", text: item.a },
+  })),
+};
+---
+
+<MarketingLayout title={title} description={description} path="/compare" jsonLd={[faqSchema]}>
+  <h1>Mobile clients for AI coding agents, compared</h1>
+  <p>
+    You can control coding agents from a phone several ways: a dedicated client like
+    <a href="https://happy.engineering" target="_blank" rel="noopener noreferrer">Happy</a>, a cloud
+    command center like
+    <a href="https://omnara.com" target="_blank" rel="noopener noreferrer">Omnara</a>, a DIY SSH +
+    tmux setup, or Zedra. They make different trade-offs. Here is an honest map.
+  </p>
+
+  <div class="mk-table-wrap">
+    <table class="mk-table">
+      <thead>
+        <tr>
+          <th></th>
+          <th>Zedra</th>
+          <th>Happy</th>
+          <th>Omnara</th>
+          <th>SSH + tmux</th>
+        </tr>
+      </thead>
+      <tbody>
+        {
+          rows.map((row) => (
+            <tr>
+              <td>{row.label}</td>
+              <td>{row.zedra}</td>
+              <td>{row.happy}</td>
+              <td>{row.omnara}</td>
+              <td>{row.ssh}</td>
+            </tr>
+          ))
+        }
+      </tbody>
+    </table>
+  </div>
+
+  <h2>When to pick which</h2>
+  <p>
+    <strong>Pick Happy</strong> if Claude Code is your only agent and you want the lightest possible
+    client for it — it is open source, free, and focused.
+  </p>
+  <p>
+    <strong>Pick Omnara</strong> if you want a hosted dashboard across devices and do not mind a
+    cloud backend and a subscription past the free tier.
+  </p>
+  <p>
+    <strong>Pick SSH + tmux</strong> if you already run a tailnet, live in the terminal, and want
+    zero new software on the phone beyond an SSH client.
+  </p>
+  <p>
+    <strong>Pick Zedra</strong> if you run more than one agent and want to do real work from the
+    phone: run <a href="/claude-code">Claude Code</a>, <a href="/codex">Codex</a>, or
+    <a href="/opencode">OpenCode</a> in a terminal, then read the code, review the git diff, and
+    check the plan — without a VPN, port forwarding, or your code touching a cloud server.
+  </p>
+
+  <h2>FAQ</h2>
+  <div class="mk-faq">
+    {
+      faq.map((item) => (
+        <details>
+          <summary>{item.q}</summary>
+          <p>{item.a}</p>
+        </details>
+      ))
+    }
+  </div>
+
+  <div class="mk-cta">
+    <a
+      class="mk-btn primary"
+      href="https://apps.apple.com/vn/app/zedra-code-from-anywhere/id6760534630"
+      target="_blank"
+      rel="noopener noreferrer">Get Zedra for iOS</a
+    >
+    <a class="mk-btn" href="/docs/installation/">Installation guide</a>
+  </div>
+
+  <p>
+    Comparison last checked July 2026. Spot something outdated?
+    <a href="https://github.com/tanlethanh/zedra/issues" target="_blank" rel="noopener noreferrer"
+      >Open an issue</a
+    >.
+  </p>
+</MarketingLayout>

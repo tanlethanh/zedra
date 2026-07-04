@@ -1,0 +1,116 @@
+---
+import { pages } from "../agent-pages";
+// Intent landing pages: /claude-code, /codex, /opencode.
+// One template, per-agent copy. Facts must match /docs/installation.
+import MarketingLayout from "../layouts/MarketingLayout.astro";
+
+export function getStaticPaths() {
+  return pages.map((page) => ({ params: { agent: page.slug } }));
+}
+
+const { agent } = Astro.params;
+const page = pages.find((p) => p.slug === agent);
+if (!page) {
+  throw new Error(`Unknown agent page: ${agent}`);
+}
+
+const siblings = pages.filter((p) => p.slug !== page.slug);
+
+const faqSchema = {
+  "@context": "https://schema.org",
+  "@type": "FAQPage",
+  mainEntity: page.faq.map((item) => ({
+    "@type": "Question",
+    name: item.q,
+    acceptedAnswer: { "@type": "Answer", text: item.a.replace(/`/g, "") },
+  })),
+};
+
+const appSchema = {
+  "@context": "https://schema.org",
+  "@type": "SoftwareApplication",
+  name: "Zedra",
+  description: page.description,
+  url: `https://zedra.dev/${page.slug}`,
+  applicationCategory: "DeveloperApplication",
+  operatingSystem: "iOS, Android",
+  offers: { "@type": "Offer", price: "0", priceCurrency: "USD" },
+};
+---
+
+<MarketingLayout
+  title={page.title}
+  description={page.description}
+  path={`/${page.slug}`}
+  jsonLd={[faqSchema, appSchema]}
+>
+  <h1>Run {page.name} from your phone</h1>
+  <p>{page.intro}</p>
+
+  <div class="mk-cta">
+    <a
+      class="mk-btn primary"
+      href="https://apps.apple.com/vn/app/zedra-code-from-anywhere/id6760534630"
+      target="_blank"
+      rel="noopener noreferrer">Get Zedra for iOS</a
+    >
+    <a
+      class="mk-btn"
+      href="https://groups.google.com/g/zedra-beta"
+      target="_blank"
+      rel="noopener noreferrer">Android beta</a
+    >
+  </div>
+
+  <h2>Set up in two minutes</h2>
+  <div class="mk-steps">
+    <div class="mk-step">
+      <h3>Install the Zedra daemon on your desktop</h3>
+      <pre class="mk-code">curl -fsSL zedra.dev/install.sh | sh</pre>
+    </div>
+    <div class="mk-step">
+      <h3>Hook up {page.name}</h3>
+      <pre
+        class="mk-code"><span class="c"># Installs the {page.name} hooks for connection and notifications</span>
+{page.setupCmd}</pre>
+      <p>{page.startNote} <code>{page.startCmd}</code>.</p>
+    </div>
+    <div class="mk-step">
+      <h3>Pair your phone</h3>
+      <p>
+        Open Zedra on your phone and scan the QR the daemon prints. Pairing is once per workspace;
+        the connection survives network changes after that. Full steps in the
+        <a href="/docs/installation/">installation guide</a>.
+      </p>
+    </div>
+  </div>
+
+  <h2>What you get on the phone</h2>
+  <ul>
+    <li>A real terminal running {page.name} — send input, scroll history, answer prompts.</li>
+    <li>File browser and code editor to read what the agent changed.</li>
+    <li>Git view for staged and unstaged diffs before you commit.</li>
+    <li>Markdown preview for plans, specs, and agent reports.</li>
+    <li>Push notifications when {page.name} finishes or needs approval.</li>
+  </ul>
+
+  <h2>FAQ</h2>
+  <div class="mk-faq">
+    {
+      page.faq.map((item) => (
+        <details>
+          <summary>{item.q}</summary>
+          <p set:html={item.a.replace(/`([^`]+)`/g, "<code>$1</code>")} />
+        </details>
+      ))
+    }
+  </div>
+
+  <h2>Works with your other agents too</h2>
+  <p>
+    The same workspace runs
+    {siblings.map((p) => <Fragment><a href={`/${p.slug}`}>{p.name}</a>, </Fragment>)}
+    Pi, Hermes, and any other CLI tool. See how Zedra
+    <a href="/compare">compares to Happy, Omnara, and SSH + tmux</a>.
+  </p>
+</MarketingLayout>
