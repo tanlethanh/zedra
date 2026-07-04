@@ -16,7 +16,7 @@ export const pages: AgentPage[] = [
     name: "Claude Code",
     title: "Run Claude Code from your phone — Zedra",
     description:
-      "Control Claude Code from your iPhone or Android phone with Zedra: a real terminal, code editor, git diffs, and push notifications over an end-to-end encrypted P2P tunnel. No VPN or port forwarding.",
+      "Control Claude Code from your iPhone or Android with Zedra: real terminal, code editor, git diffs, and push notifications over an encrypted P2P tunnel.",
     intro:
       "Claude Code keeps working after you leave your desk. Zedra connects your phone to the machine where Claude Code runs, in a real terminal — approve permission prompts, send follow-ups, and review the diff before anything lands.",
     setupCmd: "zedra setup claude",
@@ -50,7 +50,7 @@ export const pages: AgentPage[] = [
     name: "Codex",
     title: "Run Codex CLI from your phone — Zedra",
     description:
-      "Control OpenAI Codex CLI from your iPhone or Android phone with Zedra: a real terminal, code editor, git diffs, and push notifications over an end-to-end encrypted P2P tunnel. No VPN or port forwarding.",
+      "Control OpenAI Codex CLI from your iPhone or Android with Zedra: real terminal, code editor, git diffs, and push notifications over an encrypted P2P tunnel.",
     intro:
       "Codex keeps working after you leave your desk. Zedra connects your phone to the machine where Codex runs, in a real terminal — answer approval requests, steer the task, and review the diff before anything lands.",
     setupCmd: "zedra setup codex",
@@ -80,7 +80,7 @@ export const pages: AgentPage[] = [
     name: "OpenCode",
     title: "Run OpenCode from your phone — Zedra",
     description:
-      "Control OpenCode from your iPhone or Android phone with Zedra: a real terminal, code editor, git diffs, and push notifications over an end-to-end encrypted P2P tunnel. No VPN or port forwarding.",
+      "Control OpenCode from your iPhone or Android with Zedra: real terminal, code editor, git diffs, and push notifications over an encrypted P2P tunnel.",
     intro:
       "OpenCode keeps working after you leave your desk. Zedra connects your phone to the machine where OpenCode runs, in a real terminal — answer prompts, steer the task, and review the diff before anything lands.",
     setupCmd: "zedra setup opencode",

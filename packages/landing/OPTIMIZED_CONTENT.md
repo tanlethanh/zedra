@@ -35,6 +35,8 @@ All pages emit into `sitemap-index.xml` automatically via `@astrojs/sitemap`.
 
 ## Verify
 
+- **On-page audit**: `bun run build && bun run seo:audit` validates titles, descriptions, canonicals, structured data, and sitemap coverage on the built output. Must pass before deploying.
+- **Metrics log**: `METRICS.md` defines the tracked metrics, 90-day targets, and a monthly measurement log with the 2026-07-04 baseline.
 - **Google Search Console**: register `zedra.dev`, submit `https://zedra.dev/sitemap-index.xml`, watch query impressions weekly.
 - **App Store Connect**: search impressions, conversion, and the search-terms report.
 - **Monthly manual check** — Zedra should appear for:
