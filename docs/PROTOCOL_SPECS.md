@@ -603,6 +603,26 @@ Any protocol-layer change must include all applicable steps:
 
 ## 11) Protocol Changelog
 
+### 2026-07-05
+
+- Merged the 2026-07-02 `FsSearch` worktree change into the `zedra/rpc/4` line.
+  The frozen `proto_v3.rs` now defines its own `FsSearchResult`/`FsSearchEntry`
+  (pre-`worktree` shape) and drops the appended `worktree` field for `v3`
+  clients, closing the temporary same-commit constraint noted on 2026-07-02.
+
+### 2026-07-02
+
+- `FsSearch` walks linked git worktrees nested under the search root as
+  additional roots, deduplicated against the main walk.
+- Appended `worktree: Option<String>` to `FsSearchEntry`: the owning worktree's
+  checked-out branch (directory name when detached), `None` for main-root
+  entries; `rel_path` for worktree hits is relative to that worktree.
+- **Temporary same-commit constraint:** the appended field changes `zedra/rpc/3`
+  decoding in place (§2.4). The ALPN bump to `zedra/rpc/4` plus the §7.4 frozen
+  `proto_v3.rs` land in a follow-up PR that must merge before the next release;
+  until then host and client must be built from the same commit. *(Resolved on
+  2026-07-05.)*
+
 ### 2026-06-29
 
 - Bumped `ZEDRA_ALPN` to `zedra/rpc/4`. The slug-based agent rewrite (2026-06-24)

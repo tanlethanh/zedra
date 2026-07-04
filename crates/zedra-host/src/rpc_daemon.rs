@@ -600,6 +600,369 @@ mod file_search_tests {
         assert_eq!(result.entries.len(), 1);
         assert!(result.truncated);
     }
+
+    #[test]
+    fn file_search_discovers_git_worktrees_even_when_gitignored() {
+        let temp = tempfile::tempdir().unwrap();
+        let root = temp.path().canonicalize().unwrap();
+
+        // Init a real git repo so `git worktree add` works.
+        let init = std::process::Command::new("git")
+            .arg("-C")
+            .arg(&root)
+            .args(["init"])
+            .output()
+            .expect("git init failed");
+        assert!(
+            init.status.success(),
+            "git init: {}",
+            String::from_utf8_lossy(&init.stderr)
+        );
+
+        // Configure git identity (needed in CI environments without global config).
+        for (key, val) in [
+            ("user.name", "Test User"),
+            ("user.email", "test@example.com"),
+        ] {
+            let cfg = std::process::Command::new("git")
+                .arg("-C")
+                .arg(&root)
+                .args(["config", key, val])
+                .output()
+                .expect("git config failed");
+            assert!(cfg.status.success());
+        }
+
+        // Commit something so HEAD exists (worktree add needs a valid HEAD).
+        write(root.join("README.md"), "# hello").unwrap();
+        let add = std::process::Command::new("git")
+            .arg("-C")
+            .arg(&root)
+            .args(["add", "README.md"])
+            .output()
+            .expect("git add failed");
+        assert!(add.status.success());
+        let commit = std::process::Command::new("git")
+            .arg("-C")
+            .arg(&root)
+            .args(["commit", "-m", "init", "--no-gpg-sign"])
+            .output()
+            .expect("git commit failed");
+        assert!(
+            commit.status.success(),
+            "git commit: {}",
+            String::from_utf8_lossy(&commit.stderr)
+        );
+
+        // Gitignore the directory that will hold the worktree.
+        write(root.join(".gitignore"), ".claude/\n").unwrap();
+
+        // Add the gitignore to the index so the ignore rule is active.
+        let add_gi = std::process::Command::new("git")
+            .arg("-C")
+            .arg(&root)
+            .args(["add", ".gitignore"])
+            .output()
+            .expect("git add .gitignore failed");
+        assert!(add_gi.status.success());
+        let commit_gi = std::process::Command::new("git")
+            .arg("-C")
+            .arg(&root)
+            .args(["commit", "-m", "add gitignore", "--no-gpg-sign"])
+            .output()
+            .expect("git commit gitignore failed");
+        assert!(commit_gi.status.success());
+
+        // Create a worktree inside the gitignored path.
+        let wt_parent = root.join(".claude/worktrees");
+        create_dir_all(&wt_parent).unwrap();
+        let wt_path = wt_parent.join("wt");
+        let wt = std::process::Command::new("git")
+            .arg("-C")
+            .arg(&root)
+            .args([
+                "worktree",
+                "add",
+                "-b",
+                "feat-search",
+                wt_path.to_str().unwrap(),
+            ])
+            .output()
+            .expect("git worktree add failed");
+        assert!(
+            wt.status.success(),
+            "git worktree add: {}",
+            String::from_utf8_lossy(&wt.stderr)
+        );
+
+        // Write a uniquely-named file in the worktree.
+        write(wt_path.join("wt_unique_file.rs"), "// unique").unwrap();
+
+        let result = search_files(&root, "wt_unique", 10).unwrap();
+
+        let hit = result
+            .entries
+            .iter()
+            .find(|entry| entry.path.ends_with("wt_unique_file.rs"))
+            .expect("expected wt_unique_file.rs to be found in gitignored worktree");
+        assert!(hit.match_indices.windows(2).all(|w| w[0] < w[1]));
+        // `worktree` carries the branch name; `rel_path` is worktree-relative.
+        assert_eq!(hit.worktree.as_deref(), Some("feat-search"));
+        assert_eq!(hit.rel_path, "wt_unique_file.rs");
+    }
+
+    #[test]
+    fn file_search_ignores_worktrees_outside_root() {
+        use std::fs::{create_dir_all, write};
+        use tempfile::tempdir;
+
+        let tmp_dir = tempdir().unwrap();
+        let root = tmp_dir.path().join("repo");
+        create_dir_all(&root).unwrap();
+        let root = root.canonicalize().unwrap();
+
+        let init = std::process::Command::new("git")
+            .arg("-C")
+            .arg(&root)
+            .args(["init"])
+            .output()
+            .expect("git init failed");
+        assert!(init.status.success());
+
+        for (key, val) in [
+            ("user.name", "Test User"),
+            ("user.email", "test@example.com"),
+        ] {
+            let cfg = std::process::Command::new("git")
+                .arg("-C")
+                .arg(&root)
+                .args(["config", key, val])
+                .output()
+                .expect("git config failed");
+            assert!(cfg.status.success());
+        }
+
+        write(root.join("README.md"), "# hello").unwrap();
+        let add = std::process::Command::new("git")
+            .arg("-C")
+            .arg(&root)
+            .args(["add", "README.md"])
+            .output()
+            .expect("git add failed");
+        assert!(add.status.success());
+        let commit = std::process::Command::new("git")
+            .arg("-C")
+            .arg(&root)
+            .args(["commit", "-m", "init", "--no-gpg-sign"])
+            .output()
+            .expect("git commit failed");
+        assert!(commit.status.success());
+
+        // Create a worktree OUTSIDE the search root (sibling directory).
+        let outside_wt = tmp_dir.path().join("outside_wt");
+        create_dir_all(&outside_wt).unwrap();
+        let wt = std::process::Command::new("git")
+            .arg("-C")
+            .arg(&root)
+            .args(["worktree", "add", outside_wt.to_str().unwrap()])
+            .output()
+            .expect("git worktree add failed");
+        assert!(
+            wt.status.success(),
+            "git worktree add: {}",
+            String::from_utf8_lossy(&wt.stderr)
+        );
+
+        write(outside_wt.join("outside_secret.rs"), "// secret").unwrap();
+
+        let result = search_files(&root, "outside_secret", 10).unwrap();
+
+        assert!(
+            !result
+                .entries
+                .iter()
+                .any(|entry| entry.path.ends_with("outside_secret.rs")),
+            "files from a worktree outside root must NOT appear in search results"
+        );
+    }
+
+    #[test]
+    fn file_search_match_path_uses_longest_prefix_for_nested_worktrees() {
+        use std::fs::{create_dir_all, write};
+        use tempfile::tempdir;
+
+        let tmp_dir = tempdir().unwrap();
+        let root = tmp_dir.path().join("repo");
+        create_dir_all(&root).unwrap();
+        let root = root.canonicalize().unwrap();
+
+        let init = std::process::Command::new("git")
+            .arg("-C")
+            .arg(&root)
+            .args(["init"])
+            .output()
+            .expect("git init failed");
+        assert!(init.status.success());
+
+        for (key, val) in [
+            ("user.name", "Test User"),
+            ("user.email", "test@example.com"),
+        ] {
+            let cfg = std::process::Command::new("git")
+                .arg("-C")
+                .arg(&root)
+                .args(["config", key, val])
+                .output()
+                .expect("git config failed");
+            assert!(cfg.status.success());
+        }
+
+        write(root.join("README.md"), "# hello").unwrap();
+        let add = std::process::Command::new("git")
+            .arg("-C")
+            .arg(&root)
+            .args(["add", "README.md"])
+            .output()
+            .expect("git add failed");
+        assert!(add.status.success());
+        let commit = std::process::Command::new("git")
+            .arg("-C")
+            .arg(&root)
+            .args(["commit", "-m", "init", "--no-gpg-sign"])
+            .output()
+            .expect("git commit failed");
+        assert!(commit.status.success());
+
+        // Gitignore the worktree parent directory.
+        write(root.join(".gitignore"), "wt/\n").unwrap();
+        let add_gi = std::process::Command::new("git")
+            .arg("-C")
+            .arg(&root)
+            .args(["add", ".gitignore"])
+            .output()
+            .expect("git add .gitignore failed");
+        assert!(add_gi.status.success());
+        let commit_gi = std::process::Command::new("git")
+            .arg("-C")
+            .arg(&root)
+            .args(["commit", "-m", "add gitignore", "--no-gpg-sign"])
+            .output()
+            .expect("git commit gitignore failed");
+        assert!(commit_gi.status.success());
+
+        // Create a worktree nested under root.
+        let wt_parent = root.join("wt");
+        create_dir_all(&wt_parent).unwrap();
+        let wt_path = wt_parent.join("nested");
+        let wt = std::process::Command::new("git")
+            .arg("-C")
+            .arg(&root)
+            .args(["worktree", "add", wt_path.to_str().unwrap()])
+            .output()
+            .expect("git worktree add failed");
+        assert!(
+            wt.status.success(),
+            "git worktree add: {}",
+            String::from_utf8_lossy(&wt.stderr)
+        );
+
+        write(wt_path.join("nested_file.rs"), "// nested").unwrap();
+
+        let result = search_files(&root, "nested_file", 10).unwrap();
+
+        let hit = result
+            .entries
+            .iter()
+            .find(|entry| entry.path.ends_with("nested_file.rs"))
+            .expect("expected nested_file.rs to be found");
+
+        // match_path must be worktree-relative (just the file name), not root-relative
+        // (which would include the ignored "wt/nested/" prefix).
+        assert!(
+            !hit.rel_path.starts_with("wt/"),
+            "rel_path for a nested worktree file must NOT start with the ignored parent path; got: {}",
+            hit.rel_path
+        );
+        assert_eq!(hit.worktree.as_deref(), Some("nested"));
+    }
+
+    #[test]
+    fn file_search_does_not_duplicate_non_ignored_nested_worktree() {
+        use std::fs::{create_dir_all, write};
+        use tempfile::tempdir;
+
+        let tmp_dir = tempdir().unwrap();
+        let root = tmp_dir.path().join("repo");
+        create_dir_all(&root).unwrap();
+        let root = root.canonicalize().unwrap();
+
+        let init = std::process::Command::new("git")
+            .arg("-C")
+            .arg(&root)
+            .args(["init"])
+            .output()
+            .expect("git init failed");
+        assert!(init.status.success());
+
+        for (key, val) in [
+            ("user.name", "Test User"),
+            ("user.email", "test@example.com"),
+        ] {
+            let cfg = std::process::Command::new("git")
+                .arg("-C")
+                .arg(&root)
+                .args(["config", key, val])
+                .output()
+                .expect("git config failed");
+            assert!(cfg.status.success());
+        }
+
+        write(root.join("README.md"), "# hello").unwrap();
+        let add = std::process::Command::new("git")
+            .arg("-C")
+            .arg(&root)
+            .args(["add", "README.md"])
+            .output()
+            .expect("git add failed");
+        assert!(add.status.success());
+        let commit = std::process::Command::new("git")
+            .arg("-C")
+            .arg(&root)
+            .args(["commit", "-m", "init", "--no-gpg-sign"])
+            .output()
+            .expect("git commit failed");
+        assert!(commit.status.success());
+
+        // Non-gitignored nested worktree: reachable via the main walk AND its added root.
+        let wt_path = root.join("visible_wt");
+        let wt = std::process::Command::new("git")
+            .arg("-C")
+            .arg(&root)
+            .args(["worktree", "add", wt_path.to_str().unwrap()])
+            .output()
+            .expect("git worktree add failed");
+        assert!(
+            wt.status.success(),
+            "git worktree add: {}",
+            String::from_utf8_lossy(&wt.stderr)
+        );
+
+        write(wt_path.join("dup_probe_file.rs"), "// probe").unwrap();
+
+        let result = search_files(&root, "dup_probe", 10).unwrap();
+
+        let hits: Vec<_> = result
+            .entries
+            .iter()
+            .filter(|entry| entry.path.ends_with("dup_probe_file.rs"))
+            .collect();
+        assert_eq!(
+            hits.len(),
+            1,
+            "file in a nested worktree must appear exactly once"
+        );
+        assert_eq!(hits[0].worktree.as_deref(), Some("visible_wt"));
+    }
 }
 
 #[allow(unused)]
@@ -761,6 +1124,56 @@ fn fs_search_limit(limit: u32) -> usize {
     }) as usize
 }
 
+/// A linked git worktree nested under the search root.
+struct DiscoveredWorktree {
+    path: PathBuf,
+    label: String,
+}
+
+/// Worktrees nested under root, from `git worktree list --porcelain`; empty if git fails.
+fn discover_git_worktrees(root: &Path) -> Vec<DiscoveredWorktree> {
+    let output = match std::process::Command::new("git")
+        .arg("-C")
+        .arg(root)
+        .args(["worktree", "list", "--porcelain"])
+        .output()
+    {
+        Ok(o) if o.status.success() => o.stdout,
+        _ => return Vec::new(),
+    };
+
+    let text = String::from_utf8_lossy(&output);
+    let mut worktrees = Vec::new();
+    // Porcelain output is one blank-line-separated block per worktree.
+    for block in text.split("\n\n") {
+        let mut path: Option<PathBuf> = None;
+        let mut branch: Option<String> = None;
+        for line in block.lines() {
+            if let Some(path_str) = line.strip_prefix("worktree ") {
+                path = Some(PathBuf::from(path_str));
+            } else if let Some(branch_ref) = line.strip_prefix("branch ") {
+                branch = Some(
+                    branch_ref
+                        .strip_prefix("refs/heads/")
+                        .unwrap_or(branch_ref)
+                        .to_string(),
+                );
+            }
+        }
+        let Some(path) = path else { continue };
+        // Skip the main worktree (duplicate results) and outside-root worktrees (sibling leak).
+        if path != root && path.starts_with(root) {
+            let label = branch.unwrap_or_else(|| {
+                path.file_name()
+                    .map(|n| n.to_string_lossy().into_owned())
+                    .unwrap_or_default()
+            });
+            worktrees.push(DiscoveredWorktree { path, label });
+        }
+    }
+    worktrees
+}
+
 fn is_file_search_ignored(entry: &ignore::DirEntry) -> bool {
     // Only filter directories; matched files should still surface as results.
     if !entry
@@ -782,6 +1195,7 @@ struct FileSearchCandidate {
     path: PathBuf,
     is_dir: bool,
     match_path: String,
+    worktree: Option<String>,
 }
 
 fn fs_search_error(message: String) -> FsSearchResult {
@@ -802,7 +1216,12 @@ fn search_files(root: &Path, query: &str, limit: u32) -> Result<FsSearchResult> 
     let mut visited = 0u32;
     let mut truncated = false;
 
+    let worktrees = discover_git_worktrees(root);
+
     let mut builder = ignore::WalkBuilder::new(root);
+    for wt in &worktrees {
+        builder.add(&wt.path);
+    }
     builder
         .hidden(false)
         .follow_links(false)
@@ -811,7 +1230,14 @@ fn search_files(root: &Path, query: &str, limit: u32) -> Result<FsSearchResult> 
         .git_exclude(true)
         .parents(true)
         .ignore(true);
-    builder.filter_entry(|entry| !is_file_search_ignored(entry));
+    let worktree_paths: Vec<PathBuf> = worktrees.iter().map(|wt| wt.path.clone()).collect();
+    builder.filter_entry(move |entry| {
+        // Prune nested worktree copies from the main walk; added roots are exempt (filters skip depth 0).
+        if worktree_paths.iter().any(|wt| entry.path() == wt) {
+            return false;
+        }
+        !is_file_search_ignored(entry)
+    });
 
     for entry in builder.build() {
         let entry = match entry {
@@ -821,7 +1247,8 @@ fn search_files(root: &Path, query: &str, limit: u32) -> Result<FsSearchResult> 
                 continue;
             }
         };
-        if entry.path() == root {
+        // Depth 0 = a walk root (search root or worktree root); not a result row.
+        if entry.depth() == 0 {
             continue;
         }
 
@@ -839,8 +1266,17 @@ fn search_files(root: &Path, query: &str, limit: u32) -> Result<FsSearchResult> 
         }
 
         let path = entry.path().to_path_buf();
+        // Innermost containing worktree wins so nested worktrees are handled correctly.
+        let owner_worktree = worktrees
+            .iter()
+            .filter(|wt| path.starts_with(&wt.path))
+            .max_by_key(|wt| wt.path.as_os_str().len());
+        let (prefix, worktree) = match owner_worktree {
+            Some(wt) => (wt.path.as_path(), Some(wt.label.clone())),
+            None => (root, None),
+        };
         let match_path = path
-            .strip_prefix(root)
+            .strip_prefix(prefix)
             .unwrap_or(path.as_path())
             .components()
             .filter_map(|component| match component {
@@ -853,6 +1289,7 @@ fn search_files(root: &Path, query: &str, limit: u32) -> Result<FsSearchResult> 
             path,
             is_dir: file_type.is_dir(),
             match_path,
+            worktree,
         });
     }
 
@@ -897,6 +1334,7 @@ fn search_files(root: &Path, query: &str, limit: u32) -> Result<FsSearchResult> 
                 rel_path: candidate.match_path.clone(),
                 is_dir: candidate.is_dir,
                 match_indices: indices.clone(),
+                worktree: candidate.worktree.clone(),
             }
         })
         .collect();

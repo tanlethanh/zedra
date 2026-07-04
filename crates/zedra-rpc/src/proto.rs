@@ -643,6 +643,8 @@ pub struct FsSearchEntry {
     pub is_dir: bool,
     /// Sorted, deduplicated character indices into `rel_path` that matched.
     pub match_indices: Vec<u32>,
+    /// Owning worktree label. `rel_path` is relative to it. `None` = current worktree.
+    pub worktree: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -1560,6 +1562,7 @@ mod tests {
             rel_path: "src/file_search.rs".into(),
             is_dir: false,
             match_indices: vec![4, 5, 6],
+            worktree: Some("wt1".into()),
         };
         let encoded = postcard::to_allocvec(&entry).unwrap();
         let decoded: FsSearchEntry = postcard::from_bytes(&encoded).unwrap();

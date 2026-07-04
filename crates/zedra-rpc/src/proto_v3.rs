@@ -11,8 +11,9 @@
 //
 // `v3`->`v4` divergence: agents moved from the `AgentKind` enum to slug strings
 // (`AgentCapabilities` removed), `TerminalSyncEntry` gained `agent_slug`,
-// `AgentUsageSnapshot` gained `extra`, and `HostEvent` gained
-// `TerminalAgentChanged`. Everything else is byte-identical.
+// `AgentUsageSnapshot` gained `extra`, `HostEvent` gained
+// `TerminalAgentChanged`, and `FsSearchEntry` gained `worktree`. Everything
+// else is byte-identical.
 
 use chrono::{DateTime, Utc};
 use irpc::channel::{mpsc, oneshot};
@@ -113,7 +114,7 @@ pub enum ZedraProtoV3 {
     TermCreateV2(proto::TermCreateReqV2),
     #[rpc(tx = oneshot::Sender<proto::AgentFilesResult>)]
     AgentFiles(AgentFilesReq),
-    #[rpc(tx = oneshot::Sender<proto::FsSearchResult>)]
+    #[rpc(tx = oneshot::Sender<FsSearchResult>)]
     FsSearch(proto::FsSearchReq),
     #[rpc(tx = oneshot::Sender<proto::SetAppStateResult>)]
     SetAppState(proto::SetAppStateReq),
@@ -302,6 +303,21 @@ pub struct AgentFilesReq {
     pub kind: AgentKind,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct FsSearchEntry {
+    pub path: String,
+    pub rel_path: String,
+    pub is_dir: bool,
+    pub match_indices: Vec<u32>,
+}
+
+#[derive(Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct FsSearchResult {
+    pub entries: Vec<FsSearchEntry>,
+    pub truncated: bool,
+    pub error: Option<String>,
+}
+
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct AgentUsageSnapshot {
     pub context_used_percent: Option<f32>,
@@ -385,6 +401,26 @@ impl From<proto::AuthProveResult> for AuthProveResult {
             proto::AuthProveResult::SessionOccupied => AuthProveResult::SessionOccupied,
             proto::AuthProveResult::SessionNotFound => AuthProveResult::SessionNotFound,
             proto::AuthProveResult::InvalidSignature => AuthProveResult::InvalidSignature,
+        }
+    }
+}
+
+impl From<proto::FsSearchResult> for FsSearchResult {
+    fn from(r: proto::FsSearchResult) -> Self {
+        // Drops `worktree` appended at `zedra/rpc/4` (2026-07-02).
+        Self {
+            entries: r
+                .entries
+                .into_iter()
+                .map(|e| FsSearchEntry {
+                    path: e.path,
+                    rel_path: e.rel_path,
+                    is_dir: e.is_dir,
+                    match_indices: e.match_indices,
+                })
+                .collect(),
+            truncated: r.truncated,
+            error: r.error,
         }
     }
 }
@@ -622,7 +658,6 @@ impl ZedraMessageV3 {
                 M::AgentInstalledList((m.inner, m.tx, m.rx).into())
             }
             ZedraMessageV3::TermCreateV2(m) => M::TermCreateV2((m.inner, m.tx, m.rx).into()),
-            ZedraMessageV3::FsSearch(m) => M::FsSearch((m.inner, m.tx, m.rx).into()),
             ZedraMessageV3::SetAppState(m) => M::SetAppState((m.inner, m.tx, m.rx).into()),
             ZedraMessageV3::SetClientDeltaInfo(m) => {
                 M::SetClientDeltaInfo((m.inner, m.tx, m.rx).into())
@@ -653,6 +688,9 @@ impl ZedraMessageV3 {
             }
             ZedraMessageV3::SyncSession(m) => {
                 M::SyncSession((m.inner, m.tx.with_map(SyncSessionResult::from), m.rx).into())
+            }
+            ZedraMessageV3::FsSearch(m) => {
+                M::FsSearch((m.inner, m.tx.with_map(FsSearchResult::from), m.rx).into())
             }
             ZedraMessageV3::AgentList(m) => {
                 M::AgentList((m.inner, m.tx.with_map(AgentListResult::from), m.rx).into())
@@ -705,6 +743,25 @@ mod tests {
         let bytes = postcard::to_stdvec(&v3).unwrap();
         let _: TerminalSyncEntry = postcard::from_bytes(&bytes).unwrap();
         assert_eq!(v3.agent_command.as_deref(), Some("codex"));
+    }
+
+    #[test]
+    fn fs_search_result_drops_v4_worktree() {
+        let v4 = proto::FsSearchResult {
+            entries: vec![proto::FsSearchEntry {
+                path: "/w/src/main.rs".into(),
+                rel_path: "src/main.rs".into(),
+                is_dir: false,
+                match_indices: vec![0, 1],
+                worktree: Some("feat-x".into()),
+            }],
+            truncated: false,
+            error: None,
+        };
+        let v3: FsSearchResult = v4.into();
+        let bytes = postcard::to_stdvec(&v3).unwrap();
+        let decoded: FsSearchResult = postcard::from_bytes(&bytes).unwrap();
+        assert_eq!(decoded.entries[0].rel_path, "src/main.rs");
     }
 
     #[test]
