@@ -269,17 +269,14 @@ fn strip_ansi(input: &[u8]) -> String {
     out
 }
 
-/// Expected UTF-8 char length from the leading byte; `0x80..=0xBF` (stray
-/// continuation) counts as 1 so it never consumes the next char.
+/// Expected UTF-8 char length from the leading byte; stray continuation and
+/// invalid lead bytes count as 1 so they never consume following valid bytes.
 fn utf8_char_len(b: u8) -> usize {
-    if b < 0x80 || (0x80..=0xBF).contains(&b) {
-        1
-    } else if b < 0xE0 {
-        2
-    } else if b < 0xF0 {
-        3
-    } else {
-        4
+    match b {
+        0x00..=0x7F | 0x80..=0xBF | 0xC0..=0xC1 | 0xF5..=0xFF => 1,
+        0xC2..=0xDF => 2,
+        0xE0..=0xEF => 3,
+        0xF0..=0xF4 => 4,
     }
 }
 
@@ -1021,6 +1018,13 @@ mod tests {
     fn strip_ansi_removes_csi_sequences() {
         assert_eq!(strip_ansi(b"\x1b[1mBold\x1b[0m"), "Bold");
         assert_eq!(strip_ansi(b"\x1b[2;5Htext"), "text");
+    }
+
+    #[test]
+    fn strip_ansi_invalid_utf8_bytes_do_not_swallow_valid_chars() {
+        assert_eq!(strip_ansi(b"\x80abc"), "abc");
+        assert_eq!(strip_ansi(b"\xf5abc"), "abc");
+        assert_eq!(strip_ansi(b"\xc0abc"), "abc");
     }
 
     #[test]
