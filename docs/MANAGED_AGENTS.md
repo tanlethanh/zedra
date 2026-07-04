@@ -1,18 +1,15 @@
 # Add an Agent
 
-Add agent support on the host first. The host actor is the source of truth for
+Add agent support on the host first: the actor is the source of truth for
 identity, discovery, sessions, setup, account data, and usage. The app adapter
-is optional and only handles local behavior such as chat paste formatting,
-notifications, and icon branding.
-
-Agents use stable slug strings over RPC. Adding an agent does not change the
-ALPN version or add a protocol enum.
+is optional and only covers local behavior (paste formatting, notifications,
+icon branding). Agents are stable slug strings over RPC — adding one never
+bumps ALPN or adds a protocol enum.
 
 ## Common Path
 
-Most agents are detect-only. They appear in terminals, version probes, and the
-installed-agent list, but they do not manage sessions, setup, hooks, account
-state, or usage.
+Most agents are detect-only: they show up in terminals, version probes, and
+the installed-agent list, nothing more.
 
 Create `crates/zedra-host/src/agent/<slug>.rs`:
 
@@ -27,114 +24,111 @@ simple_actor!(
 );
 ```
 
-Register the actor in `crates/zedra-host/src/agent/mod.rs`:
-
-- add `mod <slug>;`
-- add `&<slug>::<Name>Actor,` to `ACTORS`
-- bump `static ACTORS: [&dyn AgentActor; N]`
+Register it in `crates/zedra-host/src/agent/mod.rs`: add `mod <slug>;`, append
+`&<slug>::<Name>Actor,` to `ACTORS`, bump the array size.
 
 `programs` drives the `--version` probe and installed-agent list.
-`detect_aliases` matches whole words or phrases inside the foreground command,
-such as `amp`, `cursor-agent`, or `npx @openai/codex`.
-
-Use `detect_exact` for short names that can appear as normal words or flag
-values, such as `pi` or `hermes`. `simple_actor!` sets `detect_aliases`; write
-the `AgentActor` impl by hand when you need `detect_exact`.
+`detect_aliases` matches whole words inside the foreground command
+(`cursor-agent`, `npx @openai/codex`). For short names that double as normal
+words or flag values (`pi`, `hermes`), write the `AgentActor` impl by hand and
+use `detect_exact` instead.
 
 ## Managed Agent
 
-Use a managed agent only when the provider supports sessions, resume,
-setup/hooks, account data, or usage. Current managed agents are `claude`,
-`codex`, `opencode`, `pi`, and `hermes`.
+Go managed only when the provider supports sessions, resume, setup/hooks,
+account data, or usage. Current: `claude`, `codex`, `opencode`, `pi`,
+`hermes`.
 
-Create `crates/zedra-host/src/agent/<slug>.rs`, implement `AgentActor`, and
-register it in `ACTORS`.
-
-Override only the methods the provider supports:
+Implement `AgentActor` in the actor file and override only what the provider
+supports:
 
 - identity: `slug`, `display_name`, `icon_name`, `programs`,
   `detect_aliases`, `detect_exact`
 - availability: `cli_available`, `cli_version_summary`
 - sessions: `session_counts`, `sessions`, `resume_launch_command`,
   `scan_data_source`, `session_scan_cli`
-- setup/hooks: `setup`, `setup_summary`, `receive_hook`, `hook_test_payload`
+- setup/hooks: `setup`, `setup_summary`, `supports_setup_cli`, `setup_cli`,
+  `receive_hook`, `hook_test_payload`
 - account/usage: `account_fields`, `subscription_plan`, `account_usage`,
   `extra`, `config_files`
-- global behavior: `is_global`
-- detail screen: `shows_detail` — return `true` to list the agent on the app's
-  manage screen (defaults `false`; detect-only actors stay hidden)
+- `is_global`: `true` only when sessions ignore the workdir (Hermes)
+- `shows_detail`: `true` lists the agent on the app's manage screen
+  (detect-only actors stay hidden)
 
-`setup` is the only mutable setup operation. It writes the hook runner and
-provider config, then returns the written paths.
+`setup` is the only mutable setup operation: it writes the hook runner and
+provider config and returns the written paths. Provider-specific hook
+templates live in the actor's file; `agent/cli.rs` keeps only shared plumbing
+(workdir hook script, checked file writers).
 
-Return `true` from `is_global` only when sessions ignore the workdir. Hermes is
-global.
+Never add per-agent `match` arms to the REST API, host cache, CLI scans, hook
+dispatch, or installed-agent list — those paths resolve actors through
+`ACTORS`. If the actor has a custom session-count type, add it to the
+`session_counts_from!` macro in `agent/mod.rs`.
 
-If the actor carries a custom session-count type, add it to the
-`session_counts_from!` macro near the top of `crates/zedra-host/src/agent/mod.rs`.
+## Setup Flow (`zedra setup`)
 
-Do not add per-agent `match` arms to the REST API, host cache, CLI scans, hook
-dispatch, or installed-agent list. Those paths resolve actors through
-`ACTORS`.
+Override `supports_setup_cli()` and `setup_cli(action, ctx)` on the actor; the
+command discovers actors through the registry. Handle `Install` and `Remove`
+idempotently — agents with nothing to install still explain what setup
+provides and state that remove is a no-op.
+
+Do everything through the `SetupCliCtx` — no `println!`, no reaching into
+`agent::setup`. The ctx carries the user's flags (`full_bin_path`, `quiet`),
+so flows never thread them as parameters.
+
+| Function | Use |
+| --- | --- |
+| `ctx.section(title)` | Heading opening a setup phase |
+| `ctx.step(label)` | Step label; follow with `detail` lines |
+| `ctx.detail(text)` | Dim outcome line (paths written, commands run) |
+| `ctx.message(text)` | Plain line; `""` for a blank separator |
+| `ctx.suggest_command(cmd)` | Highlighted command for the user to run next |
+| `ctx.require_command(program)` | Error when a provider CLI is not on PATH |
+| `ctx.run_step(label, program, args)` | Run a command; error on non-zero exit |
+| `ctx.try_step(label, program, args)` | Run a command; `Ok(false)` on failure |
+| `ctx.install_plugin_and_hooks(spec)` / `ctx.remove_plugin_and_hooks(spec)` | Whole marketplace-plugin flow from a `PluginSetup` spec (Claude/Codex) |
+| `ctx.merge_command_hooks(path, events, agent)` | Upsert Zedra entries in a Claude/Codex-style JSON hooks file |
+| `ctx.remove_command_hooks(path, agent)` | Delete only Zedra-owned entries from that file |
+| `ctx.install_skills(name, dir)` / `ctx.remove_skills(name, dir)` | Manage Zedra skills under a skills dir |
+| `ctx.remove_path(path)` | Remove a file or dir; `Ok(false)` when absent |
+| `ctx.hook_binary()` | Binary to embed in hook scripts (`zedra`, or absolute with `--full-bin-path`) |
+| `ctx.home_dir()` | User home; errors when `$HOME` is unset |
 
 ## App Adapter
 
-The app keys on the host slug. Unknown slugs use `GenericAdapter`, which
-resolves `assets/icons/<slug>.svg`, falls back to `terminal.svg`, and derives a
-display name from the slug.
+The app keys on the host slug. Unknown slugs get `GenericAdapter`: icon from
+`assets/icons/<slug>.svg` (fallback `terminal.svg`), display name derived from
+the slug, unsupported features degraded.
 
-Add a specialized `AgentAdapter` in `crates/zedra/src/agent/mod.rs` only when
-the agent needs custom app behavior.
+Add a specialized `AgentAdapter` in `crates/zedra/src/agent/mod.rs` only for
+custom app behavior:
 
-Override these methods as needed:
-
-- `icon_path`: bundled SVG path when branding differs from `<slug>.svg`; Codex
-  uses `icons/openai.svg`
+- `icon_path`: branding override (Codex uses `icons/openai.svg`)
 - `should_notify`: hook event names that raise a notification
-- `add_to_chat` / `ask`: custom paste format; Claude uses
-  `@file#Lstart-Lend`
+- `add_to_chat` / `ask`: custom paste format (Claude uses `@file#Lstart-Lend`)
 
-`native_image_name` derives from `icon_path`, so a branding override carries to
-the native picker. Do not add a second native-image override.
-
-App navigation and RPC calls carry the slug as a `String`. Unknown slugs must
-degrade to unsupported features.
+`native_image_name` derives from `icon_path`, so a branding override carries
+to the native picker — never add a second native-image override.
 
 ## Ownership
 
-Keep host-owned behavior on the host:
+Host owns: agent list, picker data, info, usage, account, session history,
+resume, setup, lifecycle hooks, identity detection.
 
-- agent list, picker data, info, usage, account, and session history
-- session resume, setup, and lifecycle hooks
-- identity detection and hook-event status
-
-Keep app-owned behavior in the app:
-
-- add-to-chat and ask paste formatting
-- `should_notify`
-- icon branding overrides
-
+App owns: paste formatting, `should_notify`, icon branding overrides.
 Everything else shown in the app comes from host data.
 
 ## Icons
 
-Use one icon slug on every platform: the bare
-`assets/icons/<icon-slug>.svg` name.
+One icon slug on every platform: the bare `assets/icons/<icon-slug>.svg` name.
+GPUI reads the SVG directly; native UI resolves generated assets from the same
+slug (iOS `<icon-slug>.imageset`, Android `ic_<icon_slug>` with hyphens as
+underscores).
 
-GPUI reads that SVG directly. Native UI receives the bare slug and resolves
-generated assets:
+The icon slug is usually the agent slug; branding exceptions: `codex` →
+`openai`, `copilot` → `githubcopilot`, `hermes` → `hermesagent`.
 
-- iOS: `<icon-slug>.imageset`
-- Android: `ic_<icon_slug>`, with hyphens converted to underscores
-
-The icon slug is usually the agent slug. It can differ for branding:
-
-- `codex` uses `openai`
-- `copilot` uses `githubcopilot`
-- `hermes` uses `hermesagent`
-
-`AssetSource::load` returns nothing for a missing SVG, and GPUI renders blank.
-Check asset existence before rendering:
+GPUI renders blank for a missing SVG, so check existence before rendering:
 
 ```text
 icon(slug):
@@ -143,41 +137,27 @@ icon(slug):
     else -> "icons/terminal.svg"
 ```
 
-The host `AgentActor::icon_name` and `AgentSummary.icon_name` use the same icon
-slug as native picker assets. `AgentAdapter::native_image_name` strips
-`icons/<slug>.svg` to the same slug.
-
 ## Assets
 
-Commit only `crates/zedra/assets/icons/<icon-slug>.svg`. Use lowercase
-kebab-case and `currentColor`.
-
-Do not commit generated native assets:
-
-- `ios/Zedra/Assets.xcassets/*.imageset`
-- `android/app/src/generated/res/drawable/*.xml`
-
-Builds regenerate native assets automatically. Run this only when you need
-local iOS imagesets for inspection:
+Commit only `crates/zedra/assets/icons/<icon-slug>.svg` (lowercase kebab-case,
+`currentColor`). Generated native assets (`ios/Zedra/Assets.xcassets/*.imageset`,
+`android/app/src/generated/res/drawable/*.xml`) are gitignored; builds
+regenerate them. To inspect iOS imagesets locally:
 
 ```sh
 scripts/generate-assets.sh
 ```
 
-`bun run icons:gen` runs the same script.
-
 ## RPC Contract
 
 The live protocol (`zedra/rpc/4`) uses slug strings in `AgentSummary`,
 `AgentSessionSummary`, agent session/resume/file requests, and hook events.
-
 Usage display lines are host-formatted into `AgentUsageSnapshot.extra` and
-rendered verbatim. Keep per-agent display rules host-side.
+rendered verbatim — keep per-agent display rules host-side.
 
 The frozen `zedra/rpc/3` module (`proto_v3.rs`) still carries the historical
-`AgentKind` enum and filters out agents it cannot represent. Do not change that
-schema. Adding an actor can require icon assets and manual-test steps, but it
-must not bump ALPN only because a new slug exists.
+`AgentKind` enum and filters out agents it cannot represent. Do not change
+that schema; a new slug alone never bumps ALPN.
 
 ## Validation
 
@@ -186,3 +166,17 @@ cargo fmt
 cargo check -p zedra-rpc -p zedra-session -p zedra-host
 cargo check -p zedra
 ```
+
+To verify a setup flow end-to-end without touching the real machine, use the
+sandbox harness (macOS, `sandbox-exec`):
+
+```sh
+scripts/setup-sandbox.sh zedra setup claude
+```
+
+It runs the command with a throwaway `HOME`/XDG/`HERMES_HOME`, shim provider
+CLIs that log every invocation to `calls.log`, and a Seatbelt profile denying
+network and writes outside the sandbox dir (kept and printed for inspection).
+Flags: `--shell` for an interactive sandboxed shell, `--no-shims` to keep the
+real `PATH`, `--allow-net` to permit network (needed for opencode's skills
+download; the run is then no longer hermetic).

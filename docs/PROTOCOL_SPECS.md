@@ -373,7 +373,7 @@ All Git result types carry `error: Option<String>`. Host sends error when git re
 ### Managed agent conventions
 
 **Terminology:** An *agent actor* is identified by a stable slug such as
-`claude`, `codex`, or `maki`. A single host registry supplies both managed
+`claude`, `codex`, or `pi`. A single host registry supplies both managed
 features and installed-CLI metadata. Every actor appears in `AgentListResult`;
 unsupported actor methods return their default empty or unsupported result. Most session-capable actors scope
 their history per workspace; `hermes` is global.
