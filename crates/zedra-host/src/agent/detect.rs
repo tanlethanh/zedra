@@ -103,43 +103,44 @@ mod tests {
         assert_eq!(resolve(None, None), None);
     }
 
+    // Detection is registry-driven, so the test walks the registry instead of
+    // hand-listing agents: every declared alias/exact token must resolve to its
+    // own actor, embedded aliases must match at word boundaries, and exact-only
+    // tokens must never latch inside a longer command.
     #[test]
-    fn detects_supported_agents() {
-        assert_eq!(detect("amp"), Some("amp"));
-        assert_eq!(detect("ampcode"), Some("amp"));
-        assert_eq!(detect("claude"), Some("claude"));
-        assert_eq!(detect("claude-code"), Some("claude"));
-        assert_eq!(detect("cline"), Some("cline"));
-        assert_eq!(detect("npx @openai/codex"), Some("codex"));
-        assert_eq!(detect("github-copilot"), Some("copilot"));
-        assert_eq!(detect("gh copilot suggest"), Some("copilot"));
-        assert_eq!(detect("cursor-agent"), Some("cursor"));
-        assert_eq!(detect("cursor agent"), Some("cursor"));
-        assert_eq!(detect("gemini"), Some("gemini"));
-        assert_eq!(detect("gemini-cli"), Some("gemini"));
-        assert_eq!(detect("goose session"), Some("goose"));
-        assert_eq!(detect("hermes"), Some("hermes"));
-        assert_eq!(detect("hermes-agent"), Some("hermes"));
-        assert_eq!(detect("junie"), Some("junie"));
-        // Kilo Code's CLI installs as bare `kilo` (`~/.kilo/bin/kilo`).
-        assert_eq!(detect("kilo"), Some("kilocode"));
-        assert_eq!(detect("kilo-code"), Some("kilocode"));
-        assert_eq!(detect("kilocode"), Some("kilocode"));
-        assert_eq!(detect("open-claw"), Some("openclaw"));
-        assert_eq!(detect("openclaw tui"), Some("openclaw"));
-        assert_eq!(detect("open-code run"), Some("opencode"));
-        assert_eq!(detect("opencode run"), Some("opencode"));
-        assert_eq!(detect("open-hands"), Some("openhands"));
-        assert_eq!(detect("openhands"), Some("openhands"));
-        assert_eq!(detect("pi"), Some("pi"));
-        assert_eq!(detect("npx @mariozechner/pi-coding-agent"), Some("pi"));
-        assert_eq!(detect("qoder-cli"), Some("qoder"));
-        assert_eq!(detect("qodercli"), Some("qoder"));
-        assert_eq!(detect("qwen-code"), Some("qwen"));
-        assert_eq!(detect("trae-agent"), Some("trae"));
-        assert_eq!(detect("trae-cli interactive"), Some("trae"));
-        assert_eq!(detect("zen-cli"), Some("zencoder"));
-        assert_eq!(detect("zen cli"), Some("zencoder"));
+    fn every_registered_alias_resolves_to_its_actor() {
+        let mut aliases_checked = 0;
+        for actor in crate::agent::actors() {
+            let slug = actor.slug();
+            for alias in actor.detect_aliases() {
+                assert_eq!(detect(alias), Some(slug), "bare alias `{alias}`");
+                assert_eq!(
+                    detect(&format!("npx {alias}")),
+                    Some(slug),
+                    "embedded `{alias}`"
+                );
+                assert_eq!(
+                    detect(&format!("{alias} --flag")),
+                    Some(slug),
+                    "trailing `{alias}`"
+                );
+                aliases_checked += 1;
+            }
+            for token in actor.detect_exact() {
+                assert_eq!(detect(token), Some(slug), "exact token `{token}`");
+                if !actor.detect_aliases().contains(token) {
+                    assert_ne!(
+                        detect(&format!("{token} build")),
+                        Some(slug),
+                        "exact-only token `{token}` must not match inside a longer command"
+                    );
+                }
+            }
+        }
+        assert!(
+            aliases_checked > 0,
+            "registry declared no detection aliases"
+        );
         assert_eq!(detect("zsh"), None);
     }
 

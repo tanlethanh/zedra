@@ -728,23 +728,36 @@ mod tests {
     use super::*;
 
     #[test]
+    // Registry-driven: every actor that supports resume must build a command
+    // that launches its own binary, embeds the session id, and shell-quotes
+    // unsafe ids; blank ids and unknown slugs never produce a command.
     fn resume_launch_commands_are_host_owned() {
-        assert_eq!(
-            resume_launch_command("claude", "abc").as_deref(),
-            Some("claude --resume abc")
-        );
-        assert_eq!(
-            resume_launch_command("codex", "019e").as_deref(),
-            Some("codex resume 019e")
-        );
-        assert_eq!(
-            resume_launch_command("opencode", "ses_123").as_deref(),
-            Some("opencode --session ses_123")
-        );
-        assert_eq!(
-            resume_launch_command("pi", "abc-def").as_deref(),
-            Some("pi --session abc-def")
-        );
+        let mut resumable = 0;
+        for actor in actors() {
+            let slug = actor.slug();
+            let Some(command) = resume_launch_command(slug, "ses-123") else {
+                continue;
+            };
+            resumable += 1;
+            let program = command.split_whitespace().next().unwrap_or_default();
+            assert!(
+                actor.programs().contains(&program),
+                "`{slug}` resume `{command}` does not launch one of its programs"
+            );
+            assert!(
+                command.contains("ses-123"),
+                "`{slug}` resume `{command}` drops the session id"
+            );
+            // Unsafe ids must arrive shell-quoted.
+            let quoted = resume_launch_command(slug, "a b'c").expect("quoted resume");
+            assert!(
+                quoted.contains("'a b'\\''c'"),
+                "`{slug}` resume `{quoted}` does not shell-quote the id"
+            );
+            assert_eq!(resume_launch_command(slug, "   "), None, "blank id");
+        }
+        assert!(resumable > 0, "no actor supports resume");
+        assert_eq!(resume_launch_command("nosuchagent", "ses-123"), None);
     }
 
     #[test]

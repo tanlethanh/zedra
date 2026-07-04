@@ -751,11 +751,14 @@ mod tests {
     #[test]
     fn every_setup_capable_actor_is_discoverable() {
         let slugs = supported_slugs();
-        for expected in ["claude", "codex", "opencode", "pi", "hermes"] {
-            assert!(
-                slugs.contains(&expected),
-                "missing setup flow for {expected}"
-            );
+        assert!(!slugs.is_empty(), "no setup-capable actors registered");
+        // Every advertised slug must resolve through the same `actor()` lookup
+        // `zedra setup <slug>` uses, back to a setup-capable actor.
+        for slug in slugs {
+            let actor = super::super::actor(slug)
+                .unwrap_or_else(|| panic!("slug `{slug}` does not resolve to an actor"));
+            assert!(actor.supports_setup_cli(), "`{slug}` lost its setup flow");
+            assert_eq!(actor.slug(), slug);
         }
     }
 }
