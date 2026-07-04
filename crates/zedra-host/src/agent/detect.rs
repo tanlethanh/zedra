@@ -11,19 +11,15 @@
 //! match only as the entire command, so `cursor .` / `hermes build` / `pip
 //! install` never latch an agent identity.
 
-/// Resolve a terminal's agent identity from its tracked metadata.
-///
-/// The foreground command is authoritative when present (shell integration sets
-/// it via OSC 633). OSC 1 (`icon_name`) is only a fallback for terminals without
-/// command lifecycle, and is ignored unless it itself names an agent — shells
-/// commonly set OSC 1 to the cwd.
+/// Resolve a terminal's agent identity. The foreground command (OSC 633) is
+/// authoritative when present; OSC 1 is only a fallback and must itself name
+/// an agent — shells commonly set it to the cwd.
 pub fn resolve_terminal_agent(
     command: Option<&str>,
     icon_name: Option<&str>,
 ) -> Option<&'static str> {
-    // A present foreground command is authoritative even when it names no agent,
-    // so running `vim` after an agent clears the identity instead of latching a
-    // stale OSC 1. Only fall back to OSC 1 when there is no command lifecycle.
+    // A command naming no agent still clears identity (`vim` after an agent
+    // must not latch a stale OSC 1).
     match command.map(str::trim).filter(|c| !c.is_empty()) {
         Some(command) => detect_command(command),
         None => icon_name.and_then(detect_command),
@@ -35,9 +31,8 @@ pub fn detect_command(raw: &str) -> Option<&'static str> {
     let low = raw.to_ascii_lowercase();
     let trimmed = low.trim();
 
-    // Earliest match wins, so the agent named as the program beats one named in
-    // a later flag value (`qwen --provider gemini` → qwen). Registry order
-    // breaks position ties deterministically.
+    // Earliest match wins (`qwen --provider gemini` → qwen); registry order
+    // breaks position ties.
     let mut best: Option<(usize, &'static str)> = None;
     for actor in super::actors() {
         let at = if actor.detect_exact().iter().any(|needle| trimmed == *needle) {
@@ -103,10 +98,8 @@ mod tests {
         assert_eq!(resolve(None, None), None);
     }
 
-    // Detection is registry-driven, so the test walks the registry instead of
-    // hand-listing agents: every declared alias/exact token must resolve to its
-    // own actor, embedded aliases must match at word boundaries, and exact-only
-    // tokens must never latch inside a longer command.
+    // Walks the registry: every alias/exact token must resolve to its own
+    // actor at word boundaries; exact-only tokens never latch inside a command.
     #[test]
     fn every_registered_alias_resolves_to_its_actor() {
         let mut aliases_checked = 0;

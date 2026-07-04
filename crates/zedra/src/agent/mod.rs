@@ -8,17 +8,12 @@ use zedra_session::SessionHandle;
 pub type AdapterFuture<'a, T> = Pin<Box<dyn Future<Output = T> + Send + 'a>>;
 
 // ---------------------------------------------------------------------------
-// Asset + display resolution
-//
-// Agent identity is a host-provided slug string; the app holds no agent enum.
-// Icons and display names resolve from the slug, with specialized adapters
-// overriding only where branding or behavior differs.
+// Asset + display resolution — agent identity is a host-provided slug string
+// (no app enum); adapters override only where branding or behavior differs.
 // ---------------------------------------------------------------------------
 
-/// Resolve a slug to a bundled SVG icon path, falling back to the generic
-/// terminal icon when the app ships no asset for it. `AssetSource::load`
-/// returns nothing for a missing file (GPUI renders blank), so existence must
-/// be checked here rather than relying on a runtime fallback.
+/// Slug to bundled SVG path with terminal-icon fallback. `AssetSource::load`
+/// renders blank for missing files, so existence must be checked here.
 fn icon_for_slug(slug: &str) -> String {
     let path = format!("icons/{slug}.svg");
     if crate::ZedraAssets::get(&path).is_some() {
@@ -34,9 +29,8 @@ fn icon_slug(path: &str) -> Option<&str> {
     path.strip_prefix("icons/")?.strip_suffix(".svg")
 }
 
-/// Human-readable name for a slug the app has no specialized adapter for.
-/// Prefer the host's `AgentSummary.display_name` where one is available; this
-/// is only a local fallback (terminal titles, pending labels).
+/// Local fallback name for slugs without a specialized adapter; the host's
+/// `AgentSummary.display_name` is preferred upstream.
 fn display_name_for_slug(slug: &str) -> String {
     let mut chars = slug.chars();
     match chars.next() {
@@ -129,10 +123,8 @@ pub trait AgentAdapter: Send + Sync {
         "icons/terminal.svg"
     }
 
-    /// Native (iOS/Android) picker asset = the icon slug, so the native bridge
-    /// resolves the same `assets/icons/<slug>.svg` GPUI renders. Derived from
-    /// `icon_path` so a branding override (Codex -> openai) carries to native;
-    /// a path outside `icons/<slug>.svg` yields `None` (label-only).
+    /// Native picker asset = the icon slug, derived from `icon_path` so branding
+    /// overrides carry to native; non-`icons/<slug>.svg` paths yield `None`.
     fn native_image_name(&self) -> Option<&str> {
         icon_slug(self.icon_path())
     }
@@ -218,9 +210,8 @@ fn native_target_presentation(title: &str, image_name: &str) -> TargetPresentati
     }
 }
 
-/// Generic agent with no special in-app behavior. Constructed from a host slug;
-/// display name and icon resolve from the slug (or host metadata upstream).
-/// Add-to-chat falls back to fenced context paste.
+/// Agent with no special in-app behavior: slug-derived branding, fenced-paste
+/// add-to-chat.
 pub struct GenericAdapter {
     slug: String,
     display_name: String,
@@ -383,10 +374,8 @@ const BRANDED_ADAPTERS: &[BrandedAdapter] = &[
     },
 ];
 
-/// Build the app-side adapter for a host slug. Always returns a working adapter:
-/// a specialized one for agents with custom in-app behavior or branding, else a
-/// generic adapter seeded from the slug. Adding an agent needs a host actor and
-/// assets; an app adapter is only required for custom behavior.
+/// Always returns a working adapter: specialized where in-app behavior or
+/// branding differs, else generic seeded from the slug.
 pub fn adapter(slug: &str) -> Box<dyn AgentAdapter> {
     match slug {
         "shell" => Box::<ShellAdapter>::default(),
@@ -398,17 +387,13 @@ pub fn adapter(slug: &str) -> Box<dyn AgentAdapter> {
     }
 }
 
-/// Display name for a slug, resolved through its adapter. Host
-/// `AgentSummary.display_name` is preferred upstream; this is the local
-/// fallback for terminal titles and pending labels.
+/// Local fallback display name (host `display_name` preferred upstream).
 pub fn name(slug: &str) -> String {
     adapter(slug).display_name().to_owned()
 }
 
-/// Icon path for a slug, resolved through its adapter so branding overrides
-/// apply (e.g. Codex -> OpenAI icon) with the slug-asset fallback for unknown
-/// agents. Memoized: called from render paths, and the generic fallback does an
-/// embedded-asset existence lookup per resolution.
+/// Icon path via the adapter so branding overrides apply. Memoized: render-path
+/// callers, and the generic fallback does an asset-existence lookup.
 pub fn icon(slug: &str) -> String {
     use std::collections::HashMap;
     use std::sync::{Mutex, OnceLock};

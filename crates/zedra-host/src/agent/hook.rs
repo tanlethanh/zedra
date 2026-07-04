@@ -28,12 +28,10 @@ pub struct HookNotification {
     pub title: String,
     pub body: Option<String>,
     pub deeplink: Option<String>,
-    pub content_state: serde_json::Value,
 }
 
-/// Shared hook plumbing. Each agent's `AgentActor::receive_hook` owns its own
-/// event-name/state/notification mapping and drives these helpers; there is no
-/// separate per-agent receiver type — the actor is the hook handler.
+/// Shared hook plumbing driven by `AgentActor::receive_hook` — the actor is
+/// the hook handler; there is no per-agent receiver type.
 impl HookContext {
     /// Apply the agent-state transition (when the event maps to one) and forward
     /// the raw hook to the connected client.
@@ -80,9 +78,8 @@ impl HookContext {
         }
     }
 
-    /// Shared notification tail: no-op when the client has the app foregrounded
-    /// or Delta is not configured. `body` is awaited only when a push will go
-    /// out, so callers can defer transcript/DB reads into it.
+    /// No-op when the app is foregrounded or Delta is unconfigured; `body` is
+    /// awaited only when a push goes out, so defer transcript/DB reads into it.
     pub async fn notify(
         &self,
         agent: &str,
@@ -111,17 +108,15 @@ impl HookContext {
         let body = notification.body.as_deref().and_then(|b| {
             super::utils::first_non_empty_line(b).map(|line| utils::truncate_chars(&line, 100))
         });
-        // Deeplink pushes go out at high priority so a backgrounded device wakes promptly
-        // and the tap navigates; plain notifications stay normal. The caller (host) picks
-        // the priority — Delta only relays it to the provider header.
+        // Deeplink pushes go high priority so a backgrounded device wakes for
+        // the tap; Delta only relays the priority header.
         let priority = if notification.deeplink.is_some() {
             NotificationPriority::High
         } else {
             NotificationPriority::Normal
         };
-        // TODO: Live Activity send temporarily disabled — feature incomplete.
-        // Re-enable by restoring the parallel `update_live_activity_for_stack`
-        // call and the `activity_result` handling below.
+        // TODO: Live Activity send disabled (feature incomplete) — restore the
+        // parallel `update_live_activity_for_stack` call to re-enable.
         let notify_result = client
             .send_notification_to_client(
                 notification.title,
@@ -178,17 +173,12 @@ impl HookContext {
         self.delta.clone()
     }
 
-    /// Live Activity content state shared by every agent notification.
-    pub fn content_state(&self, agent: &str, event_name: &str) -> serde_json::Value {
-        serde_json::json!({ "agent": agent, "event": event_name })
-    }
-
-    /// Build the notification envelope for `event_name`, filling deeplink and
-    /// content state from the context. Each agent supplies only `title`/`body`.
+    /// Notification envelope; deeplink comes from the context. Restore the
+    /// `{agent, event}` content-state field with the Live Activity TODO above.
     pub fn notification(
         &self,
-        agent: &str,
-        event_name: &str,
+        _agent: &str,
+        _event_name: &str,
         title: String,
         body: Option<String>,
     ) -> HookNotification {
@@ -196,7 +186,6 @@ impl HookContext {
             title,
             body,
             deeplink: self.build_deeplink(),
-            content_state: self.content_state(agent, event_name),
         }
     }
 

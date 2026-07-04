@@ -811,9 +811,8 @@ fn parse_usage_output(text: &str) -> Option<AgentUsageSnapshot> {
     let mut credits_used: Option<f64> = None;
     let mut credits_limit: Option<f64> = None;
 
-    // The alt-screen redraw separates panel rows with bare `\r`; treat each as a
-    // line break (and drop the empty rows it leaves) so labels, bars, and reset
-    // lines each land on their own line for the label/percent/reset scan.
+    // Alt-screen redraw separates rows with bare `\r`; treat as line breaks
+    // (dropping empties) so label/percent/reset each land on their own line.
     let normalized = text.replace('\r', "\n");
     let lines: Vec<&str> = normalized
         .lines()

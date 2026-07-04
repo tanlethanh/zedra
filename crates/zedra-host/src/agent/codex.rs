@@ -709,43 +709,21 @@ impl AgentActor for CodexActor {
         Box::pin(Self::fetch_account_usage())
     }
 
-    fn receive_hook<'a>(&'a self, ctx: HookContext) -> ActorFuture<'a, anyhow::Result<()>> {
-        Box::pin(async move {
-            // Codex pipes hook JSON with `hook_event_name` and snake_case `session_id`.
-            let event_name =
-                super::utils::payload_string(&ctx.payload, "hook_event_name").unwrap_or_default();
-            let agent_session_id = super::utils::payload_string(&ctx.payload, "session_id");
-            let agent_state = match event_name.as_str() {
-                "UserPromptSubmit" => Some(AgentState::Running),
-                "PermissionRequest" => Some(AgentState::WaitingApproval),
-                "PostToolUse" => Some(AgentState::Running),
-                "Stop" => Some(AgentState::Completed),
-                _ => None,
-            };
-            ctx.apply(
-                "codex",
-                &event_name,
-                agent_state,
-                agent_session_id.as_deref(),
-            )
-            .await;
+    fn supports_hooks(&self) -> bool {
+        true
+    }
 
-            let name = self.display_name();
-            let Some(title) = (match event_name.as_str() {
-                "PermissionRequest" => Some(format!("{name} requires approval")),
-                "Stop" => Some(format!("{name} completed")),
-                _ => None,
-            }) else {
-                return Ok(());
-            };
-            // Codex stores titles in its thread DB; look up by session id.
-            let workdir = ctx.workdir.clone();
-            let body = spawn_blocking_opt(move || {
-                agent_session_id
-                    .as_deref()
-                    .and_then(|id| Self::title_for_session(&workdir, id))
-            });
-            ctx.notify(name, &event_name, title, body).await
+    // Codex stores titles in its thread DB; look up by session id.
+    fn hook_notify_body(
+        &self,
+        ctx: &HookContext,
+        agent_session_id: Option<String>,
+    ) -> ActorFuture<'static, Option<String>> {
+        let workdir = ctx.workdir.clone();
+        spawn_blocking_opt(move || {
+            agent_session_id
+                .as_deref()
+                .and_then(|id| Self::title_for_session(&workdir, id))
         })
     }
 

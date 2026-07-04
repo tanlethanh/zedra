@@ -312,9 +312,8 @@ impl ClaudeActor {
             if let Some(title) = string_field(&record, &["aiTitle", "ai_title"]) {
                 metadata.title = Some(title.to_string());
             }
-            // The head-scan cap is enforced after parsing the current record, not
-            // before, so a single oversized head line (e.g. a large system prompt)
-            // still contributes its sessionId/cwd/title before the scan stops.
+            // Cap is enforced after parsing the record, so one oversized head
+            // line still contributes its sessionId/cwd/title.
             if Self::list_head_scan_complete(&metadata, scanned_lines)
                 || scanned_lines >= LIST_HEAD_SCAN_MAX_LINES
                 || scanned_bytes >= LIST_HEAD_SCAN_MAX_BYTES
@@ -412,25 +411,8 @@ impl ClaudeActor {
         if string_field(record, &["type"]) != Some("user") {
             return None;
         }
-        let message = record.get("message")?;
-        let content = message.get("content")?;
-        let text = if let Some(text) = content.as_str() {
-            text
-        } else {
-            content.as_array()?.iter().find_map(|part| {
-                if string_field(part, &["type"]) == Some("text") {
-                    string_field(part, &["text"])
-                } else {
-                    None
-                }
-            })?
-        };
-        let text = text.trim();
-        if text.starts_with('<') || text.starts_with('[') {
-            return None;
-        }
-        // Length is clamped centrally in `session_title`; the UI trims for display.
-        Some(text.to_string())
+        // Extra `[` reject drops placeholders like "[Request interrupted]".
+        user_message_text(record.get("message")?).filter(|text| !text.starts_with('['))
     }
 
     fn humanize_slug(slug: &str) -> String {
@@ -511,7 +493,7 @@ impl ClaudeActor {
 use super::utils::{
     file_size_bytes, home_path, humanize_plan_token, info_field, mtime_unix_secs, parse_rfc3339,
     parse_usage_window_resets_at, push_json_string, read_json_file, resume_summary, session_title,
-    sorted_jsonl_candidates, spawn_blocking_opt, string_field,
+    sorted_jsonl_candidates, spawn_blocking_opt, string_field, user_message_text,
 };
 use zedra_rpc::proto::*;
 
@@ -627,14 +609,14 @@ impl ClaudeActor {
         spawn_blocking_opt(Self::subscription_plan_fields_from_disk).await
     }
 
-    async fn fetch_oauth_profile() -> Option<Vec<AgentInfoField>> {
+    async fn oauth_get(url: &str, what: &str) -> Option<Value> {
         let token = Self::read_oauth_token()?;
         let client = reqwest::Client::builder()
             .timeout(std::time::Duration::from_secs(15))
             .build()
             .ok()?;
         let resp = client
-            .get("https://api.anthropic.com/api/oauth/profile")
+            .get(url)
             .header("Authorization", format!("Bearer {token}"))
             .header("anthropic-beta", "oauth-2025-04-20")
             .header("Accept", "application/json")
@@ -642,10 +624,15 @@ impl ClaudeActor {
             .await
             .ok()?;
         if !resp.status().is_success() {
-            tracing::debug!("claude oauth profile returned {}", resp.status());
+            tracing::debug!("claude {what} API returned {}", resp.status());
             return None;
         }
-        let body: Value = resp.json().await.ok()?;
+        resp.json().await.ok()
+    }
+
+    async fn fetch_oauth_profile() -> Option<Vec<AgentInfoField>> {
+        let body =
+            Self::oauth_get("https://api.anthropic.com/api/oauth/profile", "profile").await?;
         let mut fields = Vec::new();
         fields.push(AgentInfoField {
             label: "Logged in".to_string(),
@@ -710,24 +697,7 @@ impl ClaudeActor {
     }
 
     async fn fetch_oauth_usage() -> Option<AgentUsageSnapshot> {
-        let token = Self::read_oauth_token()?;
-        let client = reqwest::Client::builder()
-            .timeout(std::time::Duration::from_secs(15))
-            .build()
-            .ok()?;
-        let resp = client
-            .get("https://api.anthropic.com/api/oauth/usage")
-            .header("Authorization", format!("Bearer {token}"))
-            .header("anthropic-beta", "oauth-2025-04-20")
-            .header("Accept", "application/json")
-            .send()
-            .await
-            .ok()?;
-        if !resp.status().is_success() {
-            tracing::debug!("claude usage API returned {}", resp.status());
-            return None;
-        }
-        let body: Value = resp.json().await.ok()?;
+        let body = Self::oauth_get("https://api.anthropic.com/api/oauth/usage", "usage").await?;
         let window_pct = |obj: Option<&Value>| -> Option<f32> {
             obj.and_then(|w| w.get("utilization"))
                 .and_then(|v| v.as_f64())
@@ -1216,26 +1186,10 @@ use super::{
     hook_file_mentions_zedra, hooks_enabled, setup_status, ActorFuture, AgentActor, ScanCtx,
     SessionCounts as ActorSessionCounts,
 };
-use tracing::warn;
 
 pub(super) struct ClaudeActor;
 
-impl ClaudeActor {
-    /// Notification body for a Claude hook: the session title read from the
-    /// transcript referenced in the payload.
-    async fn hook_notification_body(payload: &Value) -> Option<String> {
-        let transcript_path = payload
-            .get("transcript_path")
-            .and_then(|v| v.as_str())
-            .map(PathBuf::from);
-        spawn_blocking_opt(move || {
-            transcript_path
-                .as_deref()
-                .and_then(Self::title_from_transcript_path)
-        })
-        .await
-    }
-}
+impl ClaudeActor {}
 
 impl AgentActor for ClaudeActor {
     fn shows_detail(&self) -> bool {
@@ -1357,46 +1311,33 @@ impl AgentActor for ClaudeActor {
         Box::pin(Self::fetch_account_usage())
     }
 
-    fn receive_hook<'a>(&'a self, ctx: HookContext) -> ActorFuture<'a, anyhow::Result<()>> {
-        Box::pin(async move {
-            // Claude Code pipes hook JSON with `hook_event_name` and snake_case `session_id`.
-            let Some(event_name) = super::utils::payload_string(&ctx.payload, "hook_event_name")
-            else {
-                // Do not log ctx.payload: it can carry user content (telemetry-privacy rule).
-                warn!("claude: hook payload missing or empty hook_event_name; ignoring");
-                return Ok(());
-            };
-            let agent_session_id = super::utils::payload_string(&ctx.payload, "session_id");
-            let agent_state = match event_name.as_str() {
-                "UserPromptSubmit" => Some(AgentState::Running),
-                "PermissionRequest" => Some(AgentState::WaitingApproval),
-                "PostToolUse" => Some(AgentState::Running),
-                "Stop" => Some(AgentState::Completed),
-                _ => None,
-            };
-            ctx.apply(
-                "claude",
-                &event_name,
-                agent_state,
-                agent_session_id.as_deref(),
-            )
-            .await;
+    fn supports_hooks(&self) -> bool {
+        true
+    }
 
-            let name = self.display_name();
-            let Some(title) = (match event_name.as_str() {
-                "PermissionRequest" => Some(format!("{name} requires approval")),
-                "Stop" => Some(format!("{name} finished")),
-                _ => None,
-            }) else {
-                return Ok(());
-            };
-            ctx.notify(
-                name,
-                &event_name,
-                title,
-                Self::hook_notification_body(&ctx.payload),
-            )
-            .await
+    fn hook_notify_title(&self, event_name: &str) -> Option<String> {
+        let name = self.display_name();
+        match event_name {
+            "PermissionRequest" => Some(format!("{name} requires approval")),
+            "Stop" => Some(format!("{name} finished")),
+            _ => None,
+        }
+    }
+
+    fn hook_notify_body(
+        &self,
+        ctx: &HookContext,
+        _agent_session_id: Option<String>,
+    ) -> ActorFuture<'static, Option<String>> {
+        let transcript_path = ctx
+            .payload
+            .get("transcript_path")
+            .and_then(|v| v.as_str())
+            .map(PathBuf::from);
+        spawn_blocking_opt(move || {
+            transcript_path
+                .as_deref()
+                .and_then(Self::title_from_transcript_path)
         })
     }
 

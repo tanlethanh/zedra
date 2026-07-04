@@ -667,9 +667,8 @@ async fn receive_hook(args: AgentHookReceiveArgs) -> Result<()> {
     let response: serde_json::Value = match api_post(&workdir, &path, &body).await {
         Ok(r) => r,
         Err(e) => {
-            // Connection errors (no daemon) are always silent.
-            // --quiet suppresses all other errors so agent hook noise never
-            // surfaces in the working terminal.
+            // Connection errors (no daemon) stay silent; --quiet suppresses the
+            // rest so hook noise never surfaces in the working terminal.
             if is_connection_error(&e) || is_no_daemon_error(&e) || args.quiet {
                 return Ok(());
             }

@@ -103,10 +103,9 @@ pub fn string_field<'a>(record: &'a Value, names: &[&str]) -> Option<&'a str> {
         .filter(|value| !value.is_empty())
 }
 
-/// Trimmed text of a `user`-role chat `message`, or `None`. Accepts both content shapes
-/// (bare string, or array where the first `type == "text"` part wins) and rejects empty or
-/// markup-only (leading `<`) text so it is title-safe. Pass the message object itself (JSONL
-/// record or `messages` element), not the envelope.
+/// Trimmed text of a `user`-role `message` (bare-string or text-part content),
+/// rejecting empty or markup-leading (`<`) text so it is title-safe.
+/// Pass the message object itself, not the envelope.
 pub fn user_message_text(message: &Value) -> Option<String> {
     if string_field(message, &["role"]) != Some("user") {
         return None;

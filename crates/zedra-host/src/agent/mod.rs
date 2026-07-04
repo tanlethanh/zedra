@@ -126,8 +126,11 @@ pub fn scan_installed_agents() -> AgentInstalledListResult {
 pub fn scan_agent_cli_versions() -> HashMap<String, AgentCliSummary> {
     let mut versions = HashMap::with_capacity(actors().len());
     std::thread::scope(|scope| {
+        // Only detail-view actors display a version; skip the subprocess
+        // spawn for detect-only actors.
         let handles: Vec<_> = actors()
             .iter()
+            .filter(|actor| actor.shows_detail())
             .map(|actor| (*actor, scope.spawn(move || actor.cli_version_summary())))
             .collect();
         for (actor, handle) in handles {
@@ -259,9 +262,8 @@ pub fn resume_launch_command(slug: &str, session_id: &str) -> Option<String> {
     actor(slug)?.resume_launch_command(&shell_quote(session_id))
 }
 
-/// True for agents whose sessions are not scoped to a workspace (Hermes). Their
-/// scans ignore the workdir, so callers can reuse a cached result across
-/// workspace switches.
+/// Agents whose sessions ignore the workdir (Hermes); cached results stay
+/// valid across workspace switches.
 pub fn is_global(slug: &str) -> bool {
     actor(slug).is_some_and(AgentActor::is_global)
 }
@@ -389,9 +391,8 @@ pub(crate) trait AgentActor: Sync {
 
     fn display_name(&self) -> &'static str;
 
-    /// Icon slug: the bare `assets/icons/<slug>.svg` name, resolved identically
-    /// on every platform. Usually the agent slug, but a few differ for branding
-    /// (codex -> `openai`, copilot -> `githubcopilot`, hermes -> `hermesagent`).
+    /// Bare `assets/icons/<slug>.svg` name, identical on every platform; a few
+    /// differ from the slug for branding (codex -> `openai`).
     fn icon_name(&self) -> &'static str;
 
     /// Executables that can launch this actor, in preference order.
@@ -518,12 +519,6 @@ pub(crate) trait AgentActor: Sync {
         AgentDataSource::HistoricalScan
     }
 
-    /// CLI summary used for a *session list* scan. Defaults to the same probe as
-    /// the agent list; agents with a dedicated probe (OpenCode) override.
-    fn session_scan_cli(&self, workdir: &Path) -> AgentCliSummary {
-        self.agent_list_cli_summary(workdir)
-    }
-
     fn agent_list_cli_summary(&self, workdir: &Path) -> AgentCliSummary {
         let available = self.cli_available(workdir);
         if available {
@@ -557,13 +552,77 @@ pub(crate) trait AgentActor: Sync {
         Box::pin(async { None })
     }
 
-    fn receive_hook<'a>(&'a self, _ctx: HookContext) -> ActorFuture<'a, anyhow::Result<()>> {
-        Box::pin(async move { anyhow::bail!("{} does not support lifecycle hooks", self.slug()) })
+    /// Gates the shared `receive_hook` driver; hooked actors opt in.
+    fn supports_hooks(&self) -> bool {
+        false
     }
 
-    /// Perform mutable provider setup (hook runner and provider config). Read
-    /// only setup state remains available through `setup_summary`.
-    /// Actors that override `setup` must opt in so default installs can skip
+    /// Event name and agent session id from a hook payload.
+    fn hook_identity(&self, payload: &serde_json::Value) -> (String, Option<String>) {
+        (
+            utils::payload_string(payload, "hook_event_name").unwrap_or_default(),
+            utils::payload_string(payload, "session_id"),
+        )
+    }
+
+    /// Agent-state transition for a hook event.
+    fn hook_state(&self, event_name: &str, _payload: &serde_json::Value) -> Option<AgentState> {
+        match event_name {
+            "UserPromptSubmit" | "PostToolUse" => Some(AgentState::Running),
+            "PermissionRequest" => Some(AgentState::WaitingApproval),
+            "Stop" => Some(AgentState::Completed),
+            _ => None,
+        }
+    }
+
+    /// Push-notification title for a hook event; `None` sends nothing.
+    fn hook_notify_title(&self, event_name: &str) -> Option<String> {
+        let name = self.display_name();
+        match event_name {
+            "PermissionRequest" => Some(format!("{name} requires approval")),
+            "Stop" => Some(format!("{name} completed")),
+            _ => None,
+        }
+    }
+
+    /// Notification body lookup; runs only when a title matched.
+    fn hook_notify_body(
+        &self,
+        _ctx: &HookContext,
+        _agent_session_id: Option<String>,
+    ) -> ActorFuture<'static, Option<String>> {
+        Box::pin(std::future::ready(None))
+    }
+
+    /// Shared hook driver: map the payload through the `hook_*` methods,
+    /// apply the state transition, then notify when a title matched.
+    fn receive_hook<'a>(&'a self, ctx: HookContext) -> ActorFuture<'a, anyhow::Result<()>> {
+        Box::pin(async move {
+            if !self.supports_hooks() {
+                anyhow::bail!("{} does not support lifecycle hooks", self.slug());
+            }
+            let (event_name, agent_session_id) = self.hook_identity(&ctx.payload);
+            if event_name.is_empty() {
+                // Do not log ctx.payload: it can carry user content (telemetry-privacy rule).
+                tracing::warn!(
+                    agent = self.slug(),
+                    "hook payload missing or empty event name; ignoring"
+                );
+                return Ok(());
+            }
+            let state = self.hook_state(&event_name, &ctx.payload);
+            ctx.apply(self.slug(), &event_name, state, agent_session_id.as_deref())
+                .await;
+            let Some(title) = self.hook_notify_title(&event_name) else {
+                return Ok(());
+            };
+            let body = self.hook_notify_body(&ctx, agent_session_id);
+            ctx.notify(self.display_name(), &event_name, title, body)
+                .await
+        })
+    }
+
+    /// Actors overriding `setup` must opt in, so default installs skip
     /// unsupported actors without swallowing real setup failures.
     fn supports_setup(&self) -> bool {
         false
@@ -592,6 +651,7 @@ pub(crate) trait AgentActor: Sync {
     fn hook_test_payload(&self, event_name: &str, workdir: &Path) -> serde_json::Value {
         serde_json::json!({
             "hook_event_name": event_name,
+            "session_id": "zedra-test-session",
             "cwd": workdir,
         })
     }
@@ -628,7 +688,7 @@ fn sessions_for_actor_blocking(
     workdir: &Path,
     limit: usize,
 ) -> Result<(Vec<AgentSessionSummary>, u32), String> {
-    let cli = actor.session_scan_cli(workdir);
+    let cli = actor.agent_list_cli_summary(workdir);
     let (mut sessions, total) = actor.sessions(&ScanCtx { workdir, cli: &cli }, limit)?;
     let total = u32::try_from(total).unwrap_or(u32::MAX);
     sessions.sort_by(|left, right| right.last_activity_at.cmp(&left.last_activity_at));
@@ -728,9 +788,8 @@ mod tests {
     use super::*;
 
     #[test]
-    // Registry-driven: every actor that supports resume must build a command
-    // that launches its own binary, embeds the session id, and shell-quotes
-    // unsafe ids; blank ids and unknown slugs never produce a command.
+    // Every resume command must launch the actor's own binary, embed the id
+    // shell-quoted; blank ids and unknown slugs never produce a command.
     fn resume_launch_commands_are_host_owned() {
         let mut resumable = 0;
         for actor in actors() {

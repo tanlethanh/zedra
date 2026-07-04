@@ -44,9 +44,8 @@ mod tests {
             .any(|agent| agent.slug == "claude" && agent.icon_name == "claude"));
     }
 
-    // Every actor's icon_name is a bare slug that must resolve to a real
-    // `assets/icons/<slug>.svg`; a typo would otherwise ship a missing native
-    // icon (no runtime fallback in UIKit). Source of truth is the zedra crate.
+    // Every icon_name must resolve to a real `assets/icons/<slug>.svg`; a typo
+    // ships a missing native icon (no UIKit runtime fallback).
     #[test]
     fn every_icon_name_has_a_source_svg() {
         let icons_dir =

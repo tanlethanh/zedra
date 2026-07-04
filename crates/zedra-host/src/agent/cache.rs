@@ -8,9 +8,8 @@ use zedra_rpc::proto::*;
 use crate::agent;
 use crate::session_registry::{ServerSession, SessionRegistry};
 
-/// Cached session scan for one agent kind. `limit` is the effective (clamped)
-/// limit the scan was run with, so a later request for a larger limit can
-/// detect that the cache is too small and re-scan.
+/// Cached session scan for one agent kind. `limit` is the effective limit the
+/// scan ran with, so a larger later request detects the cache is too small.
 struct CachedSessions {
     limit: u32,
     result: AgentSessionsResult,
@@ -28,23 +27,43 @@ struct CachedAgentData {
 }
 
 #[derive(Default)]
-struct VersionRefreshCoordinator {
+struct RefreshCoordinator {
     running: bool,
     rerun: bool,
     pending_sessions: HashMap<String, Arc<ServerSession>>,
 }
 
-#[derive(Default)]
-struct UsageRefreshCoordinator {
-    running: bool,
-    rerun: bool,
-    pending_sessions: HashMap<String, Arc<ServerSession>>,
+impl RefreshCoordinator {
+    /// Register the session for notification; returns whether the caller
+    /// should start a refresh task (false = one is running, rerun queued).
+    fn begin(&mut self, session: Option<Arc<ServerSession>>) -> bool {
+        if let Some(session) = session {
+            self.pending_sessions.insert(session.id.clone(), session);
+        }
+        if self.running {
+            self.rerun = true;
+            false
+        } else {
+            self.running = true;
+            true
+        }
+    }
+
+    /// Consume the rerun flag after a refresh pass; returns whether to loop.
+    fn finish_pass(&mut self) -> bool {
+        let rerun = self.rerun;
+        self.rerun = false;
+        if !rerun {
+            self.running = false;
+        }
+        rerun
+    }
 }
 
 pub struct AgentCache {
     inner: Mutex<CachedAgentData>,
-    version_refresh: Mutex<VersionRefreshCoordinator>,
-    usage_refresh: Mutex<UsageRefreshCoordinator>,
+    version_refresh: Mutex<RefreshCoordinator>,
+    usage_refresh: Mutex<RefreshCoordinator>,
     registry: Mutex<Option<Weak<SessionRegistry>>>,
 }
 
@@ -52,8 +71,8 @@ impl AgentCache {
     pub fn new() -> Arc<Self> {
         Arc::new(Self {
             inner: Mutex::new(CachedAgentData::default()),
-            version_refresh: Mutex::new(VersionRefreshCoordinator::default()),
-            usage_refresh: Mutex::new(UsageRefreshCoordinator::default()),
+            version_refresh: Mutex::new(RefreshCoordinator::default()),
+            usage_refresh: Mutex::new(RefreshCoordinator::default()),
             registry: Mutex::new(None),
         })
     }
@@ -266,9 +285,7 @@ impl AgentCache {
         let needed = agent::agent_session_limit(limit) as u32;
         {
             let inner = self.inner.lock().await;
-            // Global agents (Hermes) scan workspace-independent data, so their
-            // retained session cache is valid even when the cached workdir
-            // differs after a workspace switch.
+            // Global agents scan workspace-independent data; cache survives workdir changes.
             if agent::is_global(slug)
                 || inner
                     .workdir
@@ -291,10 +308,14 @@ impl AgentCache {
         if inner.cli_versions.is_empty() {
             return true;
         }
+        // Only detail-view actors get version-probed; ignore the rest or the
+        // condition never clears.
         inner.agents.as_ref().is_some_and(|list| {
-            list.agents
-                .iter()
-                .any(|agent| agent.cli.available && agent.cli.version.is_none())
+            list.agents.iter().any(|agent| {
+                agent.cli.available
+                    && agent.cli.version.is_none()
+                    && agent::actor(&agent.slug).is_some_and(|actor| actor.shows_detail())
+            })
         })
     }
 
@@ -329,37 +350,14 @@ impl AgentCache {
     }
 
     async fn request_version_refresh(self: &Arc<Self>, session: Option<Arc<ServerSession>>) {
-        let start = {
-            let mut coord = self.version_refresh.lock().await;
-            if let Some(session) = session {
-                coord.pending_sessions.insert(session.id.clone(), session);
-            }
-            if coord.running {
-                coord.rerun = true;
-                false
-            } else {
-                coord.running = true;
-                true
-            }
-        };
-        if !start {
+        if !self.version_refresh.lock().await.begin(session) {
             return;
         }
-
         let cache = Arc::clone(self);
         tokio::spawn(async move {
             loop {
                 cache.run_version_refresh().await;
-                let rerun = {
-                    let mut coord = cache.version_refresh.lock().await;
-                    let rerun = coord.rerun;
-                    coord.rerun = false;
-                    if !rerun {
-                        coord.running = false;
-                    }
-                    rerun
-                };
-                if !rerun {
+                if !cache.version_refresh.lock().await.finish_pass() {
                     break;
                 }
             }
@@ -388,43 +386,21 @@ impl AgentCache {
                 .join(", ")
         );
 
-        let sessions = self.collect_notify_sessions().await;
+        let sessions = self.collect_notify_sessions(&self.version_refresh).await;
         for session in sessions {
             self.push_agent_info_changed(&session).await;
         }
     }
 
     async fn request_usage_refresh(self: &Arc<Self>, session: Option<Arc<ServerSession>>) {
-        let start = {
-            let mut coord = self.usage_refresh.lock().await;
-            if let Some(session) = session {
-                coord.pending_sessions.insert(session.id.clone(), session);
-            }
-            if coord.running {
-                coord.rerun = true;
-                false
-            } else {
-                coord.running = true;
-                true
-            }
-        };
-        if !start {
+        if !self.usage_refresh.lock().await.begin(session) {
             return;
         }
         let cache = Arc::clone(self);
         tokio::spawn(async move {
             loop {
                 cache.run_usage_refresh().await;
-                let rerun = {
-                    let mut coord = cache.usage_refresh.lock().await;
-                    let rerun = coord.rerun;
-                    coord.rerun = false;
-                    if !rerun {
-                        coord.running = false;
-                    }
-                    rerun
-                };
-                if !rerun {
+                if !cache.usage_refresh.lock().await.finish_pass() {
                     break;
                 }
             }
@@ -468,39 +444,23 @@ impl AgentCache {
                 .collect::<Vec<_>>()
                 .join(", ")
         );
-        let sessions = self.collect_usage_notify_sessions().await;
+        let sessions = self.collect_notify_sessions(&self.usage_refresh).await;
         for session in sessions {
             self.push_agent_info_changed(&session).await;
         }
     }
 
-    async fn collect_usage_notify_sessions(&self) -> Vec<Arc<ServerSession>> {
-        let pending = {
-            let mut coord = self.usage_refresh.lock().await;
-            coord.pending_sessions.drain().collect::<Vec<_>>()
-        };
-        let mut by_id: HashMap<String, Arc<ServerSession>> = pending.into_iter().collect();
+    async fn collect_notify_sessions(
+        &self,
+        coord: &Mutex<RefreshCoordinator>,
+    ) -> Vec<Arc<ServerSession>> {
+        let mut by_id: HashMap<String, Arc<ServerSession>> =
+            coord.lock().await.pending_sessions.drain().collect();
         if let Some(registry) = self.registry.lock().await.as_ref().and_then(Weak::upgrade) {
             for session in registry.sessions_with_event_subscribers().await {
                 by_id.insert(session.id.clone(), session);
             }
         }
-        by_id.into_values().collect()
-    }
-
-    async fn collect_notify_sessions(&self) -> Vec<Arc<ServerSession>> {
-        let pending = {
-            let mut coord = self.version_refresh.lock().await;
-            coord.pending_sessions.drain().collect::<Vec<_>>()
-        };
-        let mut by_id: HashMap<String, Arc<ServerSession>> = pending.into_iter().collect();
-
-        if let Some(registry) = self.registry.lock().await.as_ref().and_then(Weak::upgrade) {
-            for session in registry.sessions_with_event_subscribers().await {
-                by_id.insert(session.id.clone(), session);
-            }
-        }
-
         by_id.into_values().collect()
     }
 
@@ -526,11 +486,8 @@ impl AgentCache {
 }
 
 impl CachedAgentData {
-    /// Workdir-scoped caches (`agents`, `sessions`) are keyed only by agent
-    /// slug, so when the workdir changes they must be dropped or a later
-    /// lookup would serve results from the previous workdir. Global agents
-    /// (Hermes) scan workspace-independent data, so their session cache stays
-    /// valid across a workdir change and is retained.
+    /// Caches are keyed by slug only, so drop them on workdir change or lookups
+    /// would serve the previous workdir; global agents (Hermes) are retained.
     fn invalidate_if_workdir_changed(&mut self, workdir: &Path) {
         if self.workdir.as_deref() != Some(workdir) {
             self.agents = None;

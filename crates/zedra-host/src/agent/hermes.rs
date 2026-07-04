@@ -153,9 +153,8 @@ impl HermesActor {
         }
     }
 
-    /// Read-only snapshot of Hermes's config/memory files for the agent detail view.
-    /// Absent files are returned with `missing = true` so the UI can show them as
-    /// "not created yet" rather than omitting them.
+    /// Config/memory files for the detail view; absent files come back with
+    /// `missing = true` so the UI shows "not created yet".
     pub fn config_files() -> Vec<AgentFile> {
         Self::config_files_in(&Self::hermes_home())
     }
@@ -218,9 +217,8 @@ impl HermesActor {
             .count()
     }
 
-    /// `state.db` is the canonical store (richer than the per-session JSON and it
-    /// also covers gateway/ACP sessions that never get a JSON file). Fall back to
-    /// the JSON scan only when the db is absent or unreadable.
+    /// `state.db` is canonical (covers gateway/ACP sessions with no JSON file);
+    /// fall back to the JSON scan only when the db is absent or unreadable.
     fn collect_sessions(limit: Option<usize>) -> Vec<HermesSession> {
         if let Some(sessions) = Self::collect_sessions_from_db(limit) {
             return sessions;
@@ -241,9 +239,8 @@ impl HermesActor {
                 (p, mtime)
             })
             .collect();
-        // mtime is only a cheap proxy; parse every file and sort by actual
-        // last activity before limiting, so an older-touched file with newer
-        // in-content activity isn't dropped from the first page.
+        // mtime is a cheap proxy; sort by actual last activity before limiting
+        // so an older-touched file with newer activity isn't dropped.
         candidates.sort_by(|a, b| b.1.cmp(&a.1).then_with(|| b.0.cmp(&a.0)));
         let mut sessions: Vec<HermesSession> = candidates
             .into_iter()
@@ -417,10 +414,8 @@ struct HermesConfig {
 }
 
 impl HermesActor {
-    /// Hermes `config.yaml` nests model defaults under a top-level `model:` block.
-    /// We only need a couple of scalars, so parse the block by indentation rather
-    /// than pulling in a YAML dependency (mirrors how the Codex agent reads its
-    /// `config.toml` line by line).
+    /// Parse the `model:` block by indentation instead of a YAML dependency —
+    /// only a couple of scalars are needed (mirrors the Codex config reader).
     fn read_config() -> HermesConfig {
         let Ok(text) = std::fs::read_to_string(Self::config_path()) else {
             return HermesConfig::default();
@@ -593,7 +588,6 @@ mod tests {
     }
 }
 
-use super::hook::HookContext;
 use super::{setup_status, ActorFuture, AgentActor, ScanCtx, SessionCounts as ActorSessionCounts};
 
 pub(super) struct HermesActor;
@@ -679,41 +673,38 @@ impl AgentActor for HermesActor {
     // No remote plan/usage endpoint: `subscription_plan`/`account_usage` keep
     // the trait's None defaults.
 
-    fn receive_hook<'a>(&'a self, ctx: HookContext) -> ActorFuture<'a, anyhow::Result<()>> {
-        Box::pin(async move {
-            // Hermes shell hooks pipe `hook_event_name` and place event-specific
-            // fields under `extra`.
-            let event_name =
-                super::utils::payload_string(&ctx.payload, "hook_event_name").unwrap_or_default();
-            let agent_session_id = super::utils::payload_string(&ctx.payload, "session_id")
-                .filter(|value| !value.is_empty())
-                .or_else(|| {
-                    ctx.payload
-                        .get("extra")
-                        .and_then(|extra| super::utils::payload_string(extra, "session_key"))
-                });
-            let agent_state = Self::hermes_agent_state(&event_name);
-            ctx.apply(
-                "hermes",
-                &event_name,
-                agent_state,
-                agent_session_id.as_deref(),
-            )
-            .await;
+    fn supports_hooks(&self) -> bool {
+        true
+    }
 
-            // `on_session_end` follows every turn and would duplicate the successful
-            // completion notification already emitted for `post_llm_call`.
-            let name = self.display_name();
-            let Some(title) = (match event_name.as_str() {
-                "pre_approval_request" => Some(format!("{name} requires approval")),
-                "post_llm_call" => Some(format!("{name} completed")),
-                _ => None,
-            }) else {
-                return Ok(());
-            };
-            ctx.notify(name, &event_name, title, std::future::ready(None))
-                .await
-        })
+    // Hermes shell hooks pipe `hook_event_name` and place event-specific
+    // fields under `extra`.
+    fn hook_identity(&self, payload: &Value) -> (String, Option<String>) {
+        let event_name =
+            super::utils::payload_string(payload, "hook_event_name").unwrap_or_default();
+        let agent_session_id = super::utils::payload_string(payload, "session_id")
+            .filter(|value| !value.is_empty())
+            .or_else(|| {
+                payload
+                    .get("extra")
+                    .and_then(|extra| super::utils::payload_string(extra, "session_key"))
+            });
+        (event_name, agent_session_id)
+    }
+
+    fn hook_state(&self, event_name: &str, _payload: &Value) -> Option<AgentState> {
+        Self::hermes_agent_state(event_name)
+    }
+
+    // `on_session_end` follows every turn and would duplicate the successful
+    // completion notification already emitted for `post_llm_call`.
+    fn hook_notify_title(&self, event_name: &str) -> Option<String> {
+        let name = self.display_name();
+        match event_name {
+            "pre_approval_request" => Some(format!("{name} requires approval")),
+            "post_llm_call" => Some(format!("{name} completed")),
+            _ => None,
+        }
     }
 
     fn supports_setup(&self) -> bool {
@@ -770,14 +761,6 @@ impl AgentActor for HermesActor {
                 }
             }
             Ok(())
-        })
-    }
-
-    fn hook_test_payload(&self, event_name: &str, workdir: &Path) -> serde_json::Value {
-        serde_json::json!({
-            "hook_event_name": event_name,
-            "session_id": "zedra-test-session",
-            "cwd": workdir,
         })
     }
 }
@@ -898,9 +881,8 @@ exec "$CLI" agent hook receive --agent hermes --quiet
         )
     }
 
-    /// Idempotently patch the `hooks:` block in `~/.hermes/config.yaml`. Each run strips the
-    /// `HOOK_EVENTS` keys Zedra owns and re-inserts fresh entries (path/timeout stay current),
-    /// preserves all user-defined hooks verbatim, and handles both `hooks: {}` and block forms.
+    /// Idempotent: strip Zedra-owned `HOOK_EVENTS` keys, re-insert fresh entries,
+    /// preserve user hooks verbatim; handles `hooks: {}` and block forms.
     fn patch_config_hooks(config: &str, script_path: &Path) -> String {
         let script = script_path.display().to_string();
 
@@ -995,9 +977,8 @@ exec "$CLI" agent hook receive --agent hermes --quiet
                 && matches!(t.as_bytes().get(6), Some(b' ') | Some(b'{') | None))
     }
 
-    /// Remove `remove_events` blocks from the indented hooks lines (those *after* the `hooks:` key).
-    /// A block runs from a `  identifier:` line (exactly 2-space indent) to the next such line or EOF;
-    /// other lines (blank, comment, deeper-indented) are kept or dropped by whether we're inside one.
+    /// A block runs from a 2-space-indented `identifier:` line to the next such
+    /// line or EOF; blank/comment/deeper lines follow their enclosing block.
     fn remove_zedra_event_blocks<'a>(lines: &[&'a str], remove_events: &[&str]) -> String {
         let mut out = String::new();
         let mut skip = false;

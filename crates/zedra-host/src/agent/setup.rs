@@ -323,7 +323,7 @@ impl SetupCliCtx {
             }
         }
 
-        write_json_file(path, &root)?;
+        write_atomic(path, &serde_json::to_vec_pretty(&root)?)?;
         self.step("hooks");
         self.detail(&format!(
             "register: {}",
@@ -352,7 +352,7 @@ impl SetupCliCtx {
             }
         }
         hooks.retain(|_, value| value.as_array().is_none_or(|entries| !entries.is_empty()));
-        write_json_file(path, &root)?;
+        write_atomic(path, &serde_json::to_vec_pretty(&root)?)?;
         self.step("hooks");
         self.detail(&format!("write {}", path.display()));
         Ok(())
@@ -374,7 +374,7 @@ impl SetupCliCtx {
 
             match download_skill(&client, &url).await {
                 Ok(contents) => {
-                    write_skill_file(&target, &contents)?;
+                    write_atomic(&target, contents.as_bytes())?;
                     installed += 1;
                     self.detail(&format!("write {}", target.display()));
                 }
@@ -526,12 +526,13 @@ fn read_json_object(path: &Path) -> Result<Value> {
     }
 }
 
-fn write_json_file(path: &Path, value: &Value) -> Result<()> {
+/// Create parents, write to a pid-suffixed tmp file, then rename into place.
+fn write_atomic(path: &Path, contents: &[u8]) -> Result<()> {
     if let Some(parent) = path.parent() {
         fs::create_dir_all(parent)?;
     }
     let tmp = path.with_extension(format!("tmp.{}", std::process::id()));
-    fs::write(&tmp, serde_json::to_vec_pretty(value)?)?;
+    fs::write(&tmp, contents)?;
     fs::rename(&tmp, path)?;
     Ok(())
 }
@@ -604,18 +605,6 @@ async fn download_skill(client: &reqwest::Client, url: &str) -> Result<String> {
     Ok(contents)
 }
 
-fn write_skill_file(path: &Path, contents: &str) -> Result<()> {
-    let parent = path
-        .parent()
-        .ok_or_else(|| anyhow!("skill path has no parent: {}", path.display()))?;
-    fs::create_dir_all(parent)?;
-
-    let tmp = path.with_extension(format!("tmp.{}", std::process::id()));
-    fs::write(&tmp, contents)?;
-    fs::rename(&tmp, path)?;
-    Ok(())
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -662,7 +651,7 @@ mod tests {
         let mut root = read_json_object(&path).unwrap();
         root["hooks"]["PermissionRequest"][0]["hooks"][0]["command"] =
             Value::String("/tmp/old-zedra agent hook receive --agent Codex".to_string());
-        write_json_file(&path, &root).unwrap();
+        write_atomic(&path, &serde_json::to_vec_pretty(&root).unwrap()).unwrap();
         setup
             .merge_command_hooks(
                 &path,
@@ -717,7 +706,7 @@ mod tests {
                 "command": "/usr/bin/true"
             }]
         }));
-        write_json_file(&path, &root).unwrap();
+        write_atomic(&path, &serde_json::to_vec_pretty(&root).unwrap()).unwrap();
 
         setup.remove_command_hooks(&path, "Claude").unwrap();
 

@@ -119,9 +119,8 @@ impl PiActor {
         Self::pi_sessions_root().join(Self::encoded_project_dir(workdir))
     }
 
-    /// Newest sessions by mtime plus the total count. The project dir is
-    /// workspace-scoped, so the candidate count is the total without opening
-    /// any file; kept files are head-parsed with an early stop.
+    /// Newest sessions by mtime plus total; the project dir is workspace-scoped,
+    /// so the candidate count is the total without opening any file.
     fn collect_session_files(
         workdir: &Path,
         limit: Option<usize>,
@@ -285,10 +284,8 @@ impl PiActor {
             .unwrap_or_default()
     }
 
-    /// Effective config = global (`~/.pi/agent`) overlaid with project
-    /// (`<workdir>/.pi`); per field the project value replaces the global one
-    /// (scalars and lists alike), matching Pi's own settings merge. Returns the
-    /// merged view plus whether the workspace has its own `settings.json`.
+    /// Global `~/.pi/agent` overlaid per-field by project `<workdir>/.pi`
+    /// (matching Pi's merge); also returns whether the workspace has settings.
     fn effective_settings(workdir: &Path) -> (PiSettings, bool) {
         let global = Self::read_pi_settings(&Self::pi_agent_dir().join("settings.json"));
         let project_path = workdir.join(".pi").join("settings.json");
@@ -339,9 +336,8 @@ struct PiAuthEntry {
 }
 
 impl PiActor {
-    /// Authenticated providers from `auth.json` plus custom providers declared in
-    /// `models.json`, formatted as `{provider → auth state}` info rows. Never
-    /// exposes tokens or account ids.
+    /// Providers from `auth.json` plus custom ones from `models.json` as
+    /// `{provider → auth state}` rows; never exposes tokens or account ids.
     fn provider_fields() -> Vec<AgentInfoField> {
         let mut fields = Vec::new();
         if let Ok(Value::Object(map)) = read_json_file(&Self::pi_agent_dir().join("auth.json")) {
@@ -654,37 +650,36 @@ impl AgentActor for PiActor {
     // No remote plan/usage endpoint: `subscription_plan`/`account_usage` keep
     // the trait's None defaults.
 
-    fn receive_hook<'a>(&'a self, ctx: HookContext) -> ActorFuture<'a, anyhow::Result<()>> {
-        Box::pin(async move {
-            // The pi extension normalizes pi's native events to Claude-compatible
-            // names (`UserPromptSubmit`, `Stop`) and pipes snake_case `session_id`.
-            // Pi exposes no approval hook, so there is no WaitingApproval transition.
-            let event_name =
-                super::utils::payload_string(&ctx.payload, "hook_event_name").unwrap_or_default();
-            let agent_session_id = super::utils::payload_string(&ctx.payload, "session_id");
-            let agent_state = match event_name.as_str() {
-                "UserPromptSubmit" => Some(AgentState::Running),
-                "Stop" => Some(AgentState::Completed),
-                _ => None,
-            };
-            ctx.apply("pi", &event_name, agent_state, agent_session_id.as_deref())
-                .await;
+    fn supports_hooks(&self) -> bool {
+        true
+    }
 
-            // Only notify on completion — pi has no approval event, and Stop is the
-            // single user-meaningful turn boundary.
-            if event_name != "Stop" {
-                return Ok(());
-            }
-            let name = self.display_name();
-            // Pi stores transcripts per workdir; look up the session title for the body.
-            let workdir = ctx.workdir.clone();
-            let body = spawn_blocking_opt(move || {
-                agent_session_id
-                    .as_deref()
-                    .and_then(|id| Self::title_for_session(&workdir, id))
-            });
-            ctx.notify(name, &event_name, format!("{name} completed"), body)
-                .await
+    // The pi extension normalizes pi's native events to Claude-compatible names.
+    // Pi exposes no approval hook, so there is no WaitingApproval transition.
+    fn hook_state(&self, event_name: &str, _payload: &Value) -> Option<AgentState> {
+        match event_name {
+            "UserPromptSubmit" => Some(AgentState::Running),
+            "Stop" => Some(AgentState::Completed),
+            _ => None,
+        }
+    }
+
+    // Only notify on completion — Stop is the single user-meaningful turn boundary.
+    fn hook_notify_title(&self, event_name: &str) -> Option<String> {
+        (event_name == "Stop").then(|| format!("{} completed", self.display_name()))
+    }
+
+    // Pi stores transcripts per workdir; look up the session title for the body.
+    fn hook_notify_body(
+        &self,
+        ctx: &HookContext,
+        agent_session_id: Option<String>,
+    ) -> ActorFuture<'static, Option<String>> {
+        let workdir = ctx.workdir.clone();
+        spawn_blocking_opt(move || {
+            agent_session_id
+                .as_deref()
+                .and_then(|id| Self::title_for_session(&workdir, id))
         })
     }
 
@@ -732,14 +727,6 @@ impl AgentActor for PiActor {
                 }
             }
             Ok(())
-        })
-    }
-
-    fn hook_test_payload(&self, event_name: &str, workdir: &Path) -> serde_json::Value {
-        serde_json::json!({
-            "hook_event_name": event_name,
-            "session_id": "zedra-test-session",
-            "cwd": workdir,
         })
     }
 }

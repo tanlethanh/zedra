@@ -105,22 +105,6 @@ impl OpenCodeActor {
         Ok((sessions, total))
     }
 
-    pub fn session_cli_summary() -> AgentCliSummary {
-        if Self::cli_available() {
-            AgentCliSummary {
-                available: true,
-                version: None,
-                error: None,
-            }
-        } else {
-            AgentCliSummary {
-                available: false,
-                version: None,
-                error: Some("OpenCode CLI and database not found".to_string()),
-            }
-        }
-    }
-
     fn db_path() -> PathBuf {
         home_path(&[".local", "share", "opencode", "opencode.db"])
     }
@@ -675,7 +659,6 @@ mod tests {
     }
 }
 
-use super::hook::HookContext;
 use super::{
     home_path, hook_file_mentions_zedra, hooks_enabled, setup_status, ActorFuture, AgentActor,
     ScanCtx, SessionCounts as ActorSessionCounts,
@@ -736,10 +719,6 @@ impl AgentActor for OpenCodeActor {
         AgentDataSource::ProviderCli
     }
 
-    fn session_scan_cli(&self, _workdir: &Path) -> AgentCliSummary {
-        Self::session_cli_summary()
-    }
-
     fn setup_summary(&self, available: bool, workdir: &Path) -> AgentSetupSummary {
         let skills_installed =
             home_path(&[".config", "opencode", "skills", "zedra-start", "SKILL.md"]).is_file();
@@ -769,38 +748,35 @@ impl AgentActor for OpenCodeActor {
         spawn_blocking_opt(Self::fetch_account_usage)
     }
 
-    fn receive_hook<'a>(&'a self, ctx: HookContext) -> ActorFuture<'a, anyhow::Result<()>> {
-        Box::pin(async move {
-            // The OpenCode plugin sends a top-level event name and OpenCode's native
-            // event object. Accept flat fields as fallbacks for synthetic/test payloads.
-            let event_name = super::utils::payload_string(&ctx.payload, "event_name")
-                .or_else(|| super::utils::payload_string(&ctx.payload, "event"))
-                .or_else(|| super::utils::payload_string(&ctx.payload, "type"))
-                .or_else(|| Self::opencode_event_string(&ctx.payload, "type"))
-                .unwrap_or_default();
-            let agent_session_id = super::utils::payload_string(&ctx.payload, "sessionID")
-                .or_else(|| super::utils::payload_string(&ctx.payload, "sessionId"))
-                .or_else(|| Self::opencode_event_property_string(&ctx.payload, "sessionID"));
-            let agent_state = Self::opencode_agent_state(&event_name, &ctx.payload);
-            ctx.apply(
-                "opencode",
-                &event_name,
-                agent_state,
-                agent_session_id.as_deref(),
-            )
-            .await;
+    fn supports_hooks(&self) -> bool {
+        true
+    }
 
-            let name = self.display_name();
-            let Some(title) = (match event_name.as_str() {
-                "permission.asked" => Some(format!("{name} requires approval")),
-                "session.idle" => Some(format!("{name} completed")),
-                _ => None,
-            }) else {
-                return Ok(());
-            };
-            ctx.notify(name, &event_name, title, std::future::ready(None))
-                .await
-        })
+    // The OpenCode plugin sends a top-level event name and OpenCode's native
+    // event object. Accept flat fields as fallbacks for synthetic/test payloads.
+    fn hook_identity(&self, payload: &Value) -> (String, Option<String>) {
+        let event_name = super::utils::payload_string(payload, "event_name")
+            .or_else(|| super::utils::payload_string(payload, "event"))
+            .or_else(|| super::utils::payload_string(payload, "type"))
+            .or_else(|| Self::opencode_event_string(payload, "type"))
+            .unwrap_or_default();
+        let agent_session_id = super::utils::payload_string(payload, "sessionID")
+            .or_else(|| super::utils::payload_string(payload, "sessionId"))
+            .or_else(|| Self::opencode_event_property_string(payload, "sessionID"));
+        (event_name, agent_session_id)
+    }
+
+    fn hook_state(&self, event_name: &str, payload: &Value) -> Option<AgentState> {
+        Self::opencode_agent_state(event_name, payload)
+    }
+
+    fn hook_notify_title(&self, event_name: &str) -> Option<String> {
+        let name = self.display_name();
+        match event_name {
+            "permission.asked" => Some(format!("{name} requires approval")),
+            "session.idle" => Some(format!("{name} completed")),
+            _ => None,
+        }
     }
 
     fn supports_setup(&self) -> bool {
