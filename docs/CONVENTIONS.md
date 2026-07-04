@@ -267,6 +267,8 @@ div().flex_col()
 
 Keep `min_w_0()` on flex items that contain truncated text or overflow content to prevent them from overflowing their container.
 
+Text wrapping requires a definite width constraint. Use `.w(px(width))`, not `.max_w(px(width))`, on text containers — with only a max width, text wraps at viewport width.
+
 For the column container itself to have a definite width (so its children can use stretch reliably), give it an explicit `w_full()` or absolute pixel width. Do not rely solely on cross-axis stretch being inherited transitively through multiple flex levels.
 
 Do not combine `justify_between()` with `flex_1()` on a sibling to push a right-hand element to the far edge. With `flex_1()` consuming all free space, `justify-content: space-between` has no remaining space to distribute and behaves identically to `flex-start`. Use `flex_1()` on the left child alone — it naturally pushes the right child to the far edge without `justify_between`.
