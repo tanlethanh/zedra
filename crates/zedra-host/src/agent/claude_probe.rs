@@ -503,7 +503,7 @@ fn extract_claude_cli_login_method(text: &str) -> Option<String> {
         if lower.contains("claude code v") {
             continue;
         }
-        if let Some(plan) = claude_plan_from_cli_login_phrase(line) {
+        if let Some(plan) = super::utils::plan_label_from_token(line) {
             return Some(plan);
         }
     }
@@ -512,27 +512,7 @@ fn extract_claude_cli_login_method(text: &str) -> Option<String> {
 
 fn claude_plan_from_cli_login_method(raw: &str) -> Option<String> {
     let cleaned = clean_cli_plan_label(raw);
-    claude_plan_from_cli_login_phrase(&cleaned)
-}
-
-fn claude_plan_from_cli_login_phrase(text: &str) -> Option<String> {
-    let lower = text.to_ascii_lowercase();
-    if lower.contains("enterprise") {
-        return Some("Enterprise".to_string());
-    }
-    if lower.contains("ultra") {
-        return Some("Ultra".to_string());
-    }
-    if lower.contains("max") {
-        return Some("Max".to_string());
-    }
-    if lower.contains("team") {
-        return Some("Team".to_string());
-    }
-    if lower.contains("pro") {
-        return Some("Pro".to_string());
-    }
-    None
+    super::utils::plan_label_from_token(&cleaned)
 }
 
 fn clean_cli_plan_label(raw: &str) -> String {

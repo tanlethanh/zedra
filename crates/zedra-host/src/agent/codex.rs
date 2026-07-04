@@ -12,10 +12,6 @@ pub struct CodexThreadRow {
     pub cwd: String,
     pub title: String,
     pub rollout_path: String,
-    pub source: String,
-    pub model_provider: String,
-    #[serde(default)]
-    pub cli_version: String,
     pub created_at_ms: Option<i64>,
     pub updated_at_ms: Option<i64>,
     #[serde(default)]
@@ -27,9 +23,6 @@ pub struct CodexThreadRow {
     pub git_branch: Option<String>,
     pub git_sha: Option<String>,
     pub git_origin_url: Option<String>,
-    #[serde(default)]
-    pub approval_mode: String,
-    pub model: Option<String>,
 }
 
 impl CodexActor {
@@ -40,14 +33,12 @@ impl CodexActor {
     pub fn session_counts(workdir: &Path) -> Result<super::SessionCounts, String> {
         let threads = Self::threads_for_workdir(workdir)?;
         let latest = threads.first();
-        Ok(super::SessionCounts {
-            total: threads.len(),
-            resumable: threads.len(),
-            latest_session_id: latest.map(|thread| thread.id.clone()),
-            latest_session_title: latest.and_then(Self::title_from_thread),
-            last_activity_at: latest.and_then(Self::thread_updated_at),
-            ..Default::default()
-        })
+        Ok(super::SessionCounts::from_latest(
+            threads.len(),
+            latest.map(|thread| thread.id.clone()),
+            latest.and_then(Self::title_from_thread),
+            latest.and_then(Self::thread_updated_at),
+        ))
     }
 
     pub fn sessions(
@@ -92,7 +83,7 @@ impl CodexActor {
         best.map(|(_, path)| path)
     }
 
-    fn fetch_threads_from_db(workdir: &Path) -> Result<Vec<CodexThreadRow>, String> {
+    pub fn threads_for_workdir(workdir: &Path) -> Result<Vec<CodexThreadRow>, String> {
         // A CLI-only install with no state DB yet is "zero sessions", not an error.
         let Some(db_path) = Self::state_db_path() else {
             return Ok(Vec::new());
@@ -110,9 +101,6 @@ impl CodexActor {
             cwd,
             title,
             rollout_path,
-            source,
-            model_provider,
-            cli_version,
             created_at_ms,
             updated_at_ms,
             first_user_message,
@@ -121,23 +109,13 @@ impl CodexActor {
             agent_role,
             git_branch,
             git_sha,
-            git_origin_url,
-            approval_mode,
-            model
+            git_origin_url
         FROM threads
         WHERE archived = 0 AND cwd IN ({cwd_filter})
         ORDER BY updated_at_ms DESC
     "#
         );
-        let stdout = sqlite_readonly::query_json(&db_path, &query)?;
-        if stdout.is_empty() {
-            return Ok(Vec::new());
-        }
-        serde_json::from_slice(&stdout).map_err(|error| error.to_string())
-    }
-
-    pub fn threads_for_workdir(workdir: &Path) -> Result<Vec<CodexThreadRow>, String> {
-        Self::fetch_threads_from_db(workdir)
+        sqlite_readonly::query_rows(&db_path, &query)
     }
 
     /// Session title for a Codex thread id within a workdir; `None` if not found or untitled.
@@ -415,8 +393,7 @@ impl CodexActor {
             (SELECT COUNT(*) FROM threads) AS total, \
             (SELECT COUNT(*) FROM threads WHERE created_at_ms >= {week_ts_ms}) AS week;"
         );
-        let bytes = sqlite_readonly::query_json(&db_path, &query).ok()?;
-        let rows: Vec<Value> = serde_json::from_slice(&bytes).ok()?;
+        let rows: Vec<Value> = sqlite_readonly::query_rows(&db_path, &query).ok()?;
         let row = rows.first()?;
         let total = row.get("total").and_then(Value::as_u64).unwrap_or(0);
         let week = row.get("week").and_then(Value::as_u64).unwrap_or(0);
@@ -516,9 +493,6 @@ mod tests {
             cwd: cwd.into(),
             title: title.into(),
             rollout_path: "/home/.codex/sessions/rollout.jsonl".into(),
-            source: "vscode".into(),
-            model_provider: "openai".into(),
-            cli_version: String::new(),
             created_at_ms: None,
             updated_at_ms: None,
             first_user_message: String::new(),
@@ -528,8 +502,6 @@ mod tests {
             git_branch: None,
             git_sha: None,
             git_origin_url: None,
-            approval_mode: String::new(),
-            model: None,
         }
     }
 
@@ -541,9 +513,6 @@ mod tests {
             "cwd": "/repo",
             "title": "Research live activity ios",
             "rollout_path": "/home/.codex/sessions/2026/05/14/rollout.jsonl",
-            "source": "vscode",
-            "model_provider": "openai",
-            "cli_version": "0.130.0",
             "created_at_ms": 1778746700000,
             "updated_at_ms": 1778746704000,
             "first_user_message": "research live activity",
@@ -551,9 +520,7 @@ mod tests {
             "agent_role": null,
             "git_branch": "main",
             "git_sha": "abc",
-            "git_origin_url": "https://example.com/repo.git",
-            "approval_mode": "on-request",
-            "model": "gpt-5.3-codex"
+            "git_origin_url": "https://example.com/repo.git"
           }
         ]"#;
         let threads: Vec<CodexThreadRow> = serde_json::from_slice(json).expect("parse");
@@ -788,8 +755,36 @@ impl AgentActor for CodexActor {
 
     fn setup(&self, workdir: &Path, force: bool) -> anyhow::Result<Vec<PathBuf>> {
         let script_path = super::cli::write_hook_script(workdir, force)?;
-        let config_path = super::cli::write_codex_hook_config(workdir, &script_path, force)?;
+        let config_path = workdir.join(".codex/hooks.json");
+        super::utils::write_json_file_checked(
+            &config_path,
+            &super::utils::hook_config_from_events(&script_path, "codex", Self::HOOK_EVENTS),
+            force,
+            "Codex local hook config",
+        )?;
         Ok(vec![script_path, config_path])
+    }
+
+    fn supports_setup_cli(&self) -> bool {
+        true
+    }
+
+    fn setup_cli<'a>(
+        &'a self,
+        action: super::SetupAction,
+        ctx: super::SetupCliCtx,
+    ) -> ActorFuture<'a, anyhow::Result<()>> {
+        Box::pin(async move {
+            ctx.require_command("codex")?;
+            match action {
+                super::SetupAction::Install => {
+                    ctx.install_plugin_and_hooks(&Self::plugin_setup(&ctx)?)
+                }
+                super::SetupAction::Remove => {
+                    ctx.remove_plugin_and_hooks(&Self::plugin_setup(&ctx)?)
+                }
+            }
+        })
     }
 
     fn hook_test_payload(&self, event_name: &str, workdir: &Path) -> serde_json::Value {
@@ -813,5 +808,69 @@ impl CodexActor {
             }
         }
         false
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Interactive `zedra setup codex`
+// ---------------------------------------------------------------------------
+
+const CODEX_PLUGIN: &str = "zedra@zedra";
+
+impl CodexActor {
+    fn plugin_setup(
+        ctx: &super::SetupCliCtx,
+    ) -> anyhow::Result<super::setup::PluginSetup<'static>> {
+        Ok(super::setup::PluginSetup {
+            display: "Codex",
+            program: "codex",
+            install_args: &["plugin", "add", CODEX_PLUGIN],
+            uninstall_args: &["plugin", "remove", CODEX_PLUGIN],
+            hooks_path: Self::codex_hooks_path(ctx)?,
+            events: Self::HOOK_EVENTS,
+            agent: "codex",
+            start_in: "Codex",
+            start_command: "$zedra-start",
+            reload_note: "Restart Codex or reload skills to apply the change.",
+            reload_command: None,
+        })
+    }
+
+    fn codex_hooks_path(ctx: &super::SetupCliCtx) -> anyhow::Result<PathBuf> {
+        Ok(ctx.home_dir()?.join(".codex").join("hooks.json"))
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Workdir-scoped hook config written by `AgentActor::setup`
+// ---------------------------------------------------------------------------
+
+impl CodexActor {
+    // Single source for hook registration; the receive_hook state map consumes the same names.
+    const HOOK_EVENTS: &'static [(&'static str, Option<&'static str>, u64)] = &[
+        ("UserPromptSubmit", None, 2),
+        ("PermissionRequest", Some("*"), 30),
+        ("PostToolUse", Some("*"), 2),
+        ("Stop", None, 2),
+    ];
+}
+
+#[cfg(test)]
+mod hook_config_tests {
+    use super::*;
+
+    #[test]
+    fn codex_hook_config_includes_prompt_submit() {
+        let config = crate::agent::utils::hook_config_from_events(
+            Path::new("/tmp/zedra-hook.sh"),
+            "codex",
+            CodexActor::HOOK_EVENTS,
+        );
+        let hooks = config["hooks"].as_object().unwrap();
+
+        for &(event, _, _) in CodexActor::HOOK_EVENTS {
+            assert!(hooks.contains_key(event), "missing {event}");
+        }
+        assert!(!hooks.contains_key("SessionStart"));
     }
 }

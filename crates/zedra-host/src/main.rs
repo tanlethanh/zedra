@@ -25,7 +25,6 @@ use zedra_host::{
 use zedra_rpc::ZedraPairingTicket;
 use zedra_telemetry::Event;
 
-mod setup;
 mod terminal_cli;
 
 #[derive(Parser)]
@@ -186,10 +185,6 @@ enum Commands {
 
     /// Set up Zedra for detected AI agents, or a specific one
     Setup {
-        /// Skip interactive confirmation prompts
-        #[arg(short, long)]
-        yes: bool,
-
         /// Use absolute path to this binary in hooks instead of `zedra`
         #[arg(long)]
         full_bin_path: bool,
@@ -198,8 +193,13 @@ enum Commands {
         #[arg(long)]
         no_quiet: bool,
 
-        #[command(subcommand)]
-        agent: Option<setup::SetupAgent>,
+        /// Agent to set up (registry slug, e.g. `claude`); omit to set up all
+        /// detected agents
+        agent: Option<String>,
+
+        /// Remove this agent's Zedra setup
+        #[arg(long, requires = "agent")]
+        remove: bool,
     },
 
     /// Inspect managed AI-agent integrations
@@ -1401,14 +1401,20 @@ async fn main() -> Result<()> {
         }
 
         Commands::Setup {
-            yes,
             full_bin_path,
             no_quiet,
             agent,
-        } => match agent {
-            Some(agent) => setup::run(agent, yes, full_bin_path, no_quiet).await?,
-            None => setup::run_all(yes, full_bin_path, no_quiet).await?,
-        },
+            remove,
+        } => {
+            let ctx = zedra_host::agent::SetupCliCtx {
+                full_bin_path,
+                quiet: !no_quiet,
+            };
+            match agent {
+                Some(agent) => zedra_host::agent::setup::run(&agent, remove, ctx).await?,
+                None => zedra_host::agent::setup::run_all(ctx).await?,
+            }
+        }
 
         Commands::List { stale } => {
             let instances = workspace_lock::scan_all_instances();

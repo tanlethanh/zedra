@@ -71,6 +71,30 @@ pub fn mtime_unix_secs(path: &Path) -> Option<u64> {
         .map(|d| d.as_secs())
 }
 
+/// `.jsonl` files in `dir` newest-first by (mtime, path) — a cheap recency
+/// proxy that avoids opening files to sort. Empty when `dir` is absent.
+pub fn sorted_jsonl_candidates(dir: &Path) -> anyhow::Result<Vec<(PathBuf, Option<u64>)>> {
+    use anyhow::Context;
+    let entries = match std::fs::read_dir(dir) {
+        Ok(entries) => entries,
+        Err(err) if err.kind() == std::io::ErrorKind::NotFound => return Ok(Vec::new()),
+        Err(err) => {
+            return Err(err).with_context(|| format!("failed to read {}", dir.display()));
+        }
+    };
+    let mut candidates: Vec<(PathBuf, Option<u64>)> = Vec::new();
+    for entry in entries.flatten() {
+        let path = entry.path();
+        if path.extension().and_then(|ext| ext.to_str()) != Some("jsonl") {
+            continue;
+        }
+        let mtime = mtime_unix_secs(&path);
+        candidates.push((path, mtime));
+    }
+    candidates.sort_by(|a, b| b.1.cmp(&a.1).then_with(|| b.0.cmp(&a.0)));
+    Ok(candidates)
+}
+
 /// First non-empty string field on `record` matching any of `names`, in order.
 pub fn string_field<'a>(record: &'a Value, names: &[&str]) -> Option<&'a str> {
     names
@@ -316,6 +340,22 @@ pub fn humanize_plan_token(raw: &str) -> String {
     out
 }
 
+/// Lowercase Claude plan tier/phrase -> display label; shared by the
+/// credentials and CLI-login probes so their tier lists never drift.
+pub fn plan_label_from_token(text: &str) -> Option<String> {
+    let lower = text.to_ascii_lowercase();
+    [
+        ("enterprise", "Enterprise"),
+        ("ultra", "Ultra"),
+        ("max", "Max"),
+        ("team", "Team"),
+        ("pro", "Pro"),
+    ]
+    .into_iter()
+    .find(|(needle, _)| lower.contains(needle))
+    .map(|(_, label)| label.to_string())
+}
+
 /// Extract a non-empty string value from a JSON object by key.
 pub fn payload_string(payload: &Value, key: &str) -> Option<String> {
     payload
@@ -359,6 +399,92 @@ fn normalize_unix_seconds(secs: i64) -> i64 {
     }
 }
 
+// ---------------------------------------------------------------------------
+// Hook-config building and checked file writes (shared by actor hook writers)
+// ---------------------------------------------------------------------------
+
+fn hook_groups(command: &str, matcher: Option<&str>) -> serde_json::Value {
+    let mut group = serde_json::json!({
+        "hooks": [{
+            "type": "command",
+            "command": command,
+            "timeout": 5
+        }]
+    });
+    if let Some(matcher) = matcher {
+        group["matcher"] = serde_json::Value::String(matcher.to_string());
+    }
+    serde_json::Value::Array(vec![group])
+}
+
+/// Builds a workdir hook-config JSON (`{"hooks": {...}}`) from an actor's
+/// event table, one `hook_groups_for_event` entry per event.
+pub fn hook_config_from_events(
+    script_path: &Path,
+    slug: &str,
+    events: &[(&str, Option<&str>, u64)],
+) -> serde_json::Value {
+    let mut hooks = serde_json::Map::new();
+    for &(event, matcher, _timeout) in events {
+        hooks.insert(
+            event.to_string(),
+            hook_groups_for_event(script_path, slug, event, matcher),
+        );
+    }
+    serde_json::json!({ "hooks": hooks })
+}
+
+pub fn hook_groups_for_event(
+    script_path: &Path,
+    slug: &str,
+    event_name: &str,
+    matcher: Option<&str>,
+) -> serde_json::Value {
+    hook_groups(&hook_command(script_path, slug, event_name), matcher)
+}
+
+fn hook_command(script_path: &Path, slug: &str, event_expr: &str) -> String {
+    format!(
+        "ZEDRA_AGENT_KIND={} ZEDRA_AGENT_EVENT={} {}",
+        slug,
+        event_expr,
+        crate::utils::shell_arg_path(script_path)
+    )
+}
+
+pub fn write_json_file_checked(
+    path: &Path,
+    value: &serde_json::Value,
+    force: bool,
+    label: &str,
+) -> anyhow::Result<()> {
+    let mut contents = serde_json::to_string_pretty(value)?;
+    contents.push('\n');
+    write_file_checked(path, &contents, force, label)
+}
+
+pub fn write_file_checked(
+    path: &Path,
+    contents: &str,
+    force: bool,
+    label: &str,
+) -> anyhow::Result<()> {
+    use anyhow::Context;
+    if path.exists() && !force {
+        anyhow::bail!(
+            "{label} already exists at {}. Re-run with --force to overwrite it.",
+            path.display()
+        );
+    }
+    if let Some(parent) = path.parent() {
+        std::fs::create_dir_all(parent)
+            .with_context(|| format!("failed to create {}", parent.display()))?;
+    }
+    std::fs::write(path, contents)
+        .with_context(|| format!("failed to write {}", path.display()))?;
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -378,5 +504,13 @@ mod tests {
                     .timestamp()
             )
         );
+    }
+
+    #[test]
+    fn hook_command_uses_provider_env() {
+        let command = hook_command(Path::new("/tmp/zedra hook.sh"), "claude", "Stop");
+        assert!(command.contains("ZEDRA_AGENT_KIND=claude"));
+        assert!(command.contains("ZEDRA_AGENT_EVENT=Stop"));
+        assert!(command.contains("'/tmp/zedra hook.sh'"));
     }
 }

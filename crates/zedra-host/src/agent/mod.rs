@@ -45,6 +45,7 @@ mod openhands;
 pub(crate) mod pi;
 mod qoder;
 mod qwen;
+pub mod setup;
 mod trae;
 pub(crate) mod utils;
 mod zencoder;
@@ -53,6 +54,7 @@ use cache::AgentCache;
 use hook::HookContext;
 use utils::{first_non_empty_line, shell_quote};
 
+pub use setup::{SetupAction, SetupCliCtx};
 pub use utils::home_path;
 
 const AGENT_SESSION_DEFAULT_LIMIT: u32 = 50;
@@ -341,6 +343,26 @@ pub(crate) struct SessionCounts {
     provider_project_id: Option<String>,
 }
 
+impl SessionCounts {
+    /// Counts for an all-resumable agent, seeded from the latest session.
+    /// Agents carrying a `provider_project_id` (OpenCode) build directly.
+    pub(crate) fn from_latest(
+        total: usize,
+        latest_session_id: Option<String>,
+        latest_session_title: Option<String>,
+        last_activity_at: Option<chrono::DateTime<chrono::Utc>>,
+    ) -> Self {
+        SessionCounts {
+            total,
+            resumable: total,
+            latest_session_id,
+            latest_session_title,
+            last_activity_at,
+            ..Default::default()
+        }
+    }
+}
+
 // ---------------------------------------------------------------------------
 // Agent actor registry
 // ---------------------------------------------------------------------------
@@ -549,6 +571,22 @@ pub(crate) trait AgentActor: Sync {
 
     fn setup(&self, _workdir: &Path, _force: bool) -> anyhow::Result<Vec<std::path::PathBuf>> {
         anyhow::bail!("{} does not support setup", self.slug())
+    }
+
+    /// Actor owns an interactive `zedra setup <slug>` flow; the setup CLI
+    /// discovers actors through this flag, never a command-definition list.
+    fn supports_setup_cli(&self) -> bool {
+        false
+    }
+
+    /// Interactive install/remove flow; the actor owns everything, including
+    /// CLI presence checks and step output.
+    fn setup_cli<'a>(
+        &'a self,
+        _action: SetupAction,
+        _ctx: SetupCliCtx,
+    ) -> ActorFuture<'a, anyhow::Result<()>> {
+        Box::pin(async move { anyhow::bail!("{} has no `zedra setup` flow", self.slug()) })
     }
 
     fn hook_test_payload(&self, event_name: &str, workdir: &Path) -> serde_json::Value {

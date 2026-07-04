@@ -11,12 +11,6 @@ use serde_json::Value;
 const LIST_HEAD_SCAN_MAX_LINES: usize = 64;
 const LIST_HEAD_SCAN_MAX_BYTES: usize = 32 * 1024;
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum TranscriptScanMode {
-    Full,
-    List,
-}
-
 #[derive(Debug, Clone, Serialize)]
 pub struct ClaudeSessionList {
     pub workdir: PathBuf,
@@ -35,29 +29,9 @@ pub struct ClaudeSessionMetadata {
     pub worktree: Option<String>,
     pub created_at: Option<String>,
     pub last_activity_at: Option<String>,
-    pub message_count: usize,
-    pub malformed_line_count: usize,
-    pub claude_version: Option<String>,
-    pub entrypoint: Option<String>,
-    pub user_type: Option<String>,
-    pub permission_mode: Option<String>,
-    pub hook_success_count: usize,
-    pub hook_failure_count: usize,
-    pub task_created_count: usize,
-    pub task_completed_count: usize,
-    pub task_failed_count: usize,
-    pub pr_links: Vec<ClaudePrLink>,
-    pub is_sidechain: bool,
     pub transcript_path: PathBuf,
     #[serde(skip_serializing)]
     sort_mtime_unix_secs: Option<u64>,
-}
-
-#[derive(Debug, Clone, Serialize, PartialEq, Eq)]
-pub struct ClaudePrLink {
-    pub number: Option<u64>,
-    pub url: Option<String>,
-    pub repository: Option<String>,
 }
 
 #[derive(Debug, Clone)]
@@ -83,21 +57,12 @@ struct SessionsIndexEntry {
     git_branch: Option<String>,
     #[serde(rename = "projectPath")]
     project_path: Option<String>,
-    #[serde(rename = "isSidechain")]
-    is_sidechain: Option<bool>,
-    #[serde(rename = "messageCount")]
-    message_count: Option<usize>,
 }
 
 impl ClaudeActor {
     pub fn list_sessions_limited(workdir: &Path, limit: usize) -> Result<ClaudeSessionList> {
         let config_dir = Self::claude_config_dir()?;
-        Self::list_sessions_in_config_with_mode(
-            workdir,
-            &config_dir,
-            Some(limit),
-            TranscriptScanMode::List,
-        )
+        Self::list_sessions_in_config(workdir, &config_dir, Some(limit))
     }
 
     pub fn session_count_summary(workdir: &Path) -> Result<(usize, Option<ClaudeSessionMetadata>)> {
@@ -131,7 +96,6 @@ impl ClaudeActor {
                 let mut metadata = Self::read_transcript_list_metadata(
                     &candidate.path,
                     candidate.worktree.as_deref(),
-                    TranscriptScanMode::List,
                 )?;
                 if let Some(project_dir) = candidate.path.parent() {
                     let index = Self::load_sessions_index(project_dir);
@@ -143,11 +107,10 @@ impl ClaudeActor {
         Ok((total, latest))
     }
 
-    fn list_sessions_in_config_with_mode(
+    fn list_sessions_in_config(
         workdir: &Path,
         claude_config_dir: &Path,
         limit: Option<usize>,
-        scan_mode: TranscriptScanMode,
     ) -> Result<ClaudeSessionList> {
         let project_dir = Self::project_dir_for_workdir(claude_config_dir, workdir);
         let candidates = Self::sorted_transcript_candidates(claude_config_dir, workdir)?;
@@ -162,7 +125,6 @@ impl ClaudeActor {
                 let mut metadata = Self::read_transcript_list_metadata(
                     &candidate.path,
                     candidate.worktree.as_deref(),
-                    scan_mode,
                 )?;
                 if let Some(project_dir) = candidate.path.parent() {
                     let index = index_cache
@@ -232,37 +194,14 @@ impl ClaudeActor {
         let mut candidates = Vec::new();
         for project_dir in project_dirs {
             let worktree = Self::worktree_from_project_dir(project_dir);
-            let entries = match std::fs::read_dir(project_dir) {
-                Ok(entries) => entries,
-                Err(err) if err.kind() == std::io::ErrorKind::NotFound => continue,
-                Err(err) => {
-                    return Err(err).with_context(|| {
-                        format!(
-                            "failed to read Claude project dir {}",
-                            project_dir.display()
-                        )
-                    });
-                }
-            };
-
-            for entry in entries {
-                let entry = entry.with_context(|| {
-                    format!(
-                        "failed to read an entry in Claude project dir {}",
-                        project_dir.display()
-                    )
-                })?;
-                let path = entry.path();
-                if path.extension().and_then(|ext| ext.to_str()) != Some("jsonl") {
-                    continue;
-                }
+            for (path, sort_mtime_unix_secs) in sorted_jsonl_candidates(project_dir)? {
                 if Self::is_subagent_transcript(&path) {
                     continue;
                 }
                 candidates.push(TranscriptCandidate {
                     path,
                     worktree: worktree.clone(),
-                    sort_mtime_unix_secs: mtime_unix_secs(&entry.path()),
+                    sort_mtime_unix_secs,
                 });
             }
         }
@@ -312,7 +251,7 @@ impl ClaudeActor {
 
     /// Session title from a transcript file; `None` if unreadable or untitled.
     pub fn title_from_transcript_path(path: &Path) -> Option<String> {
-        Self::read_transcript_list_metadata(path, None, TranscriptScanMode::List)
+        Self::read_transcript_list_metadata(path, None)
             .ok()
             .and_then(|meta| meta.title)
     }
@@ -320,7 +259,6 @@ impl ClaudeActor {
     fn read_transcript_list_metadata(
         path: &Path,
         worktree: Option<&str>,
-        scan_mode: TranscriptScanMode,
     ) -> Result<ClaudeSessionMetadata> {
         let file = File::open(path)
             .with_context(|| format!("failed to read transcript {}", path.display()))?;
@@ -333,19 +271,6 @@ impl ClaudeActor {
             worktree: worktree.map(str::to_string),
             created_at: None,
             last_activity_at: None,
-            message_count: 0,
-            malformed_line_count: 0,
-            claude_version: None,
-            entrypoint: None,
-            user_type: None,
-            permission_mode: None,
-            hook_success_count: 0,
-            hook_failure_count: 0,
-            task_created_count: 0,
-            task_completed_count: 0,
-            task_failed_count: 0,
-            pr_links: Vec::new(),
-            is_sidechain: false,
             transcript_path: path.to_path_buf(),
             sort_mtime_unix_secs,
         };
@@ -359,22 +284,14 @@ impl ClaudeActor {
                 continue;
             }
 
-            if scan_mode == TranscriptScanMode::List {
-                scanned_lines += 1;
-                scanned_bytes += line.len() + 1;
-            }
+            scanned_lines += 1;
+            scanned_bytes += line.len() + 1;
 
             let record = match serde_json::from_str::<Value>(&line) {
                 Ok(Value::Object(record)) => Value::Object(record),
-                Ok(_) | Err(_) => {
-                    metadata.malformed_line_count += 1;
-                    continue;
-                }
+                Ok(_) | Err(_) => continue,
             };
 
-            if scan_mode == TranscriptScanMode::Full {
-                metadata.message_count += 1;
-            }
             if metadata.session_id.is_empty() {
                 if let Some(session_id) = string_field(&record, &["sessionId", "session_id"]) {
                     metadata.session_id = session_id.to_string();
@@ -385,41 +302,12 @@ impl ClaudeActor {
                 &mut metadata.git_branch,
                 string_field(&record, &["gitBranch", "git_branch"]),
             );
-            Self::set_latest_string(
-                &mut metadata.claude_version,
-                string_field(&record, &["version", "claudeVersion", "claude_version"]),
-            );
-            Self::set_latest_string(
-                &mut metadata.entrypoint,
-                string_field(&record, &["entrypoint", "entryPoint"]),
-            );
-            Self::set_latest_string(
-                &mut metadata.user_type,
-                string_field(&record, &["userType", "user_type"]),
-            );
-            Self::set_latest_string(
-                &mut metadata.permission_mode,
-                string_field(&record, &["permissionMode", "permission_mode"]),
-            );
-            if scan_mode == TranscriptScanMode::Full {
-                if let Some(timestamp) =
-                    string_field(&record, &["timestamp", "createdAt", "created_at"])
-                {
-                    Self::observe_timestamp(&mut metadata, timestamp);
-                }
-            } else if metadata.created_at.is_none() {
+            if metadata.created_at.is_none() {
                 if let Some(timestamp) =
                     string_field(&record, &["timestamp", "createdAt", "created_at"])
                 {
                     metadata.created_at = Some(timestamp.to_string());
                 }
-            }
-            if Self::bool_field(&record, &["isSidechain", "is_sidechain"]).unwrap_or(false) {
-                metadata.is_sidechain = true;
-            }
-            if scan_mode == TranscriptScanMode::Full {
-                Self::observe_pr_link(&mut metadata, &record);
-                Self::observe_hook_or_task_event(&mut metadata, &record);
             }
             if let Some(title) = string_field(&record, &["aiTitle", "ai_title"]) {
                 metadata.title = Some(title.to_string());
@@ -427,10 +315,9 @@ impl ClaudeActor {
             // The head-scan cap is enforced after parsing the current record, not
             // before, so a single oversized head line (e.g. a large system prompt)
             // still contributes its sessionId/cwd/title before the scan stops.
-            if scan_mode == TranscriptScanMode::List
-                && (Self::list_head_scan_complete(&metadata, scanned_lines)
-                    || scanned_lines >= LIST_HEAD_SCAN_MAX_LINES
-                    || scanned_bytes >= LIST_HEAD_SCAN_MAX_BYTES)
+            if Self::list_head_scan_complete(&metadata, scanned_lines)
+                || scanned_lines >= LIST_HEAD_SCAN_MAX_LINES
+                || scanned_bytes >= LIST_HEAD_SCAN_MAX_BYTES
             {
                 break;
             }
@@ -443,13 +330,11 @@ impl ClaudeActor {
                 .unwrap_or("unknown")
                 .to_string();
         }
-        if scan_mode == TranscriptScanMode::List || metadata.last_activity_at.is_none() {
-            metadata.last_activity_at = sort_mtime_unix_secs.and_then(|secs| {
-                DateTime::<Utc>::from_timestamp(secs as i64, 0).map(|dt| dt.to_rfc3339())
-            });
-        }
+        metadata.last_activity_at = sort_mtime_unix_secs.and_then(|secs| {
+            DateTime::<Utc>::from_timestamp(secs as i64, 0).map(|dt| dt.to_rfc3339())
+        });
 
-        if scan_mode == TranscriptScanMode::List && metadata.title.is_none() {
+        if metadata.title.is_none() {
             Self::fill_title_from_transcript_remainder(path, &mut metadata)?;
         }
 
@@ -566,105 +451,9 @@ impl ClaudeActor {
             .join(" ")
     }
 
-    fn nested_string_field<'a>(
-        record: &'a Value,
-        object_name: &str,
-        names: &[&str],
-    ) -> Option<&'a str> {
-        let nested = record.get(object_name)?;
-        string_field(nested, names)
-    }
-
-    fn u64_field(record: &Value, names: &[&str]) -> Option<u64> {
-        names.iter().find_map(|name| match record.get(*name)? {
-            Value::Number(number) => number.as_u64(),
-            Value::String(value) => value.parse().ok(),
-            _ => None,
-        })
-    }
-
-    fn bool_field(record: &Value, names: &[&str]) -> Option<bool> {
-        names.iter().find_map(|name| record.get(*name)?.as_bool())
-    }
-
     fn set_latest_string(slot: &mut Option<String>, value: Option<&str>) {
         if let Some(value) = value {
             *slot = Some(value.to_string());
-        }
-    }
-
-    fn observe_timestamp(metadata: &mut ClaudeSessionMetadata, timestamp: &str) {
-        if metadata
-            .created_at
-            .as_deref()
-            .map(|created_at| timestamp < created_at)
-            .unwrap_or(true)
-        {
-            metadata.created_at = Some(timestamp.to_string());
-        }
-        if metadata
-            .last_activity_at
-            .as_deref()
-            .map(|last_activity_at| timestamp > last_activity_at)
-            .unwrap_or(true)
-        {
-            metadata.last_activity_at = Some(timestamp.to_string());
-        }
-    }
-
-    fn observe_pr_link(metadata: &mut ClaudeSessionMetadata, record: &Value) {
-        if string_field(record, &["type"]) != Some("pr-link") {
-            return;
-        }
-
-        let link = ClaudePrLink {
-            number: Self::u64_field(record, &["prNumber", "pr_number"]),
-            url: string_field(record, &["prUrl", "pr_url"]).map(str::to_owned),
-            repository: string_field(record, &["prRepository", "pr_repository"]).map(str::to_owned),
-        };
-        if link.number.is_some() || link.url.is_some() || link.repository.is_some() {
-            metadata.pr_links.push(link);
-        }
-    }
-
-    fn observe_hook_or_task_event(metadata: &mut ClaudeSessionMetadata, record: &Value) {
-        let attachment_type = Self::nested_string_field(record, "attachment", &["type"]);
-        match attachment_type {
-            Some("hook_success") => metadata.hook_success_count += 1,
-            Some("hook_failure") => metadata.hook_failure_count += 1,
-            _ => {}
-        }
-
-        let event = string_field(
-            record,
-            &[
-                "hookEvent",
-                "hook_event",
-                "hookEventName",
-                "hook_event_name",
-                "event",
-            ],
-        )
-        .or_else(|| {
-            Self::nested_string_field(
-                record,
-                "attachment",
-                &[
-                    "hookEvent",
-                    "hook_event",
-                    "hookEventName",
-                    "hook_event_name",
-                    "event",
-                ],
-            )
-        });
-        match event {
-            Some("TaskCreated") => metadata.task_created_count += 1,
-            Some("TaskCompleted") => metadata.task_completed_count += 1,
-            Some("TaskFailed") | Some("StopFailure") | Some("PostToolUseFailure") => {
-                metadata.task_failed_count += 1
-            }
-            _ => {}
         }
     }
 
@@ -714,12 +503,6 @@ impl ClaudeActor {
         if metadata.cwd.is_none() {
             metadata.cwd = entry.project_path.clone();
         }
-        if let Some(is_sidechain) = entry.is_sidechain {
-            metadata.is_sidechain = is_sidechain;
-        }
-        if metadata.message_count == 0 {
-            metadata.message_count = entry.message_count.unwrap_or(0);
-        }
     }
 }
 
@@ -728,7 +511,7 @@ impl ClaudeActor {
 use super::utils::{
     file_size_bytes, home_path, humanize_plan_token, info_field, mtime_unix_secs, parse_rfc3339,
     parse_usage_window_resets_at, push_json_string, read_json_file, resume_summary, session_title,
-    spawn_blocking_opt, string_field,
+    sorted_jsonl_candidates, spawn_blocking_opt, string_field,
 };
 use zedra_rpc::proto::*;
 
@@ -737,7 +520,6 @@ impl ClaudeActor {
         session: &ClaudeSessionMetadata,
         _cli: &AgentCliSummary,
     ) -> AgentSessionSummary {
-        let pr = session.pr_links.first();
         AgentSessionSummary {
             slug: "claude".to_string(),
             session_id: session.session_id.clone(),
@@ -751,9 +533,9 @@ impl ClaudeActor {
                 worktree: session.worktree.clone(),
                 commit_hash: None,
                 repository_url: None,
-                pr_number: pr.and_then(|pr| pr.number),
-                pr_url: pr.and_then(|pr| pr.url.clone()),
-                pr_repository: pr.and_then(|pr| pr.repository.clone()),
+                pr_number: None,
+                pr_url: None,
+                pr_repository: None,
             }),
             usage: None,
             transcript_size_bytes: file_size_bytes(&session.transcript_path),
@@ -793,12 +575,16 @@ impl ClaudeActor {
     }
 
     fn append_auth_plan_fields(fields: &mut Vec<AgentInfoField>) {
-        let logged_in = Self::read_oauth_token().is_some();
+        let creds = Self::read_credentials();
+        let logged_in = creds
+            .as_ref()
+            .and_then(ClaudeCredentials::valid_token)
+            .is_some();
         fields.push(AgentInfoField {
             label: "Logged in".to_string(),
             value: if logged_in { "yes" } else { "no" }.to_string(),
         });
-        if let Some(plan) = Self::plan_from_credentials() {
+        if let Some(plan) = creds.as_ref().and_then(Self::plan_from_credentials) {
             fields.push(AgentInfoField {
                 label: "Plan".to_string(),
                 value: plan,
@@ -806,21 +592,11 @@ impl ClaudeActor {
         }
     }
 
-    fn plan_from_credentials() -> Option<String> {
-        let path = Self::claude_config_dir_or_home().join(".credentials.json");
-        let contents = std::fs::read_to_string(&path).ok()?;
-        let root: Value = serde_json::from_str(&contents).ok()?;
-        let oauth = root.get("claudeAiOauth")?;
-        let subscription_type = oauth
-            .get("subscriptionType")
-            .or_else(|| oauth.get("subscription_type"))
-            .and_then(|v| v.as_str())
-            .unwrap_or("");
-        let rate_limit_tier = oauth
-            .get("rateLimitTier")
-            .or_else(|| oauth.get("rate_limit_tier"))
-            .and_then(|v| v.as_str());
-        Self::format_plan_label(subscription_type, rate_limit_tier)
+    fn plan_from_credentials(creds: &ClaudeCredentials) -> Option<String> {
+        Self::format_plan_label(
+            creds.subscription_type.as_deref().unwrap_or(""),
+            creds.rate_limit_tier.as_deref(),
+        )
     }
 
     pub fn format_plan_label(
@@ -831,20 +607,7 @@ impl ClaudeActor {
         if !trimmed.is_empty() {
             return Some(humanize_plan_token(trimmed));
         }
-        let tier = rate_limit_tier?.to_ascii_lowercase();
-        if tier.contains("enterprise") {
-            return Some("Enterprise".to_string());
-        }
-        if tier.contains("team") {
-            return Some("Team".to_string());
-        }
-        if tier.contains("max") {
-            return Some("Max".to_string());
-        }
-        if tier.contains("pro") {
-            return Some("Pro".to_string());
-        }
-        None
+        super::utils::plan_label_from_token(rate_limit_tier?)
     }
 
     pub async fn fetch_subscription_plan() -> Option<Vec<AgentInfoField>> {
@@ -1009,13 +772,54 @@ impl ClaudeActor {
         })
     }
 
-    /// Claude OAuth access token from `~/.claude/.credentials.json`; `None` if missing, malformed, or expired.
-    fn read_oauth_token() -> Option<String> {
+    /// Reads and parses `~/.claude/.credentials.json` once; `None` if missing,
+    /// malformed, or lacking the `claudeAiOauth` block.
+    fn read_credentials() -> Option<ClaudeCredentials> {
         let path = Self::claude_config_dir_or_home().join(".credentials.json");
         let contents = std::fs::read_to_string(&path).ok()?;
         let root: Value = serde_json::from_str(&contents).ok()?;
         let oauth = root.get("claudeAiOauth")?;
-        if let Some(expires_ms) = oauth.get("expiresAt").and_then(|v| v.as_f64()) {
+        Some(ClaudeCredentials {
+            access_token: oauth
+                .get("accessToken")
+                .and_then(|v| v.as_str())
+                .map(str::to_string),
+            subscription_type: oauth
+                .get("subscriptionType")
+                .or_else(|| oauth.get("subscription_type"))
+                .and_then(|v| v.as_str())
+                .map(str::to_string),
+            rate_limit_tier: oauth
+                .get("rateLimitTier")
+                .or_else(|| oauth.get("rate_limit_tier"))
+                .and_then(|v| v.as_str())
+                .map(str::to_string),
+            expires_at: oauth
+                .get("expiresAt")
+                .and_then(|v| v.as_f64())
+                .map(|v| v as i64),
+        })
+    }
+
+    /// Claude OAuth access token; `None` if missing, malformed, or expired.
+    fn read_oauth_token() -> Option<String> {
+        Self::read_credentials()?.valid_token().map(str::to_string)
+    }
+}
+
+/// Parsed `~/.claude/.credentials.json` OAuth fields; absent fields stay `None`.
+struct ClaudeCredentials {
+    access_token: Option<String>,
+    subscription_type: Option<String>,
+    rate_limit_tier: Option<String>,
+    expires_at: Option<i64>,
+}
+
+impl ClaudeCredentials {
+    /// Access token when present and unexpired; logs and returns `None` when the
+    /// token has expired.
+    fn valid_token(&self) -> Option<&str> {
+        if let Some(expires_ms) = self.expires_at {
             let expires =
                 std::time::UNIX_EPOCH + std::time::Duration::from_millis(expires_ms as u64);
             if std::time::SystemTime::now() > expires {
@@ -1023,10 +827,7 @@ impl ClaudeActor {
                 return None;
             }
         }
-        oauth
-            .get("accessToken")
-            .and_then(|v| v.as_str())
-            .map(str::to_string)
+        self.access_token.as_deref()
     }
 }
 
@@ -1090,61 +891,45 @@ mod tests {
 "#,
         )
         .unwrap();
-
-        let list = ClaudeActor::list_sessions_in_config_with_mode(
-            workdir,
-            config.path(),
-            None,
-            TranscriptScanMode::Full,
+        // List mode orders by file mtime, so pin them to make "newer" genuinely newer.
+        filetime::set_file_mtime(
+            project_dir.join("older.jsonl"),
+            filetime::FileTime::from_unix_time(1_700_000_000, 0),
         )
         .unwrap();
+        filetime::set_file_mtime(
+            project_dir.join("newer.jsonl"),
+            filetime::FileTime::from_unix_time(1_800_000_000, 0),
+        )
+        .unwrap();
+
+        let list = ClaudeActor::list_sessions_in_config(workdir, config.path(), None).unwrap();
 
         assert_eq!(list.sessions.len(), 2);
         assert_eq!(list.sessions[0].session_id, "newer-session");
         assert_eq!(list.sessions[0].git_branch.as_deref(), Some("feature-2"));
-        assert_eq!(list.sessions[0].claude_version.as_deref(), Some("1.0.2"));
-        assert!(list.sessions[0].is_sidechain);
-        assert_eq!(list.sessions[0].message_count, 2);
-        assert_eq!(list.sessions[0].malformed_line_count, 1);
         assert_eq!(list.sessions[1].session_id, "older-session");
     }
 
     #[test]
-    fn list_sessions_reads_safe_enriched_metadata() {
+    fn list_sessions_omits_transcript_content_from_metadata() {
         let config = tempfile::tempdir().unwrap();
         let workdir = Path::new("/Users/me/project");
         let project_dir = ClaudeActor::project_dir_for_workdir(config.path(), workdir);
         std::fs::create_dir_all(&project_dir).unwrap();
         std::fs::write(
             project_dir.join("session.jsonl"),
-            r#"{"sessionId":"session","cwd":"/Users/me/project","entrypoint":"cli","userType":"human","permissionMode":"default","timestamp":"2026-05-09T10:00:00Z","prompt":"SECRET"}
-{"type":"pr-link","sessionId":"session","prNumber":42,"prUrl":"https://example.com/pull/42","prRepository":"owner/repo","timestamp":"2026-05-09T10:01:00Z"}
-{"type":"attachment","sessionId":"session","attachment":{"type":"hook_success","hookEvent":"TaskCompleted"},"timestamp":"2026-05-09T10:02:00Z"}
-{"type":"attachment","sessionId":"session","attachment":{"type":"hook_failure","hookEvent":"StopFailure"},"timestamp":"2026-05-09T10:03:00Z"}
+            r#"{"sessionId":"session","cwd":"/Users/me/project","timestamp":"2026-05-09T10:00:00Z","prompt":"SECRET"}
 "#,
         )
         .unwrap();
 
-        let session = ClaudeActor::read_transcript_list_metadata(
-            &project_dir.join("session.jsonl"),
-            None,
-            TranscriptScanMode::Full,
-        )
-        .unwrap();
+        let session =
+            ClaudeActor::read_transcript_list_metadata(&project_dir.join("session.jsonl"), None)
+                .unwrap();
 
-        assert_eq!(session.entrypoint.as_deref(), Some("cli"));
-        assert_eq!(session.user_type.as_deref(), Some("human"));
-        assert_eq!(session.permission_mode.as_deref(), Some("default"));
-        assert_eq!(session.hook_success_count, 1);
-        assert_eq!(session.hook_failure_count, 1);
-        assert_eq!(session.task_completed_count, 1);
-        assert_eq!(session.task_failed_count, 1);
-        assert_eq!(session.pr_links[0].number, Some(42));
-        assert_eq!(
-            session.pr_links[0].url.as_deref(),
-            Some("https://example.com/pull/42")
-        );
-
+        // List scanning never captures prompt content, so the serialized metadata
+        // must not leak it (telemetry-privacy rule).
         let serialized = serde_json::to_string(&session).unwrap();
         assert!(!serialized.contains("SECRET"));
     }
@@ -1162,13 +947,7 @@ mod tests {
         )
         .unwrap();
 
-        let list = ClaudeActor::list_sessions_in_config_with_mode(
-            workdir,
-            config.path(),
-            None,
-            TranscriptScanMode::Full,
-        )
-        .unwrap();
+        let list = ClaudeActor::list_sessions_in_config(workdir, config.path(), None).unwrap();
 
         assert_eq!(list.sessions[0].session_id, "session-from-file");
     }
@@ -1239,12 +1018,9 @@ mod tests {
         );
         std::fs::write(project_dir.join("session.jsonl"), contents).unwrap();
 
-        let session = ClaudeActor::read_transcript_list_metadata(
-            &project_dir.join("session.jsonl"),
-            None,
-            TranscriptScanMode::List,
-        )
-        .unwrap();
+        let session =
+            ClaudeActor::read_transcript_list_metadata(&project_dir.join("session.jsonl"), None)
+                .unwrap();
         assert_eq!(
             session.title.as_deref(),
             Some("Update terminal actions UI design")
@@ -1281,20 +1057,13 @@ mod tests {
         )
         .unwrap();
 
-        let list = ClaudeActor::list_sessions_in_config_with_mode(
-            workdir,
-            config.path(),
-            Some(10),
-            TranscriptScanMode::List,
-        )
-        .unwrap();
+        let list = ClaudeActor::list_sessions_in_config(workdir, config.path(), Some(10)).unwrap();
         let session = &list.sessions[0];
         assert_eq!(
             session.title.as_deref(),
             Some("Agent session history titles")
         );
         assert_eq!(session.git_branch.as_deref(), Some("main"));
-        assert_eq!(session.message_count, 12);
     }
 
     #[test]
@@ -1320,12 +1089,9 @@ mod tests {
         );
         std::fs::write(project_dir.join("session.jsonl"), contents).unwrap();
 
-        let session = ClaudeActor::read_transcript_list_metadata(
-            &project_dir.join("session.jsonl"),
-            None,
-            TranscriptScanMode::List,
-        )
-        .unwrap();
+        let session =
+            ClaudeActor::read_transcript_list_metadata(&project_dir.join("session.jsonl"), None)
+                .unwrap();
         assert_eq!(
             session.title.as_deref(),
             Some("Plan commit without coauthor")
@@ -1347,12 +1113,9 @@ mod tests {
         )
         .unwrap();
 
-        let session = ClaudeActor::read_transcript_list_metadata(
-            &project_dir.join("session.jsonl"),
-            None,
-            TranscriptScanMode::List,
-        )
-        .unwrap();
+        let session =
+            ClaudeActor::read_transcript_list_metadata(&project_dir.join("session.jsonl"), None)
+                .unwrap();
         assert_eq!(session.title.as_deref(), Some("clear"));
     }
 
@@ -1370,13 +1133,7 @@ mod tests {
         )
         .unwrap();
 
-        let list = ClaudeActor::list_sessions_in_config_with_mode(
-            workdir,
-            config.path(),
-            Some(10),
-            TranscriptScanMode::List,
-        )
-        .unwrap();
+        let list = ClaudeActor::list_sessions_in_config(workdir, config.path(), Some(10)).unwrap();
         let session = &list.sessions[0];
         assert_eq!(session.title.as_deref(), Some("Review pending changes"));
     }
@@ -1398,14 +1155,10 @@ mod tests {
         }
         std::fs::write(project_dir.join("large.jsonl"), contents).unwrap();
 
-        let session = ClaudeActor::read_transcript_list_metadata(
-            &project_dir.join("large.jsonl"),
-            None,
-            TranscriptScanMode::List,
-        )
-        .unwrap();
+        let session =
+            ClaudeActor::read_transcript_list_metadata(&project_dir.join("large.jsonl"), None)
+                .unwrap();
         assert_eq!(session.session_id, "session");
-        assert_eq!(session.message_count, 0);
     }
 
     #[test]
@@ -1447,11 +1200,10 @@ mod tests {
     #[test]
     fn missing_project_dir_returns_empty_list() {
         let config = tempfile::tempdir().unwrap();
-        let list = ClaudeActor::list_sessions_in_config_with_mode(
+        let list = ClaudeActor::list_sessions_in_config(
             Path::new("/Users/me/missing"),
             config.path(),
             None,
-            TranscriptScanMode::List,
         )
         .unwrap();
 
@@ -1518,14 +1270,12 @@ impl AgentActor for ClaudeActor {
     fn session_counts(&self, ctx: &ScanCtx) -> Result<ActorSessionCounts, String> {
         let (total, latest) =
             Self::session_count_summary(ctx.workdir).map_err(|e| e.to_string())?;
-        Ok(ActorSessionCounts {
+        Ok(ActorSessionCounts::from_latest(
             total,
-            resumable: total,
-            latest_session_id: latest.as_ref().map(|s| s.session_id.clone()),
-            latest_session_title: latest.as_ref().and_then(|s| s.title.clone()),
-            last_activity_at: latest.and_then(|s| parse_rfc3339(s.last_activity_at.as_deref())),
-            ..Default::default()
-        })
+            latest.as_ref().map(|s| s.session_id.clone()),
+            latest.as_ref().and_then(|s| s.title.clone()),
+            latest.and_then(|s| parse_rfc3339(s.last_activity_at.as_deref())),
+        ))
     }
 
     fn sessions(
@@ -1656,8 +1406,36 @@ impl AgentActor for ClaudeActor {
 
     fn setup(&self, workdir: &Path, force: bool) -> anyhow::Result<Vec<PathBuf>> {
         let script_path = super::cli::write_hook_script(workdir, force)?;
-        let config_path = super::cli::write_claude_hook_config(workdir, &script_path, force)?;
+        let config_path = workdir.join(".claude/settings.local.json");
+        super::utils::write_json_file_checked(
+            &config_path,
+            &super::utils::hook_config_from_events(&script_path, "claude", Self::HOOK_EVENTS),
+            force,
+            "Claude local hook config",
+        )?;
         Ok(vec![script_path, config_path])
+    }
+
+    fn supports_setup_cli(&self) -> bool {
+        true
+    }
+
+    fn setup_cli<'a>(
+        &'a self,
+        action: super::SetupAction,
+        ctx: super::SetupCliCtx,
+    ) -> ActorFuture<'a, anyhow::Result<()>> {
+        Box::pin(async move {
+            ctx.require_command("claude")?;
+            match action {
+                super::SetupAction::Install => {
+                    ctx.install_plugin_and_hooks(&Self::plugin_setup(&ctx)?)
+                }
+                super::SetupAction::Remove => {
+                    ctx.remove_plugin_and_hooks(&Self::plugin_setup(&ctx)?)
+                }
+            }
+        })
     }
 
     fn hook_test_payload(&self, event_name: &str, workdir: &Path) -> serde_json::Value {
@@ -1695,5 +1473,68 @@ impl ClaudeActor {
             Path::new(path).join("hooks/hooks.json").is_file(),
             None,
         )
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Interactive `zedra setup claude`
+// ---------------------------------------------------------------------------
+
+const CLAUDE_PLUGIN: &str = "zedra@zedra";
+
+impl ClaudeActor {
+    fn plugin_setup(ctx: &super::SetupCliCtx) -> Result<super::setup::PluginSetup<'static>> {
+        Ok(super::setup::PluginSetup {
+            display: "Claude",
+            program: "claude",
+            install_args: &["plugin", "install", "--scope", "user", CLAUDE_PLUGIN],
+            uninstall_args: &["plugin", "uninstall", "--scope", "user", CLAUDE_PLUGIN],
+            hooks_path: Self::claude_settings_path(ctx)?,
+            events: Self::HOOK_EVENTS,
+            agent: "claude",
+            start_in: "Claude Code",
+            start_command: "/zedra-start",
+            reload_note: "In Claude Code, reload plugins to apply the change:",
+            reload_command: Some("/reload-plugins"),
+        })
+    }
+
+    fn claude_settings_path(ctx: &super::SetupCliCtx) -> Result<PathBuf> {
+        Ok(ctx.home_dir()?.join(".claude").join("settings.json"))
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Workdir-scoped hook config written by `AgentActor::setup`
+// ---------------------------------------------------------------------------
+
+impl ClaudeActor {
+    // Single source for hook registration; the receive_hook state map consumes the same names.
+    const HOOK_EVENTS: &'static [(&'static str, Option<&'static str>, u64)] = &[
+        ("UserPromptSubmit", None, 2),
+        ("PermissionRequest", Some("*"), 2),
+        ("PostToolUse", Some("*"), 2),
+        ("Stop", None, 2),
+    ];
+}
+
+#[cfg(test)]
+mod hook_config_tests {
+    use super::*;
+
+    #[test]
+    fn claude_hook_config_includes_turn_tool_and_session_events() {
+        let config = crate::agent::utils::hook_config_from_events(
+            Path::new("/tmp/zedra-hook.sh"),
+            "claude",
+            ClaudeActor::HOOK_EVENTS,
+        );
+        let hooks = config["hooks"].as_object().unwrap();
+
+        for &(event, _, _) in ClaudeActor::HOOK_EVENTS {
+            assert!(hooks.contains_key(event), "missing {event}");
+        }
+        assert!(!hooks.contains_key("PreToolUse"));
+        assert!(!hooks.contains_key("SessionEnd"));
     }
 }

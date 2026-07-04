@@ -8,8 +8,8 @@ use serde_json::Value;
 use zedra_rpc::proto::*;
 
 use super::utils::{
-    command_on_path, file_size_bytes, home_path, info_field, mtime_unix_secs, parse_rfc3339,
-    read_json_file, resume_summary, session_title, spawn_blocking_opt, string_field,
+    command_on_path, file_size_bytes, home_path, info_field, parse_rfc3339, read_json_file,
+    resume_summary, session_title, sorted_jsonl_candidates, spawn_blocking_opt, string_field,
     user_message_text,
 };
 
@@ -23,8 +23,6 @@ struct PiSessionFile {
     created_at: Option<DateTime<Utc>>,
     last_activity_at: Option<DateTime<Utc>>,
     title: Option<String>,
-    _message_count: u64,
-    _malformed_line_count: u64,
 }
 
 impl PiActor {
@@ -33,18 +31,15 @@ impl PiActor {
     }
 
     pub fn session_counts(workdir: &Path) -> Result<super::SessionCounts, String> {
-        let files =
-            Self::collect_session_files(workdir, Some(1), true).map_err(|e| e.to_string())?;
-        let total = Self::count_session_files(workdir).map_err(|e| e.to_string())?;
+        let (files, total) =
+            Self::collect_session_files(workdir, Some(1)).map_err(|e| e.to_string())?;
         let latest = files.first();
-        Ok(super::SessionCounts {
+        Ok(super::SessionCounts::from_latest(
             total,
-            resumable: total,
-            latest_session_id: latest.map(|f| f.session_id.clone()),
-            latest_session_title: latest.and_then(|f| f.title.clone()),
-            last_activity_at: latest.and_then(|f| f.last_activity_at),
-            ..Default::default()
-        })
+            latest.map(|f| f.session_id.clone()),
+            latest.and_then(|f| f.title.clone()),
+            latest.and_then(|f| f.last_activity_at),
+        ))
     }
 
     pub fn sessions(
@@ -52,11 +47,8 @@ impl PiActor {
         cli: &AgentCliSummary,
         limit: usize,
     ) -> Result<(Vec<AgentSessionSummary>, usize), String> {
-        let total = Self::count_session_files(workdir).map_err(|e| e.to_string())?;
-        // Full-scan: session summaries surface message/malformed counters and the
-        // latest activity timestamp, which a head-only scan would underreport.
-        let files =
-            Self::collect_session_files(workdir, Some(limit), false).map_err(|e| e.to_string())?;
+        let (files, total) =
+            Self::collect_session_files(workdir, Some(limit)).map_err(|e| e.to_string())?;
         let summaries = files
             .iter()
             .map(|file| Self::session_summary(file, cli))
@@ -67,7 +59,7 @@ impl PiActor {
     /// Title of a single pi session, looked up by id within the workdir's project
     /// transcripts. Used to fill the notification body on a `Stop` hook.
     pub fn title_for_session(workdir: &Path, session_id: &str) -> Option<String> {
-        let files = Self::collect_session_files(workdir, None, false).ok()?;
+        let (files, _) = Self::collect_session_files(workdir, None).ok()?;
         let file = files.into_iter().find(|f| f.session_id == session_id)?;
         session_title(file.title)
     }
@@ -103,18 +95,6 @@ impl PiActor {
         fields
     }
 
-    pub fn subscription_plan_fields() -> Option<Vec<AgentInfoField>> {
-        // Pi has no remote plan to fetch: provider/auth state is local and already
-        // populated synchronously by `account_fields`. The async plan-refresh path
-        // would only re-read the same files and merge identical rows back, so opt
-        // out instead of duplicating that work.
-        None
-    }
-
-    pub fn fetch_account_usage() -> Option<AgentUsageSnapshot> {
-        None
-    }
-
     // ---------------------------------------------------------------------------
     // File-system scan
     // ---------------------------------------------------------------------------
@@ -139,81 +119,24 @@ impl PiActor {
         Self::pi_sessions_root().join(Self::encoded_project_dir(workdir))
     }
 
-    fn count_session_files(workdir: &Path) -> Result<usize> {
-        let dir = Self::project_dir(workdir);
-        let entries = match std::fs::read_dir(&dir) {
-            Ok(entries) => entries,
-            Err(err) if err.kind() == std::io::ErrorKind::NotFound => return Ok(0),
-            Err(err) => {
-                return Err(err)
-                    .with_context(|| format!("failed to read Pi project dir {}", dir.display()));
-            }
-        };
-        let mut count = 0;
-        for entry in entries.flatten() {
-            let path = entry.path();
-            if path.extension().and_then(|ext| ext.to_str()) == Some("jsonl") {
-                count += 1;
-            }
-        }
-        Ok(count)
-    }
-
+    /// Newest sessions by mtime plus the total count. The project dir is
+    /// workspace-scoped, so the candidate count is the total without opening
+    /// any file; kept files are head-parsed with an early stop.
     fn collect_session_files(
         workdir: &Path,
         limit: Option<usize>,
-        head_only: bool,
-    ) -> Result<Vec<PiSessionFile>> {
-        let dir = Self::project_dir(workdir);
-        let entries = match std::fs::read_dir(&dir) {
-            Ok(entries) => entries,
-            Err(err) if err.kind() == std::io::ErrorKind::NotFound => return Ok(Vec::new()),
-            Err(err) => {
-                return Err(err)
-                    .with_context(|| format!("failed to read Pi project dir {}", dir.display()));
-            }
-        };
-
-        let mut candidates: Vec<(PathBuf, Option<u64>)> = Vec::new();
-        for entry in entries.flatten() {
-            let path = entry.path();
-            if path.extension().and_then(|ext| ext.to_str()) != Some("jsonl") {
-                continue;
-            }
-            candidates.push((path.clone(), mtime_unix_secs(&path)));
-        }
-        candidates.sort_by(|a, b| b.1.cmp(&a.1).then_with(|| b.0.cmp(&a.0)));
-
-        // Full scan parses all candidates before limiting (`last_activity_at` can
-        // outrank mtime); head-only trusts mtime order and limits up front.
-        let scan_limit = if head_only {
-            limit.unwrap_or(candidates.len())
-        } else {
-            candidates.len()
-        };
-        let mut files = Vec::with_capacity(scan_limit.min(candidates.len()));
+    ) -> Result<(Vec<PiSessionFile>, usize)> {
+        let candidates = sorted_jsonl_candidates(&Self::project_dir(workdir))?;
+        let total = candidates.len();
+        let scan_limit = limit.unwrap_or(total);
+        let mut files = Vec::with_capacity(scan_limit.min(total));
         for (path, mtime) in candidates.into_iter().take(scan_limit) {
-            let file = Self::read_session_file(&path, mtime, head_only)?;
-            files.push(file);
+            files.push(Self::read_session_file(&path, mtime)?);
         }
-        if !head_only {
-            files.sort_by(|a, b| {
-                b.last_activity_at
-                    .cmp(&a.last_activity_at)
-                    .then_with(|| b.path.cmp(&a.path))
-            });
-            if let Some(limit) = limit {
-                files.truncate(limit);
-            }
-        }
-        Ok(files)
+        Ok((files, total))
     }
 
-    fn read_session_file(
-        path: &Path,
-        mtime_unix_secs: Option<u64>,
-        head_only: bool,
-    ) -> Result<PiSessionFile> {
+    fn read_session_file(path: &Path, mtime_unix_secs: Option<u64>) -> Result<PiSessionFile> {
         let file = File::open(path)
             .with_context(|| format!("failed to read Pi transcript {}", path.display()))?;
         let mut session_id = String::new();
@@ -221,8 +144,6 @@ impl PiActor {
         let mut created_at = None;
         let mut last_timestamp: Option<DateTime<Utc>> = None;
         let mut title: Option<String> = None;
-        let mut message_count: u64 = 0;
-        let mut malformed_line_count: u64 = 0;
         let mut scanned_lines = 0usize;
 
         for line in BufReader::new(file).lines() {
@@ -234,10 +155,7 @@ impl PiActor {
             }
             let record = match serde_json::from_str::<Value>(trimmed) {
                 Ok(Value::Object(record)) => Value::Object(record),
-                _ => {
-                    malformed_line_count += 1;
-                    continue;
-                }
+                _ => continue,
             };
             scanned_lines += 1;
 
@@ -271,7 +189,6 @@ impl PiActor {
                     }
                 }
                 "message" => {
-                    message_count += 1;
                     if title.is_none() {
                         // Length is clamped centrally in `session_title`; the UI trims
                         // for display.
@@ -288,8 +205,7 @@ impl PiActor {
                 };
             }
 
-            if head_only
-                && !session_id.is_empty()
+            if !session_id.is_empty()
                 && title.is_some()
                 && scanned_lines >= LIST_HEAD_SCAN_MAX_LINES
             {
@@ -305,16 +221,11 @@ impl PiActor {
                 .to_string();
         }
 
-        // A head-only scan stops after the first few records, so its newest scanned
-        // timestamp reflects the opening prompt rather than the latest turn. Trust
-        // file mtime for activity there; full scans use the real last timestamp.
+        // Head scans see only opening records; trust mtime (append time) for
+        // activity, falling back to the newest scanned timestamp.
         let mtime_activity =
             mtime_unix_secs.and_then(|secs| DateTime::<Utc>::from_timestamp(secs as i64, 0));
-        let last_activity_at = if head_only {
-            mtime_activity.or(last_timestamp)
-        } else {
-            last_timestamp.or(mtime_activity)
-        };
+        let last_activity_at = mtime_activity.or(last_timestamp);
 
         Ok(PiSessionFile {
             path: path.to_path_buf(),
@@ -323,8 +234,6 @@ impl PiActor {
             created_at,
             last_activity_at,
             title,
-            _message_count: message_count,
-            _malformed_line_count: malformed_line_count,
         })
     }
 
@@ -621,12 +530,10 @@ mod tests {
         )
         .unwrap();
 
-        let file = PiActor::read_session_file(&path, None, false).unwrap();
+        let file = PiActor::read_session_file(&path, None).unwrap();
         assert_eq!(file.session_id, "abc");
         assert_eq!(file.cwd.as_deref(), Some("/Users/me/project"));
         assert_eq!(file.title.as_deref(), Some("Refactor terminal scrollback"));
-        assert_eq!(file._message_count, 2);
-        assert_eq!(file._malformed_line_count, 0);
     }
 
     #[test]
@@ -639,12 +546,12 @@ mod tests {
 "#,
         )
         .unwrap();
-        let file = PiActor::read_session_file(&path, None, false).unwrap();
+        let file = PiActor::read_session_file(&path, None).unwrap();
         assert_eq!(file.session_id, "2026-05-28_xyz");
     }
 
     #[test]
-    fn full_scan_reaches_latest_activity_and_counts() {
+    fn head_scan_uses_mtime_for_activity() {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("2026-05-28_long.jsonl");
         let mut lines = String::from(
@@ -652,7 +559,7 @@ mod tests {
 {"type":"message","id":"u","message":{"role":"user","content":[{"type":"text","text":"start"}]}}
 "#,
         );
-        // Push well past LIST_HEAD_SCAN_MAX_LINES so head-only would stop early.
+        // Push past LIST_HEAD_SCAN_MAX_LINES so the head scan stops early.
         for i in 0..(LIST_HEAD_SCAN_MAX_LINES + 10) {
             lines.push_str(&format!(
                 "{{\"type\":\"message\",\"id\":\"m{i}\",\"timestamp\":\"2026-05-28T12:00:{:02}Z\",\"message\":{{\"role\":\"assistant\",\"content\":[]}}}}\n",
@@ -661,19 +568,12 @@ mod tests {
         }
         std::fs::write(&path, lines).unwrap();
 
-        // Head-only: timestamps are unreliable, so fall back to mtime; counters
-        // are partial.
-        let head = PiActor::read_session_file(&path, Some(1_700_000_000), true).unwrap();
+        // The scan stops before the latest turn, so activity comes from mtime.
+        let file = PiActor::read_session_file(&path, Some(1_700_000_000)).unwrap();
         assert_eq!(
-            head.last_activity_at,
+            file.last_activity_at,
             DateTime::<Utc>::from_timestamp(1_700_000_000, 0)
         );
-        assert!(head._message_count < (LIST_HEAD_SCAN_MAX_LINES as u64));
-
-        // Full scan: sees the latest turn timestamp and every message.
-        let full = PiActor::read_session_file(&path, Some(1_700_000_000), false).unwrap();
-        assert_eq!(full._message_count, (LIST_HEAD_SCAN_MAX_LINES + 11) as u64);
-        assert!(full.last_activity_at.unwrap() > head.last_activity_at.unwrap());
     }
 }
 
@@ -751,13 +651,8 @@ impl AgentActor for PiActor {
         Some(format!("pi --session {quoted}"))
     }
 
-    fn subscription_plan<'a>(&'a self) -> ActorFuture<'a, Option<Vec<AgentInfoField>>> {
-        spawn_blocking_opt(Self::subscription_plan_fields)
-    }
-
-    fn account_usage<'a>(&'a self) -> ActorFuture<'a, Option<AgentUsageSnapshot>> {
-        spawn_blocking_opt(Self::fetch_account_usage)
-    }
+    // No remote plan/usage endpoint: `subscription_plan`/`account_usage` keep
+    // the trait's None defaults.
 
     fn receive_hook<'a>(&'a self, ctx: HookContext) -> ActorFuture<'a, anyhow::Result<()>> {
         Box::pin(async move {
@@ -798,7 +693,46 @@ impl AgentActor for PiActor {
     }
 
     fn setup(&self, _workdir: &Path, force: bool) -> anyhow::Result<Vec<PathBuf>> {
-        Ok(vec![super::cli::write_pi_hook_extension(force)?])
+        let cli = std::env::current_exe().context("failed to resolve current zedra binary")?;
+        Ok(vec![Self::write_hook_extension(
+            force,
+            &cli.display().to_string(),
+        )?])
+    }
+
+    fn supports_setup_cli(&self) -> bool {
+        true
+    }
+
+    fn setup_cli<'a>(
+        &'a self,
+        action: super::SetupAction,
+        ctx: super::SetupCliCtx,
+    ) -> ActorFuture<'a, anyhow::Result<()>> {
+        Box::pin(async move {
+            match action {
+                super::SetupAction::Install => {
+                    ctx.section("Setting up Pi");
+                    let binary = ctx.hook_binary()?;
+                    let path = Self::write_hook_extension(true, &binary)?;
+                    ctx.step("hooks");
+                    ctx.detail(&format!("write {}", path.display()));
+                    ctx.message("pi setup complete.");
+                }
+                super::SetupAction::Remove => {
+                    ctx.message("Removing Zedra lifecycle-hook extension for pi:");
+                    let path = Self::hook_extension_path();
+                    if ctx.remove_path(&path)? {
+                        ctx.step("hooks");
+                        ctx.detail(&format!("remove {}", path.display()));
+                    }
+                    ctx.message("");
+                    ctx.message("pi setup removed.");
+                    ctx.message("Restart any running pi session to apply the change.");
+                }
+            }
+            Ok(())
+        })
     }
 
     fn hook_test_payload(&self, event_name: &str, workdir: &Path) -> serde_json::Value {
@@ -807,5 +741,92 @@ impl AgentActor for PiActor {
             "session_id": "zedra-test-session",
             "cwd": workdir,
         })
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Global hook extension written by `AgentActor::setup` and `zedra setup pi`
+// ---------------------------------------------------------------------------
+
+impl PiActor {
+    /// Writes the global pi hook extension; shared by `setup` and `setup_cli`.
+    fn write_hook_extension(force: bool, cli_path: &str) -> Result<PathBuf> {
+        let path = Self::hook_extension_path();
+        let contents = Self::hook_extension_contents(cli_path);
+        super::utils::write_file_checked(&path, &contents, force, "Pi hook extension")?;
+        Ok(path)
+    }
+
+    fn hook_extension_path() -> PathBuf {
+        home_path(&[".pi", "agent", "extensions", "zedra-agent-hooks.ts"])
+    }
+
+    fn hook_extension_contents(cli_path: &str) -> String {
+        let cli_json =
+            serde_json::to_string(cli_path).unwrap_or_else(|_| format!("\"{}\"", cli_path));
+        format!(
+            r#"import type {{ ExtensionAPI }} from "@mariozechner/pi-coding-agent";
+import {{ spawn }} from "node:child_process";
+
+// Zedra hook extension for pi: forwards lifecycle events to the daemon for
+// state + push notifications. Active only inside a Zedra terminal
+// (ZEDRA_TERMINAL_ID); failures are swallowed so hooks never break pi.
+export default function (pi: ExtensionAPI) {{
+  if (!process.env.ZEDRA_TERMINAL_ID) return;
+
+  const CLI = process.env.ZEDRA_CLI || {cli};
+
+  const fire = (hookEventName: string, sessionId?: string) => {{
+    try {{
+      const child = spawn(
+        CLI,
+        ["agent", "hook", "receive", "--agent", "pi", "--quiet"],
+        {{
+          stdio: ["pipe", "ignore", "ignore"],
+          detached: true,
+          // ZEDRA_TERMINAL_ID and ZEDRA_WORKDIR are inherited from process.env
+          // and picked up by `agent hook receive` as --terminal-id / --workdir.
+        }},
+      );
+      child.on("error", () => {{}});
+      child.stdin?.on("error", () => {{}});
+      const payload: Record<string, string> = {{ hook_event_name: hookEventName }};
+      if (sessionId) payload.session_id = sessionId;
+      child.stdin?.end(JSON.stringify(payload));
+      child.unref();
+    }} catch {{
+      // spawn() can throw synchronously (EACCES, ENOENT). Stay silent.
+    }}
+  }};
+
+  // Gate on ctx.hasUI: skip non-interactive (print / JSON / subagent) runs.
+  // Check `=== false` so older pi versions without hasUI still fire hooks.
+  const skip = (ctx: {{ hasUI?: boolean }}) => ctx.hasUI === false;
+
+  pi.on("before_agent_start", (event, ctx) => {{
+    if (skip(ctx)) return;
+    fire("UserPromptSubmit", (event as any)?.sessionId);
+  }});
+
+  pi.on("tool_execution_end", (event, ctx) => {{
+    if (skip(ctx)) return;
+    fire("PostToolUse", (event as any)?.sessionId);
+  }});
+
+  pi.on("agent_end", (event, ctx) => {{
+    if (skip(ctx)) return;
+    fire("Stop", (event as any)?.sessionId);
+  }});
+
+  // Fires on Ctrl+C, SIGTERM, /quit, /reload, /new, /resume, /fork.
+  // Ensures Running indicator clears if pi is killed mid-turn.
+  pi.on("session_shutdown", (event, ctx) => {{
+    if (skip(ctx)) return;
+    fire("Stop", (event as any)?.sessionId);
+  }});
+}}
+"#,
+            cli = cli_json
+        )
     }
 }

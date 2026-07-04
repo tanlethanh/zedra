@@ -20,8 +20,6 @@ pub struct OpenCodeSessionJson {
     #[serde(default, alias = "worktree")]
     pub project_worktree: Option<String>,
     #[serde(default)]
-    pub workspace_id: Option<String>,
-    #[serde(default)]
     pub workspace_branch: Option<String>,
     #[serde(default)]
     pub workspace_directory: Option<String>,
@@ -37,6 +35,10 @@ struct SessionCountSummary {
 }
 
 impl OpenCodeActor {
+    /// Source tag for SQLite-sourced sessions, whose rows already carry sizes;
+    /// the message-table size scan runs only for the CLI-list source.
+    const DB_SOURCE: &'static str = "opencode sqlite";
+
     pub fn cli_available() -> bool {
         Self::db_path().is_file() || command_on_path("opencode")
     }
@@ -129,7 +131,7 @@ impl OpenCodeActor {
 
     fn fetch_sessions_json() -> Result<(Vec<u8>, &'static str), String> {
         if let Ok(json) = Self::fetch_sessions_json_from_db() {
-            return Ok((json, "opencode sqlite"));
+            return Ok((json, Self::DB_SOURCE));
         }
 
         let output = Self::opencode_session_list_output()?;
@@ -148,7 +150,7 @@ impl OpenCodeActor {
         };
 
         Self::fetch_sessions_json_from_db()
-            .map(|json| (json, "opencode sqlite"))
+            .map(|json| (json, Self::DB_SOURCE))
             .map_err(|fallback_error| {
                 format!("{cli_error}; sqlite fallback failed: {fallback_error}")
             })
@@ -278,30 +280,21 @@ impl OpenCodeActor {
         GROUP BY session_id
     "#;
 
-        let stdout = match sqlite_readonly::query_json(&db_path, QUERY) {
-            Ok(stdout) => stdout,
-            Err(_) => return HashMap::new(),
-        };
-        if stdout.is_empty() {
-            return HashMap::new();
-        }
-
         #[derive(Deserialize)]
         struct Row {
             session_id: String,
             bytes: i64,
         }
 
-        serde_json::from_slice::<Vec<Row>>(&stdout)
-            .map(|rows| {
-                rows.into_iter()
-                    .filter_map(|row| {
-                        let bytes = row.bytes.max(0) as u64;
-                        (bytes > 0).then_some((row.session_id, bytes))
-                    })
-                    .collect()
+        let Ok(rows) = sqlite_readonly::query_rows::<Row>(&db_path, QUERY) else {
+            return HashMap::new();
+        };
+        rows.into_iter()
+            .filter_map(|row| {
+                let bytes = row.bytes.max(0) as u64;
+                (bytes > 0).then_some((row.session_id, bytes))
             })
-            .unwrap_or_default()
+            .collect()
     }
 
     fn git_summary(
@@ -347,11 +340,17 @@ impl OpenCodeActor {
         workdir: &Path,
         json: &[u8],
         _cli: &AgentCliSummary,
-        _source: &str,
+        source: &str,
     ) -> Result<Vec<AgentSessionSummary>, String> {
         let raw: Vec<OpenCodeSessionJson> =
             serde_json::from_slice(json).map_err(|error| error.to_string())?;
-        let transcript_sizes = Self::transcript_sizes_from_db();
+        // The SQLite source already computed per-row transcript sizes; only the CLI
+        // list lacks them, so run the extra message-table scan solely as a fallback.
+        let transcript_sizes = if source == Self::DB_SOURCE {
+            HashMap::new()
+        } else {
+            Self::transcript_sizes_from_db()
+        };
         let mut git_common_cache = HashMap::new();
         let mut git_branch_cache = HashMap::new();
         let mut sessions = Vec::new();
@@ -494,8 +493,7 @@ impl OpenCodeActor {
             return None;
         }
         let query = "SELECT SUM(cost) as total_cost FROM session;";
-        let bytes = sqlite_readonly::query_json(&db_path, query).ok()?;
-        let rows: Vec<Value> = serde_json::from_slice(&bytes).ok()?;
+        let rows: Vec<Value> = sqlite_readonly::query_rows(&db_path, query).ok()?;
         let row = rows.first()?;
         let total_cost = row
             .get("total_cost")
@@ -604,7 +602,6 @@ mod tests {
             project_id: Some("project-hash".into()),
             directory: Some(linked.display().to_string()),
             project_worktree: Some(linked.display().to_string()),
-            workspace_id: None,
             workspace_branch: None,
             workspace_directory: None,
             path: None,
@@ -665,7 +662,6 @@ mod tests {
             project_id: None,
             directory: Some(env!("CARGO_MANIFEST_DIR").to_string()),
             project_worktree: None,
-            workspace_id: Some("ws_1".into()),
             workspace_branch: Some("stored-branch".into()),
             workspace_directory: Some("/repo/worktree".into()),
             path: None,
@@ -813,8 +809,46 @@ impl AgentActor for OpenCodeActor {
 
     fn setup(&self, workdir: &Path, force: bool) -> anyhow::Result<Vec<PathBuf>> {
         let script_path = super::cli::write_hook_script(workdir, force)?;
-        let config_path = super::cli::write_opencode_hook_config(workdir, &script_path, force)?;
+        let config_path = workdir.join(".opencode/plugins/zedra.js");
+        super::utils::write_file_checked(
+            &config_path,
+            &Self::local_plugin_contents(&script_path)?,
+            force,
+            "OpenCode local plugin",
+        )?;
         Ok(vec![script_path, config_path])
+    }
+
+    fn supports_setup_cli(&self) -> bool {
+        true
+    }
+
+    fn setup_cli<'a>(
+        &'a self,
+        action: super::SetupAction,
+        ctx: super::SetupCliCtx,
+    ) -> ActorFuture<'a, anyhow::Result<()>> {
+        Box::pin(async move {
+            match action {
+                super::SetupAction::Install => {
+                    let skills_dir = Self::opencode_skills_dir(&ctx)?;
+                    ctx.install_skills("OpenCode", &skills_dir).await?;
+                    Self::install_opencode_hooks(&ctx)?;
+                    ctx.message("OpenCode setup complete. Start in OpenCode:");
+                    ctx.suggest_command("/zedra-start");
+                }
+                super::SetupAction::Remove => {
+                    let skills_dir = Self::opencode_skills_dir(&ctx)?;
+                    ctx.remove_skills("OpenCode", &skills_dir)?;
+                    Self::remove_opencode_hooks(&ctx)?;
+
+                    ctx.message("");
+                    ctx.message("OpenCode setup removed.");
+                    ctx.message("Restart OpenCode or reload skills to apply the change.");
+                }
+            }
+            Ok(())
+        })
     }
 
     fn hook_test_payload(&self, event_name: &str, workdir: &Path) -> serde_json::Value {
@@ -866,6 +900,117 @@ impl OpenCodeActor {
     }
 }
 
+// ---------------------------------------------------------------------------
+// Interactive `zedra setup opencode` (global skills + hook plugin)
+// ---------------------------------------------------------------------------
+
+const OPENCODE_HOOK_PLUGIN: &str = "zedra-agent-hooks.js";
+
+/// Events both hook plugins forward; must stay in sync with
+/// `opencode_agent_state` and the receive_hook notify set.
+const OPENCODE_FORWARDED_EVENTS: &[&str] = &[
+    "permission.asked",
+    "permission.replied",
+    "session.status",
+    "session.idle",
+    "session.error",
+];
+
+/// JS `shouldForward` body shared by the global and workdir plugin templates.
+fn should_forward_js() -> String {
+    let cond = OPENCODE_FORWARDED_EVENTS
+        .iter()
+        .map(|event| format!("event === \"{event}\""))
+        .collect::<Vec<_>>()
+        .join("\n    || ");
+    format!("function shouldForward(event) {{\n  return {cond};\n}}")
+}
+
+impl OpenCodeActor {
+    fn opencode_skills_dir(ctx: &super::SetupCliCtx) -> anyhow::Result<PathBuf> {
+        Ok(Self::opencode_config_dir(ctx)?.join("skills"))
+    }
+
+    fn opencode_config_dir(ctx: &super::SetupCliCtx) -> anyhow::Result<PathBuf> {
+        Ok(ctx.home_dir()?.join(".config").join("opencode"))
+    }
+
+    fn install_opencode_hooks(ctx: &super::SetupCliCtx) -> anyhow::Result<()> {
+        let dir = Self::opencode_config_dir(ctx)?;
+        Self::install_opencode_hooks_in_dir(ctx, &dir, &ctx.hook_binary()?)
+    }
+
+    fn install_opencode_hooks_in_dir(
+        ctx: &super::SetupCliCtx,
+        dir: &Path,
+        binary: &str,
+    ) -> anyhow::Result<()> {
+        let plugin_path = Self::opencode_hook_plugin_path(dir);
+        let content = Self::opencode_hook_plugin(binary, ctx.quiet)?;
+        if std::fs::read_to_string(&plugin_path).ok().as_deref() == Some(&content) {
+            return Ok(());
+        }
+        if let Some(parent) = plugin_path.parent() {
+            std::fs::create_dir_all(parent)?;
+        }
+        std::fs::write(&plugin_path, content)?;
+        ctx.step("hooks");
+        ctx.detail(&format!("write {}", plugin_path.display()));
+        Ok(())
+    }
+
+    fn remove_opencode_hooks(ctx: &super::SetupCliCtx) -> anyhow::Result<()> {
+        let dir = Self::opencode_config_dir(ctx)?;
+        Self::remove_opencode_hooks_in_dir(ctx, &dir)
+    }
+
+    fn remove_opencode_hooks_in_dir(ctx: &super::SetupCliCtx, dir: &Path) -> anyhow::Result<()> {
+        let plugin_path = Self::opencode_hook_plugin_path(dir);
+        if ctx.remove_path(&plugin_path)? {
+            ctx.step("hooks");
+            ctx.detail(&format!("remove {}", plugin_path.display()));
+        }
+        Ok(())
+    }
+
+    fn opencode_hook_plugin_path(dir: &Path) -> PathBuf {
+        dir.join("plugins").join(OPENCODE_HOOK_PLUGIN)
+    }
+
+    fn opencode_hook_plugin(binary: &str, quiet: bool) -> anyhow::Result<String> {
+        let binary = serde_json::to_string(binary)?;
+        let quiet_arg = if quiet { r#", "--quiet""# } else { "" };
+        let should_forward = should_forward_js();
+        Ok(format!(
+            r#"import {{ spawnSync }} from "node:child_process";
+
+const zedra = {binary};
+
+function send(event, payload = {{}}) {{
+  spawnSync(zedra, ["agent", "hook", "receive", "--agent", "opencode"{quiet_arg}, "--payload", JSON.stringify({{ event_name: event, ...payload }})], {{
+    stdio: ["ignore", "ignore", "ignore"],
+    timeout: 2000,
+  }});
+}}
+
+{should_forward}
+
+export const ZedraAgentHooks = async () => {{
+  return {{
+    event: async (input) => {{
+      const event = input.event?.type ?? "event";
+      if (!shouldForward(event)) {{
+        return;
+      }}
+      send(event, input);
+    }},
+  }};
+}}
+"#
+        ))
+    }
+}
+
 #[cfg(test)]
 mod hook_tests {
     use super::*;
@@ -902,5 +1047,78 @@ mod hook_tests {
             OpenCodeActor::opencode_agent_state("session.idle", &json!({})),
             Some(AgentState::Completed)
         );
+    }
+}
+
+#[cfg(test)]
+mod setup_cli_tests {
+    use super::*;
+
+    #[test]
+    fn opencode_hook_install_and_remove_updates_plugin_directory() {
+        let dir = tempfile::tempdir().unwrap();
+        let ctx = crate::agent::SetupCliCtx {
+            full_bin_path: false,
+            quiet: true,
+        };
+
+        OpenCodeActor::install_opencode_hooks_in_dir(&ctx, dir.path(), "/tmp/zedra").unwrap();
+        OpenCodeActor::install_opencode_hooks_in_dir(&ctx, dir.path(), "/tmp/zedra").unwrap();
+
+        let plugin_path = OpenCodeActor::opencode_hook_plugin_path(dir.path());
+        let plugin = std::fs::read_to_string(&plugin_path).unwrap();
+        assert!(plugin.contains(
+            r#"spawnSync(zedra, ["agent", "hook", "receive", "--agent", "opencode", "--quiet""#
+        ));
+        assert!(plugin.contains("JSON.stringify({ event_name: event, ...payload })"));
+        assert!(plugin.contains(r#"event === "permission.asked""#));
+        assert!(plugin.contains(r#"event === "session.error""#));
+
+        OpenCodeActor::remove_opencode_hooks_in_dir(&ctx, dir.path()).unwrap();
+
+        assert!(!plugin_path.exists());
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Workdir-scoped hook plugin written by `AgentActor::setup`
+// ---------------------------------------------------------------------------
+
+impl OpenCodeActor {
+    fn local_plugin_contents(script_path: &Path) -> anyhow::Result<String> {
+        Ok(format!(
+            r#"const hookScript = {script};
+
+async function send(event, payload = {{}}) {{
+  const proc = Bun.spawn([hookScript], {{
+    stdin: "pipe",
+    stdout: "ignore",
+    stderr: "ignore",
+    env: {{
+      ...process.env,
+      ZEDRA_AGENT_KIND: "opencode",
+      ZEDRA_AGENT_EVENT: event,
+    }},
+  }});
+  proc.stdin.write(JSON.stringify({{ type: event, ...payload }}));
+  proc.stdin.end();
+  await proc.exited;
+}}
+
+{should_forward}
+
+export const ZedraPlugin = async () => ({{
+  event: async (input) => {{
+    const event = input.event?.type ?? "unknown";
+    if (!shouldForward(event)) {{
+      return;
+    }}
+    await send(event, input.event ?? input);
+  }},
+}});
+"#,
+            script = serde_json::to_string(&script_path.display().to_string())?,
+            should_forward = should_forward_js()
+        ))
     }
 }

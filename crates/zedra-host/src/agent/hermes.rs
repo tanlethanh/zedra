@@ -13,7 +13,7 @@ use zedra_rpc::proto::*;
 
 use super::utils::{
     command_on_path, file_size_bytes, home_path, info_field, mtime_unix_secs, read_json_file,
-    resume_summary, session_title, spawn_blocking_opt, user_message_text,
+    resume_summary, session_title, user_message_text,
 };
 
 /// Cap per-file content shipped to the client. Hermes memory/config files are
@@ -44,14 +44,12 @@ impl HermesActor {
     pub fn session_counts(_workdir: &Path) -> Result<super::SessionCounts, String> {
         let total = Self::count_sessions();
         let latest = Self::collect_sessions(Some(1)).into_iter().next();
-        Ok(super::SessionCounts {
+        Ok(super::SessionCounts::from_latest(
             total,
-            resumable: total,
-            latest_session_id: latest.as_ref().map(|s| s.session_id.clone()),
-            latest_session_title: latest.as_ref().and_then(|s| s.title.clone()),
-            last_activity_at: latest.and_then(|s| s.last_activity_at),
-            ..Default::default()
-        })
+            latest.as_ref().map(|s| s.session_id.clone()),
+            latest.as_ref().and_then(|s| s.title.clone()),
+            latest.and_then(|s| s.last_activity_at),
+        ))
     }
 
     /// Sessions are global, so `workdir` is intentionally ignored.
@@ -155,16 +153,6 @@ impl HermesActor {
         }
     }
 
-    pub fn subscription_plan_fields() -> Option<Vec<AgentInfoField>> {
-        // Provider/auth state is local and already populated by `account_fields`;
-        // no remote plan to fetch.
-        None
-    }
-
-    pub fn fetch_account_usage() -> Option<AgentUsageSnapshot> {
-        None
-    }
-
     /// Read-only snapshot of Hermes's config/memory files for the agent detail view.
     /// Absent files are returned with `missing = true` so the UI can show them as
     /// "not created yet" rather than omitting them.
@@ -205,6 +193,16 @@ impl HermesActor {
 
     fn state_db_path() -> PathBuf {
         Self::hermes_home().join("state.db")
+    }
+
+    fn config_path() -> PathBuf {
+        Self::hermes_home().join("config.yaml")
+    }
+
+    fn hook_script_path() -> PathBuf {
+        Self::hermes_home()
+            .join("agent-hooks")
+            .join("zedra-agent-hooks.sh")
     }
 
     fn count_sessions() -> usize {
@@ -424,7 +422,7 @@ impl HermesActor {
     /// than pulling in a YAML dependency (mirrors how the Codex agent reads its
     /// `config.toml` line by line).
     fn read_config() -> HermesConfig {
-        let Ok(text) = std::fs::read_to_string(Self::hermes_home().join("config.yaml")) else {
+        let Ok(text) = std::fs::read_to_string(Self::config_path()) else {
             return HermesConfig::default();
         };
         Self::parse_config(&text)
@@ -666,12 +664,8 @@ impl AgentActor for HermesActor {
 
     fn setup_summary(&self, available: bool, _workdir: &Path) -> AgentSetupSummary {
         // Mirror what `setup()` installs: the hook script + a config.yaml referencing it.
-        let home = Self::hermes_home();
-        let script_installed = home
-            .join("agent-hooks")
-            .join("zedra-agent-hooks.sh")
-            .is_file();
-        let config_mentions_hook = std::fs::read_to_string(home.join("config.yaml"))
+        let script_installed = Self::hook_script_path().is_file();
+        let config_mentions_hook = std::fs::read_to_string(Self::config_path())
             .map(|config| config.contains("zedra-agent-hooks"))
             .unwrap_or(false);
         let hooks_installed = super::hooks_enabled() && script_installed && config_mentions_hook;
@@ -682,13 +676,8 @@ impl AgentActor for HermesActor {
         Some(format!("hermes --resume {quoted}"))
     }
 
-    fn subscription_plan<'a>(&'a self) -> ActorFuture<'a, Option<Vec<AgentInfoField>>> {
-        spawn_blocking_opt(Self::subscription_plan_fields)
-    }
-
-    fn account_usage<'a>(&'a self) -> ActorFuture<'a, Option<AgentUsageSnapshot>> {
-        spawn_blocking_opt(Self::fetch_account_usage)
-    }
+    // No remote plan/usage endpoint: `subscription_plan`/`account_usage` keep
+    // the trait's None defaults.
 
     fn receive_hook<'a>(&'a self, ctx: HookContext) -> ActorFuture<'a, anyhow::Result<()>> {
         Box::pin(async move {
@@ -732,7 +721,56 @@ impl AgentActor for HermesActor {
     }
 
     fn setup(&self, _workdir: &Path, force: bool) -> anyhow::Result<Vec<PathBuf>> {
-        super::cli::write_hermes_hook_config(force)
+        use anyhow::Context;
+        let cli = std::env::current_exe().context("failed to resolve current zedra binary")?;
+        Self::write_hook_config(force, &cli.display().to_string())
+    }
+
+    fn supports_setup_cli(&self) -> bool {
+        true
+    }
+
+    fn setup_cli<'a>(
+        &'a self,
+        action: super::SetupAction,
+        ctx: super::SetupCliCtx,
+    ) -> ActorFuture<'a, anyhow::Result<()>> {
+        Box::pin(async move {
+            match action {
+                super::SetupAction::Install => {
+                    ctx.section("Setting up Hermes");
+                    let binary = ctx.hook_binary()?;
+                    let paths = Self::write_hook_config(true, &binary)?;
+                    for (label, path) in ["hooks", "config"].iter().zip(&paths) {
+                        ctx.step(label);
+                        ctx.detail(&format!("write {}", path.display()));
+                    }
+                    ctx.message("Hermes setup complete.");
+                }
+                super::SetupAction::Remove => {
+                    ctx.message("Removing Zedra lifecycle-hook script for Hermes:");
+                    let script_path = Self::hook_script_path();
+                    if ctx.remove_path(&script_path)? {
+                        ctx.step("hooks");
+                        ctx.detail(&format!("remove {}", script_path.display()));
+                    }
+                    let config_path = Self::config_path();
+                    if config_path.is_file() {
+                        let existing = std::fs::read_to_string(&config_path)?;
+                        let cleaned = Self::remove_zedra_hooks(&existing);
+                        if cleaned != existing {
+                            std::fs::write(&config_path, &cleaned)?;
+                            ctx.step("config");
+                            ctx.detail(&format!("write {}", config_path.display()));
+                        }
+                    }
+                    ctx.message("");
+                    ctx.message("Hermes setup removed.");
+                    ctx.message("Restart any running Hermes session to apply the change.");
+                }
+            }
+            Ok(())
+        })
     }
 
     fn hook_test_payload(&self, event_name: &str, workdir: &Path) -> serde_json::Value {
@@ -800,5 +838,328 @@ mod hook_tests {
                 .copied(),
             Some(AgentState::WaitingApproval)
         );
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Hook script + config.yaml patching for `AgentActor::setup` and `zedra setup hermes`
+// ---------------------------------------------------------------------------
+
+impl HermesActor {
+    /// Hermes lifecycle events Zedra hooks into via shell hooks.
+    const HOOK_EVENTS: &'static [&'static str] = &[
+        "on_session_start",
+        "pre_approval_request",
+        "post_approval_response",
+        "post_llm_call",
+        "on_session_end",
+    ];
+
+    /// Writes the Hermes hook script and patches `~/.hermes/config.yaml`.
+    /// Returns the list of paths written/modified (hook script + config.yaml).
+    fn write_hook_config(force: bool, cli_path: &str) -> anyhow::Result<Vec<PathBuf>> {
+        use anyhow::Context;
+        let script_path = Self::hook_script_path();
+        let script = Self::hook_script_contents(cli_path);
+        super::utils::write_file_checked(&script_path, &script, force, "Hermes agent hook script")?;
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let mut perms = std::fs::metadata(&script_path)?.permissions();
+            perms.set_mode(0o755);
+            std::fs::set_permissions(&script_path, perms)?;
+        }
+
+        let config_path = Self::config_path();
+        let existing = std::fs::read_to_string(&config_path).unwrap_or_default();
+        let patched = Self::patch_config_hooks(&existing, &script_path);
+        if let Some(parent) = config_path.parent() {
+            std::fs::create_dir_all(parent)
+                .with_context(|| format!("failed to create {}", parent.display()))?;
+        }
+        std::fs::write(&config_path, &patched)
+            .with_context(|| format!("failed to write {}", config_path.display()))?;
+
+        Ok(vec![script_path, config_path])
+    }
+
+    fn hook_script_contents(cli_path: &str) -> String {
+        format!(
+            r#"#!/bin/sh
+# Zedra hook script for Hermes agent.
+# No-op outside a Zedra terminal (ZEDRA_TERMINAL_ID not set by the shell).
+[ -z "${{ZEDRA_TERMINAL_ID:-}}" ] && exit 0
+CLI="${{ZEDRA_CLI:-}}"
+[ -n "$CLI" ] || CLI={cli}
+[ -x "$CLI" ] || CLI="zedra"
+exec "$CLI" agent hook receive --agent hermes --quiet
+"#,
+            cli = crate::utils::shell_arg(cli_path),
+        )
+    }
+
+    /// Idempotently patch the `hooks:` block in `~/.hermes/config.yaml`. Each run strips the
+    /// `HOOK_EVENTS` keys Zedra owns and re-inserts fresh entries (path/timeout stay current),
+    /// preserves all user-defined hooks verbatim, and handles both `hooks: {}` and block forms.
+    fn patch_config_hooks(config: &str, script_path: &Path) -> String {
+        let script = script_path.display().to_string();
+
+        let lines: Vec<&str> = config.lines().collect();
+        let trailing_newline = config.ends_with('\n');
+
+        // Find the top-level `hooks:` key (must start at column 0).
+        let hooks_idx = lines.iter().position(|l| Self::is_hooks_key_line(l));
+
+        let Some(hooks_idx) = hooks_idx else {
+            // No hooks: key — append our block to the file.
+            let mut out = config.to_string();
+            if !out.ends_with('\n') {
+                out.push('\n');
+            }
+            out.push_str("hooks:\n");
+            out.push_str(&Self::zedra_hooks_entries(&script));
+            return out;
+        };
+
+        // Is it the inline-empty form `hooks: {}` ?
+        let inline_empty =
+            lines[hooks_idx].trim() == "hooks: {}" || lines[hooks_idx].trim() == "hooks:{}";
+
+        let hooks_block_end = Self::hooks_block_end(&lines, hooks_idx);
+
+        // Build the new hooks block.
+        let mut hooks_block = String::from("hooks:\n");
+        if !inline_empty {
+            // Preserve non-Zedra event entries from the existing block.
+            let existing_content = &lines[hooks_idx + 1..hooks_block_end];
+            let preserved = Self::remove_zedra_event_blocks(existing_content, Self::HOOK_EVENTS);
+            if !preserved.trim().is_empty() {
+                hooks_block.push_str(&preserved);
+            }
+        }
+        hooks_block.push_str(&Self::zedra_hooks_entries(&script));
+
+        Self::rebuild(
+            &lines[..hooks_idx],
+            &hooks_block,
+            &lines[hooks_block_end..],
+            trailing_newline,
+        )
+    }
+
+    /// End index (exclusive) of the `hooks:` block that opens at `hooks_idx`: the
+    /// first subsequent top-level (column-0) non-blank, non-comment line, or EOF.
+    fn hooks_block_end(lines: &[&str], hooks_idx: usize) -> usize {
+        lines[hooks_idx + 1..]
+            .iter()
+            .position(|l| {
+                !l.is_empty() && !l.starts_with(' ') && !l.starts_with('\t') && !l.starts_with('#')
+            })
+            .map(|i| hooks_idx + 1 + i)
+            .unwrap_or(lines.len())
+    }
+
+    /// Reassemble the config from the lines before the hooks block, the rebuilt
+    /// `hooks:` block, and the lines after it, matching the original trailing newline.
+    fn rebuild(pre: &[&str], hooks_block: &str, post: &[&str], trailing_newline: bool) -> String {
+        let mut out = String::new();
+        for l in pre {
+            out.push_str(l);
+            out.push('\n');
+        }
+        out.push_str(hooks_block);
+        for l in post {
+            out.push_str(l);
+            out.push('\n');
+        }
+        // Normalise trailing newline to match original.
+        while out.ends_with("\n\n") {
+            out.pop();
+        }
+        if trailing_newline && !out.ends_with('\n') {
+            out.push('\n');
+        }
+        out
+    }
+
+    /// True when `line` is the top-level `hooks:` YAML key (column-0, no indent).
+    fn is_hooks_key_line(line: &str) -> bool {
+        if line.starts_with(' ') || line.starts_with('\t') {
+            return false;
+        }
+        let t = line.trim();
+        t == "hooks: {}"
+            || t == "hooks:{}"
+            || t == "hooks:"
+            || (t.starts_with("hooks:")
+                && matches!(t.as_bytes().get(6), Some(b' ') | Some(b'{') | None))
+    }
+
+    /// Remove `remove_events` blocks from the indented hooks lines (those *after* the `hooks:` key).
+    /// A block runs from a `  identifier:` line (exactly 2-space indent) to the next such line or EOF;
+    /// other lines (blank, comment, deeper-indented) are kept or dropped by whether we're inside one.
+    fn remove_zedra_event_blocks<'a>(lines: &[&'a str], remove_events: &[&str]) -> String {
+        let mut out = String::new();
+        let mut skip = false;
+
+        for line in lines {
+            if let Some(key) = Self::event_key_at_line(line) {
+                skip = remove_events.contains(&key);
+            }
+            if !skip {
+                out.push_str(line);
+                out.push('\n');
+            }
+        }
+        out
+    }
+
+    /// If `line` is a 2-space-indented YAML mapping key (`  identifier:`),
+    /// return the key name; otherwise return `None`.
+    fn event_key_at_line<'a>(line: &'a str) -> Option<&'a str> {
+        let rest = line.strip_prefix("  ")?;
+        if rest.starts_with(' ') {
+            return None; // deeper indent — not a top-level event key
+        }
+        let name = rest.strip_suffix(':')?;
+        if name.is_empty() || name.contains(' ') || name.contains('"') || name.contains('\'') {
+            return None;
+        }
+        Some(name)
+    }
+
+    /// Strips all Zedra-managed event blocks from a `config.yaml` hooks section,
+    /// preserving user-defined hooks (used by `zedra setup hermes --remove`).
+    fn remove_zedra_hooks(config: &str) -> String {
+        let lines: Vec<&str> = config.lines().collect();
+        let trailing_newline = config.ends_with('\n');
+
+        let Some(hooks_idx) = lines.iter().position(|l| Self::is_hooks_key_line(l)) else {
+            return config.to_string();
+        };
+
+        let hooks_block_end = Self::hooks_block_end(&lines, hooks_idx);
+
+        let existing_content = &lines[hooks_idx + 1..hooks_block_end];
+        let preserved = Self::remove_zedra_event_blocks(existing_content, Self::HOOK_EVENTS);
+
+        let mut hooks_block = String::from("hooks:");
+        if preserved.trim().is_empty() {
+            hooks_block.push_str(" {}\n");
+        } else {
+            hooks_block.push('\n');
+            hooks_block.push_str(&preserved);
+        }
+
+        Self::rebuild(
+            &lines[..hooks_idx],
+            &hooks_block,
+            &lines[hooks_block_end..],
+            trailing_newline,
+        )
+    }
+
+    /// YAML text for all Zedra-managed hook entries (2-space indented, ready to
+    /// append directly inside the `hooks:` block).
+    fn zedra_hooks_entries(script: &str) -> String {
+        // Double any backslashes and escape double-quotes for inline YAML double-quoted scalar.
+        let script_yaml = script.replace('\\', "\\\\").replace('"', "\\\"");
+        let mut out = String::new();
+        for event in Self::HOOK_EVENTS {
+            out.push_str(&format!("  {}:\n", event));
+            out.push_str(&format!("    - command: \"{}\"\n", script_yaml));
+            out.push_str("      timeout: 5\n");
+        }
+        out
+    }
+}
+
+#[cfg(test)]
+mod hook_config_tests {
+    use super::*;
+
+    // -------------------------------------------------------------------------
+    // patch_hermes_config_hooks
+    // -------------------------------------------------------------------------
+
+    #[test]
+    fn patch_hermes_hooks_expands_inline_empty_dict() {
+        let config = "model:\n  default: gpt-5\nhooks: {}\nhooks_auto_accept: false\n";
+        let script = std::path::Path::new("/home/user/.hermes/agent-hooks/zedra-agent-hooks.sh");
+        let patched = HermesActor::patch_config_hooks(config, script);
+        assert!(patched.contains("hooks:\n"));
+        assert!(!patched.contains("hooks: {}"));
+        for event in HermesActor::HOOK_EVENTS {
+            assert!(patched.contains(event), "missing event {event}");
+        }
+        assert!(patched.contains("zedra-agent-hooks.sh"));
+        // Non-hooks keys must be preserved verbatim.
+        assert!(patched.contains("model:\n  default: gpt-5\n"));
+        assert!(patched.contains("hooks_auto_accept: false\n"));
+    }
+
+    #[test]
+    fn hermes_hook_script_preserves_quoted_binary_path() {
+        let script = HermesActor::hook_script_contents("/tmp/zedra build/zedra");
+        assert!(script.contains("CLI=\"${ZEDRA_CLI:-}\""));
+        assert!(script.contains("[ -n \"$CLI\" ] || CLI='/tmp/zedra build/zedra'"));
+        assert!(!script.contains("CLI=\"${ZEDRA_CLI:-'"));
+    }
+
+    #[test]
+    fn patch_hermes_hooks_idempotent_on_rerun() {
+        let config = "hooks: {}\n";
+        let script = std::path::Path::new("/path/to/zedra-agent-hooks.sh");
+        let first = HermesActor::patch_config_hooks(config, script);
+        let second = HermesActor::patch_config_hooks(&first, script);
+        // Re-running must produce the same output (same set of event keys,
+        // no duplicates, script path preserved).
+        assert_eq!(first, second);
+    }
+
+    #[test]
+    fn patch_hermes_hooks_overrides_old_script_path() {
+        let old_script = std::path::Path::new("/old/path/zedra-agent-hooks.sh");
+        let new_script = std::path::Path::new("/new/path/zedra-agent-hooks.sh");
+        let after_first = HermesActor::patch_config_hooks("hooks: {}\n", old_script);
+        assert!(after_first.contains("/old/path/"));
+        let after_second = HermesActor::patch_config_hooks(&after_first, new_script);
+        // Old path gone, new path present.
+        assert!(
+            !after_second.contains("/old/path/"),
+            "old path still present"
+        );
+        assert!(after_second.contains("/new/path/"));
+        for event in HermesActor::HOOK_EVENTS {
+            let count = after_second.matches(event).count();
+            assert_eq!(count, 1, "event {event} appears {count} times (want 1)");
+        }
+    }
+
+    #[test]
+    fn patch_hermes_hooks_preserves_user_events() {
+        let config = "hooks:\n  user_event:\n    - command: user_script.sh\n      timeout: 10\n";
+        let script = std::path::Path::new("/path/zedra-agent-hooks.sh");
+        let patched = HermesActor::patch_config_hooks(config, script);
+        assert!(patched.contains("user_event:"), "user event must survive");
+        assert!(
+            patched.contains("user_script.sh"),
+            "user script must survive"
+        );
+        for event in HermesActor::HOOK_EVENTS {
+            assert!(patched.contains(event), "missing zedra event {event}");
+        }
+    }
+
+    #[test]
+    fn patch_hermes_hooks_no_hooks_key_appends_block() {
+        let config = "model:\n  default: gpt-5\n";
+        let script = std::path::Path::new("/path/zedra-agent-hooks.sh");
+        let patched = HermesActor::patch_config_hooks(config, script);
+        assert!(patched.starts_with("model:"));
+        assert!(patched.contains("hooks:\n"));
+        for event in HermesActor::HOOK_EVENTS {
+            assert!(patched.contains(event));
+        }
     }
 }
