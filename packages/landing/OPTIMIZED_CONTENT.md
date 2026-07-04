@@ -49,9 +49,26 @@ All pages emit into `sitemap-index.xml` automatically via `@astrojs/sitemap`.
 
 - Structured data: paste page URLs into Google's Rich Results Test after meaningful changes.
 
+## SERP snapshot (2026-07-04)
+
+- `"zedra" coding agent app` — **zedra.dev ranks #1**, GitHub #2, unikorn.vn #3. Brand + category pairing works.
+- `control claude code from phone` — Zedra absent. Anthropic's official Remote Control docs rank #1, then how-to guides (builder.io, nxcode.io, zilliz.com, datasciencedojo) and competitors (agentsroom.dev, happy.engineering).
+- `best ios app for ai coding agents` — Zedra absent. Ranking: Moshi's own listicle, Tactic Remote's listicle, codeagent-mobile.com. Every ranking listicle is competitor-published and omits Zedra.
+- `run codex cli from phone` — Zedra absent. OpenAI's official "Codex in ChatGPT mobile" post plus Medium/dev.to how-tos and StarDesk/CC Pocket.
+- Pattern: what ranks on intent queries is either official vendor docs or **how-to guides** — product pages alone rarely place. A `/docs` or blog-style "how to run Claude Code from your phone" guide is the likeliest organic wedge.
+
+Competitor facts learned:
+
+- **clauderc.com rebranded to tacticremote.com** (301 redirect). Their listicle compares Tactic Remote, Termius, Blink, Prompt 3, a-Shell — no Zedra. Contact: support page, X `@tacticremote`.
+- **Moshi** (getmoshi.app) listicle compares Moshi, Blink, Termius, Prompt 3 — no Zedra. Contact: X `@odd_joel`, GitHub `rjyo`.
+- Wider competitor set beyond the compare page: Moshi, Tactic Remote, CodeAgent Mobile, Codem, CC Pocket, StarDesk, CodeRemote, YoloCode, ClaudeCodeUI. Happy publishes its own alternatives page (`happy.engineering/docs/comparisons/alternatives/`) that ranks — same pattern our `/compare` follows.
+- **App Store brand collision is worse than Google's**: an unrelated app literally named "Zedra" (id1541160685) and "Zedra Wallet" (zedra.app) both exist. Keyword-bearing subtitle + keyword field are the only way the listing surfaces.
+
 ## Backlog (highest leverage first)
 
-1. **ASO.** App Store subtitle is "Code from anywhere" — zero search keywords. Add a keyword-bearing subtitle, fill the 100-char keyword field (claude, codex, opencode, terminal, agent, remote, git), and add an in-app rating prompt; the listing has 0 ratings and does not rank for "claude code remote".
-2. **Listicle outreach.** The comparison articles that already rank (clauderc.com, sealos.io, tonydehnke.com, getmoshi.app) do not mention Zedra. Ask for inclusion.
-3. **Launch spikes.** Show HN, Product Hunt, r/ClaudeAI — backlinks lift both Google rank and GitHub stars.
-4. **Agent pages for Pi and Hermes** once their setup flows are stable enough to document.
+1. **ASO.** App Store subtitle is "Code from anywhere" — zero search keywords. Add a keyword-bearing subtitle, fill the 100-char keyword field (claude, codex, opencode, terminal, agent, remote, git), and add an in-app rating prompt; the listing has 0 ratings and does not rank for "claude code remote". Urgent given the duplicate-name apps above.
+2. **Directory listings (free backlinks, no gatekeeper).** Submit Zedra to AlternativeTo (its "Happy Coder Alternatives" page ranks) and launch on Product Hunt (its "Claude Code Remote Control alternatives" page ranks). Both are self-serve.
+3. **Listicle outreach.** Ask for inclusion in the articles that already rank: tacticremote.com (`@tacticremote`), getmoshi.app (`@odd_joel`), zilliz.com, sealos.io, tonydehnke.com, agentsroom.dev.
+4. **How-to guide content.** Intent SERPs reward guides over product pages. Add a docs/blog guide per agent ("How to run Claude Code from your phone") that the `/claude-code` page links to.
+5. **Launch spikes.** Show HN, Product Hunt, r/ClaudeAI — backlinks lift both Google rank and GitHub stars.
+6. **Agent pages for Pi and Hermes** once their setup flows are stable enough to document.
