@@ -6,12 +6,17 @@ is optional and only covers local behavior (paste formatting, notifications,
 icon branding). Agents are stable slug strings over RPC — adding one never
 bumps ALPN or adds a protocol enum.
 
-## Common Path
+## Host Actor
+
+Every agent is one `AgentActor` implementation in
+`crates/zedra-host/src/agent/<slug>.rs`. Register it in `agent/mod.rs`: add
+`mod <slug>;`, append `&<slug>::<Name>Actor,` to `ACTORS`, bump the array
+size. Every host feature — detection, discovery, sessions, setup, account
+data — resolves through that registry; never add per-agent `match` arms to
+the REST API, host cache, CLI scans, hook dispatch, or installed-agent list.
 
 Most agents are detect-only: they show up in terminals, version probes, and
-the installed-agent list, nothing more.
-
-Create `crates/zedra-host/src/agent/<slug>.rs`:
+the installed-agent list, nothing more. `simple_actor!` is all they need:
 
 ```rust
 simple_actor!(
@@ -24,57 +29,36 @@ simple_actor!(
 );
 ```
 
-Register it in `crates/zedra-host/src/agent/mod.rs`: add `mod <slug>;`, append
-`&<slug>::<Name>Actor,` to `ACTORS`, bump the array size.
-
 `programs` drives the `--version` probe and installed-agent list.
 `detect_aliases` matches whole words inside the foreground command
 (`cursor-agent`, `npx @openai/codex`). For short names that double as normal
 words or flag values (`pi`, `hermes`), write the `AgentActor` impl by hand and
 use `detect_exact` instead.
 
-## Managed Agent
-
 Go managed only when the provider supports sessions, resume, setup/hooks,
-account data, or usage. Current: `claude`, `codex`, `opencode`, `pi`,
-`hermes`.
+account data, or usage; the registry in `agent/mod.rs` is the authoritative
+list. Override only what the provider supports:
 
-Implement `AgentActor` in the actor file and override only what the provider
-supports:
+| Feature | Methods | Notes |
+| --- | --- | --- |
+| Identity & detection | `slug`, `display_name`, `icon_name`, `programs`, `detect_aliases`, `detect_exact` | `slug` is the wire identity; the icon slug may differ for branding |
+| Availability | `cli_available`, `cli_version_summary` | Defaults probe `programs()` on PATH |
+| Sessions & resume | `session_counts`, `sessions`, `resume_launch_command`, `scan_data_source`, `session_scan_cli` | Custom session-count types register in `session_counts_from!` (`agent/mod.rs`) |
+| Setup & hooks | `setup`, `setup_summary`, `supports_setup_cli`, `setup_cli`, `receive_hook`, `hook_test_payload` | `setup` is the only mutable op: writes the hook runner + provider config, returns the paths |
+| Account & usage | `account_fields`, `subscription_plan`, `account_usage`, `extra`, `config_files` | Async plan/usage default to `None`; skip the overrides when local-only |
+| Behavior flags | `is_global`, `shows_detail` | `is_global`: sessions ignore the workdir (Hermes); `shows_detail`: listed on the app's manage screen |
 
-- identity: `slug`, `display_name`, `icon_name`, `programs`,
-  `detect_aliases`, `detect_exact`
-- availability: `cli_available`, `cli_version_summary`
-- sessions: `session_counts`, `sessions`, `resume_launch_command`,
-  `scan_data_source`, `session_scan_cli`
-- setup/hooks: `setup`, `setup_summary`, `supports_setup_cli`, `setup_cli`,
-  `receive_hook`, `hook_test_payload`
-- account/usage: `account_fields`, `subscription_plan`, `account_usage`,
-  `extra`, `config_files`
-- `is_global`: `true` only when sessions ignore the workdir (Hermes)
-- `shows_detail`: `true` lists the agent on the app's manage screen
-  (detect-only actors stay hidden)
+Provider-specific hook templates live in the actor's file; `agent/cli.rs`
+keeps only shared plumbing (workdir hook script, checked file writers).
 
-`setup` is the only mutable setup operation: it writes the hook runner and
-provider config and returns the written paths. Provider-specific hook
-templates live in the actor's file; `agent/cli.rs` keeps only shared plumbing
-(workdir hook script, checked file writers).
-
-Never add per-agent `match` arms to the REST API, host cache, CLI scans, hook
-dispatch, or installed-agent list — those paths resolve actors through
-`ACTORS`. If the actor has a custom session-count type, add it to the
-`session_counts_from!` macro in `agent/mod.rs`.
-
-## Setup Flow (`zedra setup`)
+### Setup flow (`zedra setup`)
 
 Override `supports_setup_cli()` and `setup_cli(action, ctx)` on the actor; the
 command discovers actors through the registry. Handle `Install` and `Remove`
 idempotently — agents with nothing to install still explain what setup
-provides and state that remove is a no-op.
-
-Do everything through the `SetupCliCtx` — no `println!`, no reaching into
-`agent::setup`. The ctx carries the user's flags (`full_bin_path`, `quiet`),
-so flows never thread them as parameters.
+provides and state that remove is a no-op. Do everything through the
+`SetupCliCtx` — no `println!`, no reaching into `agent::setup`; the ctx
+carries the user's flags (`full_bin_path`, `quiet`).
 
 | Function | Use |
 | --- | --- |
