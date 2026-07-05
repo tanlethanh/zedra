@@ -13,6 +13,7 @@ use crate::settings::{ThemeState, ThemeStateEvent};
 use crate::settings_view::{SettingsEvent, SettingsView};
 use crate::telemetry::view_telemetry::{self, ViewDescriptor};
 use crate::ui::{DrawerHost, DrawerSide};
+use crate::vfx::{self, overlay::DropletOverlay};
 use crate::workspace_action::ShowConnecting;
 use crate::workspaces::{Workspaces, WorkspacesEvent};
 
@@ -43,6 +44,7 @@ pub struct ZedraApp {
     settings_view: Entity<SettingsView>,
     workspaces: Entity<Workspaces>,
     quick_action_drawer: Entity<DrawerHost>,
+    droplet_overlay: Entity<DropletOverlay>,
     _subscriptions: Vec<Subscription>,
 }
 
@@ -68,7 +70,7 @@ impl ZedraApp {
 
         let settings_view =
             cx.new(|cx| SettingsView::new(theme_state.clone(), delta_state.clone(), cx));
-        let sub = cx.subscribe(&settings_view, Self::on_settings_event);
+        let sub = cx.subscribe_in(&settings_view, window, Self::on_settings_event);
         subscriptions.push(sub);
 
         let sub = cx.subscribe(&theme_state, Self::on_theme_changed);
@@ -97,6 +99,12 @@ impl ZedraApp {
             )
         });
 
+        // --- Water droplet effect ---
+        let droplet_enabled = crate::settings::read_droplet_enabled();
+        let droplet_overlay = cx.new(|cx| {
+            DropletOverlay::new(vfx::shared_droplet_state(), droplet_enabled, window, cx)
+        });
+
         let saved_count = workspaces.read(cx).states().len();
         zedra_telemetry::send(Event::AppOpen {
             saved_workspaces: saved_count,
@@ -112,6 +120,7 @@ impl ZedraApp {
             settings_view,
             workspaces,
             quick_action_drawer,
+            droplet_overlay,
             _subscriptions: subscriptions,
         };
         app.record_current_view(cx);
@@ -184,13 +193,20 @@ impl ZedraApp {
 
     fn on_settings_event(
         &mut self,
-        _: Entity<SettingsView>,
+        _: &Entity<SettingsView>,
         event: &SettingsEvent,
+        window: &mut Window,
         cx: &mut Context<Self>,
     ) {
         match event {
             SettingsEvent::NavigateHome => {
                 self.set_screen(AppScreen::Home, cx);
+            }
+            SettingsEvent::DropletToggled(enabled) => {
+                let enabled = *enabled;
+                self.droplet_overlay.update(cx, |overlay, cx| {
+                    overlay.set_enabled(enabled, window, cx);
+                });
             }
         }
     }
@@ -451,6 +467,7 @@ impl Render for ZedraApp {
             .on_action(cx.listener(Self::handle_show_connecting))
             .font_family(fonts::MONO_FONT_FAMILY)
             .child(self.quick_action_drawer.clone())
+            .child(self.droplet_overlay.clone())
     }
 }
 

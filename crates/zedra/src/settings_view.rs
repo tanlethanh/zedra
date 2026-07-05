@@ -19,6 +19,7 @@ const PRIVACY_POLICY_URL: &str = "https://zedra.dev/privacy";
 #[derive(Clone, Debug)]
 pub enum SettingsEvent {
     NavigateHome,
+    DropletToggled(bool),
 }
 
 impl EventEmitter<SettingsEvent> for SettingsView {}
@@ -75,6 +76,7 @@ pub struct SettingsView {
     delta_message_target: DeltaMessageTarget,
     delta_busy: bool,
     telemetry_enabled: bool,
+    droplet_enabled: bool,
     _delta_observe: Subscription,
 }
 
@@ -99,6 +101,7 @@ impl SettingsView {
             delta_message_target: DeltaMessageTarget::Profile,
             delta_busy: false,
             telemetry_enabled: settings::read_telemetry_enabled(),
+            droplet_enabled: settings::read_droplet_enabled(),
             _delta_observe: observe,
         }
     }
@@ -416,6 +419,17 @@ impl SettingsView {
         cx.notify();
     }
 
+    fn set_droplet_enabled(&mut self, enabled: bool, cx: &mut Context<Self>) {
+        if self.droplet_enabled == enabled {
+            return;
+        }
+        platform_bridge::trigger_haptic(HapticFeedback::SelectionChanged);
+        self.droplet_enabled = enabled;
+        settings::set_droplet_enabled(enabled);
+        cx.emit(SettingsEvent::DropletToggled(enabled));
+        cx.notify();
+    }
+
     fn open_telemetry_docs(&self) {
         platform_bridge::trigger_haptic(HapticFeedback::ImpactLight);
         platform_bridge::bridge().open_url(TELEMETRY_DOCS_URL);
@@ -525,6 +539,7 @@ impl Render for SettingsView {
         };
         let preference = self.theme_state.read(cx).preference();
         let telemetry_enabled = self.telemetry_enabled;
+        let droplet_enabled = self.droplet_enabled;
 
         div()
             .id("settings-view")
@@ -638,6 +653,16 @@ impl Render for SettingsView {
                                 }),
                                 cx.listener(|this, _event, _window, cx| {
                                     this.set_theme_preference(ThemePreference::Light, cx);
+                                }),
+                            ))
+                            .child(droplet_toggle(
+                                cx,
+                                droplet_enabled,
+                                cx.listener(|this, _event, _window, cx| {
+                                    this.set_droplet_enabled(true, cx);
+                                }),
+                                cx.listener(|this, _event, _window, cx| {
+                                    this.set_droplet_enabled(false, cx);
                                 }),
                             ))
                             .child(section_header(cx, "Privacy"))
@@ -847,9 +872,8 @@ fn telemetry_toggle(
     on_enable: impl Fn(&PressEvent, &mut Window, &mut App) + 'static,
     on_disable: impl Fn(&PressEvent, &mut Window, &mut App) + 'static,
 ) -> impl IntoElement {
-    let compiled_out = cfg!(feature = "no-telemetry");
-    let control = if compiled_out {
-        div()
+    if cfg!(feature = "no-telemetry") {
+        let control = div()
             .flex_none()
             .rounded(px(8.0))
             .border_1()
@@ -869,41 +893,96 @@ fn telemetry_toggle(
                     .text_color(rgb(theme::text_muted(cx)))
                     .child("Off"),
             )
-            .into_any_element()
-    } else {
-        div()
-            .flex_none()
-            .rounded(px(8.0))
-            .border_1()
-            .border_color(rgb(theme::border_default(cx)))
-            .bg(rgb(theme::bg_surface(cx)))
-            .flex()
-            .flex_row()
-            .child(telemetry_toggle_segment(
-                cx,
-                "settings-telemetry-on",
-                "On",
-                enabled,
-                on_enable,
-            ))
-            .child(
-                div()
-                    .w(px(1.0))
-                    .h(px(22.0))
-                    .bg(rgb(theme::border_subtle(cx))),
-            )
-            .child(telemetry_toggle_segment(
-                cx,
-                "settings-telemetry-off",
-                "Off",
-                !enabled,
-                on_disable,
-            ))
-            .into_any_element()
-    };
+            .into_any_element();
+        return toggle_row(
+            cx,
+            "settings-telemetry-toggle",
+            "Telemetry metrics",
+            "Disabled by build flag",
+            theme::text_muted(cx),
+            control,
+        );
+    }
 
+    let control = segmented_toggle(
+        cx,
+        "settings-telemetry-on",
+        "settings-telemetry-off",
+        enabled,
+        on_enable,
+        on_disable,
+    );
+    toggle_row(
+        cx,
+        "settings-telemetry-toggle",
+        "Telemetry metrics",
+        "Send anonymous usage data",
+        theme::text_secondary(cx),
+        control,
+    )
+}
+
+fn droplet_toggle(
+    cx: &App,
+    enabled: bool,
+    on_enable: impl Fn(&PressEvent, &mut Window, &mut App) + 'static,
+    on_disable: impl Fn(&PressEvent, &mut Window, &mut App) + 'static,
+) -> impl IntoElement {
+    let control = segmented_toggle(
+        cx,
+        "settings-droplet-on",
+        "settings-droplet-off",
+        enabled,
+        on_enable,
+        on_disable,
+    );
+    toggle_row(
+        cx,
+        "settings-droplet-toggle",
+        "Water droplet",
+        "A playful droplet to flick around — it bends your screen like water",
+        theme::text_secondary(cx),
+        control,
+    )
+}
+
+fn segmented_toggle(
+    cx: &App,
+    on_id: &'static str,
+    off_id: &'static str,
+    enabled: bool,
+    on_enable: impl Fn(&PressEvent, &mut Window, &mut App) + 'static,
+    on_disable: impl Fn(&PressEvent, &mut Window, &mut App) + 'static,
+) -> AnyElement {
     div()
-        .id("settings-telemetry-toggle")
+        .flex_none()
+        .rounded(px(8.0))
+        .border_1()
+        .border_color(rgb(theme::border_default(cx)))
+        .bg(rgb(theme::bg_surface(cx)))
+        .flex()
+        .flex_row()
+        .child(toggle_segment(cx, on_id, "On", enabled, on_enable))
+        .child(
+            div()
+                .w(px(1.0))
+                .h(px(22.0))
+                .bg(rgb(theme::border_subtle(cx))),
+        )
+        .child(toggle_segment(cx, off_id, "Off", !enabled, on_disable))
+        .into_any_element()
+}
+
+fn toggle_row(
+    cx: &App,
+    id: &'static str,
+    title: &'static str,
+    description: &'static str,
+    title_color: u32,
+    control: AnyElement,
+) -> AnyElement {
+    div()
+        .id(id)
         .min_w_0()
         .min_h(px(32.0))
         .py(px(2.0))
@@ -921,32 +1000,25 @@ fn telemetry_toggle(
                 .overflow_hidden()
                 .child(
                     div()
-                        .text_color(rgb(if compiled_out {
-                            theme::text_muted(cx)
-                        } else {
-                            theme::text_secondary(cx)
-                        }))
+                        .text_color(rgb(title_color))
                         .text_size(px(theme::FONT_BODY))
                         .font_family(fonts::MONO_FONT_FAMILY)
                         .font_weight(FontWeight::MEDIUM)
-                        .child("Telemetry metrics"),
+                        .child(title),
                 )
                 .child(
                     div()
                         .text_color(rgb(theme::text_muted(cx)))
                         .text_size(px(theme::FONT_DETAIL))
                         .font_family(fonts::MONO_FONT_FAMILY)
-                        .child(if compiled_out {
-                            "Disabled by build flag"
-                        } else {
-                            "Send anonymous usage data"
-                        }),
+                        .child(description),
                 ),
         )
         .child(control)
+        .into_any_element()
 }
 
-fn telemetry_toggle_segment(
+fn toggle_segment(
     cx: &App,
     id: &'static str,
     label: &'static str,

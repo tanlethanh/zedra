@@ -17,6 +17,9 @@ struct AppSettings {
     /// Opt-out flag for anonymous telemetry. `None`/absent = enabled (default-on).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     telemetry_enabled: Option<bool>,
+    /// Water droplet effect. `None`/absent = enabled (default-on).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    droplet_enabled: Option<bool>,
 }
 
 pub enum ThemeStateEvent {
@@ -170,6 +173,25 @@ pub fn set_telemetry_enabled(enabled: bool) {
     settings.telemetry_enabled = Some(enabled);
     if let Err(err) = write_settings(&settings) {
         warn!(err = %err, "settings: failed to save telemetry preference");
+    }
+}
+
+/// Whether the water droplet effect is enabled. Default on.
+pub fn read_droplet_enabled() -> bool {
+    match read_settings() {
+        Ok(settings) => settings.droplet_enabled.unwrap_or(true),
+        Err(err) => {
+            info!(err = %err, "[debug:settings] using default droplet preference");
+            true
+        }
+    }
+}
+
+pub fn set_droplet_enabled(enabled: bool) {
+    let mut settings = read_settings().unwrap_or_default();
+    settings.droplet_enabled = Some(enabled);
+    if let Err(err) = write_settings(&settings) {
+        warn!(err = %err, "settings: failed to save droplet preference");
     }
 }
 

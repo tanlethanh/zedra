@@ -1518,3 +1518,32 @@ id in production). The trailing shows the aggregate `done/total` rollup.
 1. Present a native selection/list picker whose Google action image is passed as `"Google.svg"`
    or a path-prefixed name.
 2. Expected: the Google glyph keeps its 2pt inset (the inset lookup now uses the normalized name).
+
+## Water Droplet Effect (iOS)
+
+### Toggle and basic refraction
+1. Open **Settings → Appearance** and switch **Water droplet** to **On**.
+2. Expected: a droplet appears near the top left, magnifying and tinting the UI
+   beneath it with a specular highlight.
+3. Switch the toggle to **Off**. Expected: the droplet disappears immediately and
+   rendering behaves exactly as before the toggle existed.
+
+### Drag and shape
+1. With the droplet on, drag it slowly over terminal or editor text.
+2. Expected: text under the droplet appears refracted (bent toward the center),
+   slightly magnified and cool-tinted; the droplet lags the finger like liquid.
+3. Flick the droplet fast across the screen.
+4. Expected: the shape stretches along the motion and shows a trailing drip blob;
+   on release it springs to rest and the wobble settles (no permanent animation
+   loop — frame updates stop once it rests).
+
+### Touch suppression
+1. Rest the droplet on top of a button or terminal, then tap and drag it.
+2. Expected: the UI underneath never reacts — no button press, no terminal
+   focus, no scroll — while the finger interacts with the droplet. Content
+   under a resting droplet is reachable again after dragging the droplet aside.
+
+### Rotation and resize
+1. With the droplet on, rotate the device.
+2. Expected: no crash, no stale grab artifacts; the droplet keeps rendering at its
+   logical position and refraction stays sharp after the size change.

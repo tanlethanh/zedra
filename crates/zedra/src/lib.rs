@@ -23,6 +23,7 @@ pub mod placeholder;
 pub mod settings;
 pub mod theme;
 pub mod ui;
+pub mod vfx;
 
 // Sceens
 pub mod home_view;
