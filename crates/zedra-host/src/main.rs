@@ -428,6 +428,8 @@ fn write_api_discovery_file(path: &Path, contents: &[u8]) -> std::io::Result<()>
 }
 
 struct DetachedStartOptions {
+    /// Binary to spawn; resolved by the caller because `current_exe()` can dangle after a self-update rename.
+    exe: PathBuf,
     workdir: PathBuf,
     verbose: bool,
     relay_url: Vec<String>,
@@ -519,7 +521,7 @@ fn start_detached(options: DetachedStartOptions) -> Result<DetachedStartResult> 
         options.workdir.display()
     )?;
 
-    let mut command = std::process::Command::new(std::env::current_exe()?);
+    let mut command = std::process::Command::new(&options.exe);
     command
         .args(detached_start_child_args(&options))
         .current_dir(&options.workdir)
@@ -610,7 +612,7 @@ fn start_detached(options: DetachedStartOptions) -> Result<DetachedStartResult> 
         writeln!(log, "detected_launch_shell={shell}")?;
     }
 
-    let mut command = std::process::Command::new(std::env::current_exe()?);
+    let mut command = std::process::Command::new(&options.exe);
     command
         .args(detached_start_child_args(&options))
         .current_dir(&options.workdir)
@@ -947,6 +949,7 @@ async fn main() -> Result<()> {
             };
             if detach {
                 let detached = start_detached(DetachedStartOptions {
+                    exe: std::env::current_exe()?,
                     workdir,
                     verbose,
                     relay_url,
@@ -1559,6 +1562,27 @@ async fn main() -> Result<()> {
                 }
             }
 
+            // Offer to restart daemons afterwards. Unix-only: on Windows the
+            // binary is swapped after this process exits, so a restart here
+            // would relaunch the old version.
+            let restart_requested = cfg!(unix)
+                && !yes
+                && !alive.is_empty()
+                && {
+                    eprint!("Restart running daemons after update? Running terminals will be killed. [y/N] ");
+                    let mut input = String::new();
+                    std::io::stdin().read_line(&mut input)?;
+                    should_restart_daemons(&input)
+                };
+            // Resolve the binary path now: current_exe() can dangle once the
+            // update renames the running binary out of the way.
+            let restart_exe = if restart_requested {
+                let exe = std::env::current_exe()?;
+                Some(exe.canonicalize().unwrap_or(exe))
+            } else {
+                None
+            };
+
             let update_start = std::time::Instant::now();
             match version_check::self_update(&target_tag).await {
                 Ok(tag) => {
@@ -1576,7 +1600,9 @@ async fn main() -> Result<()> {
                     .await;
                     eprintln!();
                     utils::eprintln_success(format!("Updated to {tag}."));
-                    if !alive.is_empty() {
+                    if let Some(exe) = &restart_exe {
+                        restart_daemons_after_update(&alive, exe);
+                    } else if !alive.is_empty() {
                         utils::eprintln_note("Restart running daemons:");
                         utils::eprintln_shell_command(
                             "zedra stop -w <dir> && zedra start -w <dir>",
@@ -2025,6 +2051,46 @@ fn should_proceed_with_update(input: &str) -> bool {
     // `[Y/n]` makes an empty response accept the update by default.
     let input = input.trim();
     !input.eq_ignore_ascii_case("n") && !input.eq_ignore_ascii_case("no")
+}
+
+fn should_restart_daemons(input: &str) -> bool {
+    // `[y/N]` defaults to no because restarting kills running terminals.
+    let input = input.trim();
+    input.eq_ignore_ascii_case("y") || input.eq_ignore_ascii_case("yes")
+}
+
+/// Stop each live daemon and relaunch it detached with the freshly installed binary.
+fn restart_daemons_after_update(alive: &[&(PathBuf, workspace_lock::LockInfo, bool)], exe: &Path) {
+    for (_, lock, _) in alive {
+        let workdir = PathBuf::from(&lock.workdir);
+        eprintln!();
+        utils::eprintln_step(format!("Restarting {}", lock.workdir));
+        if let Err(e) = workspace_lock::kill_and_unlock(&workdir, 5) {
+            utils::eprintln_error(format!("Failed to stop pid {}: {e}", lock.pid));
+            continue;
+        }
+        let started = start_detached(DetachedStartOptions {
+            exe: exe.to_path_buf(),
+            workdir,
+            verbose: false,
+            relay_url: Vec::new(),
+            no_telemetry: false,
+            debug_telemetry: false,
+            relay_only: false,
+            static_qr: false,
+            usage_refresh_secs: 300,
+        });
+        match started {
+            Ok(daemon) => utils::eprintln_success(format!("Restarted (pid {}).", daemon.pid)),
+            Err(e) => {
+                utils::eprintln_error(format!("Failed to restart: {e}"));
+                utils::eprintln_shell_command(&format!(
+                    "zedra start --detach -w {}",
+                    utils::shell_arg(&lock.workdir)
+                ));
+            }
+        }
+    }
 }
 
 fn daemon_log_path(workdir: &Path) -> Result<PathBuf> {
@@ -2722,6 +2788,15 @@ mod tests {
     }
 
     #[test]
+    fn restart_confirmation_defaults_to_no() {
+        assert!(!should_restart_daemons(""));
+        assert!(!should_restart_daemons("n"));
+        assert!(!should_restart_daemons("no"));
+        assert!(should_restart_daemons("y"));
+        assert!(should_restart_daemons("YES"));
+    }
+
+    #[test]
     fn no_args_prints_help() {
         match Cli::try_parse_from(["zedra"]) {
             Ok(_) => panic!("missing command should print top-level help"),
@@ -3041,6 +3116,7 @@ mod tests {
     #[test]
     fn detached_start_child_args_preserve_start_options() {
         let args = detached_start_child_args(&DetachedStartOptions {
+            exe: PathBuf::from("zedra"),
             workdir: PathBuf::from("project"),
             verbose: true,
             relay_url: vec![
