@@ -108,16 +108,20 @@ Lives in `crates/zedra/src/vfx/`: `mod.rs`, `droplet.rs`, `droplet.metal`
 
 `DropletEffect` implements `MetalRenderEffect` (iOS-only via `cfg`). Per frame:
 
-1. Read shared `DropletState` (center in pixels, radius, velocity, active).
-   Inactive → return. No encoders, no cost.
-2. Blit the padded droplet bounding box from `drawable_texture` into a small
-   cached grab texture. Recreate the texture only when its size changes.
+1. Read shared `DropletState` (center in logical pixels, radius, trail
+   positions, scale factor, base color, active). Inactive → return. No
+   encoders, no cost.
+2. Blit the bounding box over the head and trail blobs from `drawable_texture`
+   into a cached grab texture. Dimensions round up to buckets so per-frame
+   bbox changes do not reallocate.
 3. Encode one render pass (`Load` action) drawing a single quad:
-   - SDF metaball: main blob plus a trailing blob scaled by velocity — the
-     drip. Velocity also stretches the SDF along the motion vector.
+   - SDF metaball: the head blob smooth-min-joined with tapered followers
+     sitting on past positions — dragging separates them into a drip and
+     curved paths produce a curved tail.
    - Refraction: surface normal from the SDF gradient distorts the UV used to
      sample the grab texture.
-   - Specular highlight, edge darkening, slight chromatic aberration.
+   - Specular highlight, rim shading, slight chromatic aberration, and a
+     near-neutral tint toward the theme-inverse `base_color`.
 
 Params flow through an `Arc<Mutex<DropletState>>` shared between the UI element
 and the effect object. No per-frame GPUI API traffic.

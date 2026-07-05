@@ -99,8 +99,8 @@ impl ZedraApp {
             )
         });
 
-        // --- Water droplet effect ---
-        let droplet_enabled = crate::settings::read_droplet_enabled();
+        // --- Water droplet effect (iOS-only; elsewhere the overlay would block touches invisibly) ---
+        let droplet_enabled = cfg!(target_os = "ios") && crate::settings::read_droplet_enabled();
         let droplet_overlay = cx.new(|cx| {
             DropletOverlay::new(vfx::shared_droplet_state(), droplet_enabled, window, cx)
         });

@@ -655,16 +655,18 @@ impl Render for SettingsView {
                                     this.set_theme_preference(ThemePreference::Light, cx);
                                 }),
                             ))
-                            .child(droplet_toggle(
-                                cx,
-                                droplet_enabled,
-                                cx.listener(|this, _event, _window, cx| {
-                                    this.set_droplet_enabled(true, cx);
-                                }),
-                                cx.listener(|this, _event, _window, cx| {
-                                    this.set_droplet_enabled(false, cx);
-                                }),
-                            ))
+                            .when(cfg!(target_os = "ios"), |this| {
+                                this.child(droplet_toggle(
+                                    cx,
+                                    droplet_enabled,
+                                    cx.listener(|this, _event, _window, cx| {
+                                        this.set_droplet_enabled(true, cx);
+                                    }),
+                                    cx.listener(|this, _event, _window, cx| {
+                                        this.set_droplet_enabled(false, cx);
+                                    }),
+                                ))
+                            })
                             .child(section_header(cx, "Privacy"))
                             .child(telemetry_toggle(
                                 cx,
@@ -940,7 +942,7 @@ fn droplet_toggle(
         cx,
         "settings-droplet-toggle",
         "Water droplet",
-        "A playful droplet to flick around — it bends your screen like water",
+        "A playful droplet to flick around",
         theme::text_secondary(cx),
         control,
     )
