@@ -3,7 +3,7 @@ use chrono::{DateTime, Utc};
 use gpui::prelude::FluentBuilder;
 use gpui::*;
 use zedra_rpc::proto::{
-    AgentKind, AgentSessionSummary, AgentSetupState, AgentSummary, AgentUsageSnapshot,
+    AgentInfoField, AgentSessionSummary, AgentSetupState, AgentSummary, AgentUsageSnapshot,
 };
 
 use crate::fonts;
@@ -40,36 +40,6 @@ pub fn setup_label(state: AgentSetupState) -> &'static str {
     }
 }
 
-pub fn managed_agent_icon(kind: AgentKind) -> &'static str {
-    match kind {
-        AgentKind::Claude => "icons/claude.svg",
-        AgentKind::Codex => "icons/openai.svg",
-        AgentKind::OpenCode => "icons/opencode.svg",
-        AgentKind::Pi => "icons/pi.svg",
-        AgentKind::Hermes => "icons/hermesagent.svg",
-    }
-}
-
-pub fn kind_slug(kind: AgentKind) -> &'static str {
-    match kind {
-        AgentKind::Claude => "claude",
-        AgentKind::Codex => "codex",
-        AgentKind::OpenCode => "opencode",
-        AgentKind::Pi => "pi",
-        AgentKind::Hermes => "hermes",
-    }
-}
-
-pub fn managed_agent_name(kind: AgentKind) -> &'static str {
-    match kind {
-        AgentKind::Claude => "Claude",
-        AgentKind::Codex => "Codex",
-        AgentKind::OpenCode => "OpenCode",
-        AgentKind::Pi => "Pi",
-        AgentKind::Hermes => "Hermes",
-    }
-}
-
 pub fn short_id(id: &str) -> String {
     id.chars().take(8).collect()
 }
@@ -84,7 +54,7 @@ pub struct AgentCardProps<'a> {
 
 pub fn render_agent_card(cx: &App, props: AgentCardProps<'_>) -> Stateful<Div> {
     let agent = props.agent;
-    let kind = agent.kind;
+    let slug = agent.slug.clone();
     let display_name = agent.display_name.clone();
     let version = cli_version_display(agent);
     let session_count = agent.sessions.resumable.max(agent.sessions.total);
@@ -108,10 +78,7 @@ pub fn render_agent_card(cx: &App, props: AgentCardProps<'_>) -> Stateful<Div> {
     let usage = agent.usage.clone();
 
     div()
-        .id(SharedString::from(format!(
-            "agent-card-{}",
-            kind_slug(kind)
-        )))
+        .id(SharedString::from(format!("agent-card-{}", slug)))
         .w_full()
         .min_w_0()
         .px(px(theme::SPACING_MD))
@@ -135,7 +102,7 @@ pub fn render_agent_card(cx: &App, props: AgentCardProps<'_>) -> Stateful<Div> {
                         .gap(px(theme::SPACING_SM))
                         .child(
                             svg()
-                                .path(managed_agent_icon(kind))
+                                .path(crate::agent::icon(&slug))
                                 .size(px(theme::ICON_MD))
                                 .flex_shrink_0()
                                 .text_color(rgb(theme::text_muted(cx))),
@@ -214,71 +181,53 @@ pub fn render_agent_card(cx: &App, props: AgentCardProps<'_>) -> Stateful<Div> {
                             .child(text),
                     )
                 })
-                .when_some(usage, |el, snap| {
-                    el.child(render_usage_row(kind, &snap, cx))
+                .when_some(usage, |el, snap| el.children(render_usage_row(&snap, cx)))
+                .when(!agent.highlight.is_empty(), |el| {
+                    el.child(
+                        div()
+                            .w_full()
+                            .min_w_0()
+                            .overflow_hidden()
+                            .whitespace_nowrap()
+                            .text_size(px(theme::FONT_DETAIL))
+                            .text_color(rgb(theme::text_muted(cx)))
+                            .child(agent.highlight.clone()),
+                    )
                 }),
         )
 }
 
-/// Compact usage row when live usage data is available (agent card, agent detail).
-/// Renders rate-limit gauges (5h / 7d), reset times, and optional credit spend.
-pub fn render_agent_usage_row(
-    kind: AgentKind,
-    snap: &AgentUsageSnapshot,
-    cx: &App,
-) -> impl IntoElement {
-    render_usage_row(kind, snap, cx)
-}
-
-fn render_usage_row(kind: AgentKind, snap: &AgentUsageSnapshot, cx: &App) -> impl IntoElement {
+/// Rate-limit gauges (5h / 7d) with reset times; `None` when no live limits.
+pub fn render_usage_row(snap: &AgentUsageSnapshot, cx: &App) -> Option<Div> {
     let five_reset = snap
         .rate_limit_five_hour_resets_at
         .and_then(format_reset_duration_hm);
     let seven_reset = snap
         .rate_limit_seven_day_resets_at
         .and_then(format_reset_duration_dh);
+    render_usage_gauges(snap, five_reset.as_deref(), seven_reset.as_deref(), cx)
+}
 
-    let gauges = render_usage_gauges(snap, five_reset.as_deref(), seven_reset.as_deref(), cx);
-
-    div()
-        .id(SharedString::from(format!(
-            "agent-usage-{}",
-            kind_slug(kind)
-        )))
-        .w_full()
-        .min_w_0()
-        .flex()
-        .flex_col()
-        .gap(px(3.0))
-        .children(gauges)
-        .when_some(snap.total_cost_usd, |el, usd| {
-            let text = if let Some(pct) = snap.context_used_percent {
-                format!("${usd:.2} spent · {pct:.0}% of limit")
-            } else {
-                format!("${usd:.2} extra spend")
-            };
-            el.child(
+/// Render `label: value` fields (detail screen, e.g. `usage.extra`). The card
+/// uses `AgentSummary.highlight` instead. `None` when empty.
+pub fn render_extra_row(fields: &[AgentInfoField], cx: &App) -> Option<Div> {
+    if fields.is_empty() {
+        return None;
+    }
+    Some(
+        div()
+            .w_full()
+            .min_w_0()
+            .flex()
+            .flex_col()
+            .gap(px(3.0))
+            .children(fields.iter().map(|field| {
                 div()
                     .text_size(px(theme::FONT_DETAIL))
                     .text_color(rgb(theme::text_muted(cx)))
-                    .child(text),
-            )
-        })
-        .when(
-            kind != AgentKind::OpenCode
-                && (snap.lines_added.is_some() || snap.lines_removed.is_some()),
-            |el| {
-                let added = snap.lines_added.unwrap_or(0);
-                let removed = snap.lines_removed.unwrap_or(0);
-                let text = format!("+{added} / -{removed} lines changed");
-                el.child(
-                    div()
-                        .text_size(px(theme::FONT_DETAIL))
-                        .text_color(rgb(theme::text_muted(cx)))
-                        .child(text),
-                )
-            },
-        )
+                    .child(format!("{}: {}", field.label, field.value))
+            })),
+    )
 }
 
 // Fixed column widths so 5h / 7d value columns align within each gauge.
@@ -294,11 +243,11 @@ fn render_usage_gauges(
     five_reset: Option<&str>,
     seven_reset: Option<&str>,
     cx: &App,
-) -> Vec<AnyElement> {
+) -> Option<Div> {
     let has_five = snap.rate_limit_five_hour_used_percent.is_some();
     let has_seven = snap.rate_limit_seven_day_used_percent.is_some();
     if !has_five && !has_seven {
-        return Vec::new();
+        return None;
     }
 
     let mut gauges: Vec<AnyElement> = Vec::new();
@@ -309,7 +258,7 @@ fn render_usage_gauges(
         gauges.push(usage_gauge("7d", pct, seven_reset, cx).into_any_element());
     }
 
-    vec![
+    Some(
         div()
             .w_full()
             .min_w_0()
@@ -317,9 +266,8 @@ fn render_usage_gauges(
             .flex_row()
             .items_center()
             .justify_between()
-            .children(gauges)
-            .into_any_element(),
-    ]
+            .children(gauges),
+    )
 }
 
 /// Label + bar + fixed `%` and reset columns: `5h [████] 45%  2h30m`
@@ -461,11 +409,11 @@ pub fn render_session_card<C: 'static>(
 ) -> Stateful<Div> {
     let session = props.session;
     let can_resume = session.resume.available;
-    let kind = session.kind;
+    let slug = session.slug.clone();
     let session_id = session.session_id.clone();
     let item_id = SharedString::from(format!(
         "session-card-{}-{}",
-        kind_slug(kind),
+        slug,
         short_id(&session.session_id)
     ));
 
@@ -485,11 +433,12 @@ pub fn render_session_card<C: 'static>(
         .when(props.resume_on_tap && can_resume, |el| {
             el.cursor_pointer().on_press(cx.listener({
                 let session_id = session_id.clone();
+                let slug = slug.clone();
                 move |_this, _event, window, cx| {
                     platform_bridge::trigger_haptic(HapticFeedback::ImpactLight);
                     window.dispatch_action(
                         workspace_action::ResumeAgentSession {
-                            kind,
+                            slug: slug.clone(),
                             session_id: session_id.clone(),
                         }
                         .boxed_clone(),
@@ -501,7 +450,7 @@ pub fn render_session_card<C: 'static>(
         .id(item_id)
         .child(
             svg()
-                .path(managed_agent_icon(kind))
+                .path(crate::agent::icon(&slug))
                 .size(px(theme::ICON_MD))
                 .flex_shrink_0()
                 .text_color(rgb(theme::text_muted(cx))),

@@ -89,6 +89,19 @@ pub fn query_json(db_path: &Path, query: &str) -> Result<Vec<u8>, String> {
     serde_json::to_vec(&values).map_err(|error| error.to_string())
 }
 
+/// Runs `query` and deserializes the row objects into `Vec<T>`, returning an
+/// empty vec when the query yields no output.
+pub fn query_rows<T: serde::de::DeserializeOwned>(
+    db_path: &Path,
+    query: &str,
+) -> Result<Vec<T>, String> {
+    let bytes = query_json(db_path, query)?;
+    if bytes.is_empty() {
+        return Ok(Vec::new());
+    }
+    serde_json::from_slice(&bytes).map_err(|error| error.to_string())
+}
+
 fn value_to_json(value: Value) -> JsonValue {
     match value {
         Value::Null => JsonValue::Null,

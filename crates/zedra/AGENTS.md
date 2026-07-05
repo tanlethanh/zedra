@@ -24,6 +24,7 @@ Main mobile app crate. Owns GPUI application flow, workspace orchestration, plat
 - **Theming**: follow `docs/THEMING.md`. GPUI views use `theme::palette(cx)` / `theme::bg_primary(cx)` (and related accessors) for colors; editor and terminal use `theme::bundle(cx)` sub-themes. No hardcoded hex in view `render()`. Subscribe to `ThemeStateEvent::Changed` when the view must refresh on appearance toggle.
 - `Workspace` is the orchestrator between `Session`, `SessionState`, `WorkspaceState`, terminal entities, and action handling. Avoid pushing app-level orchestration down into leaf views.
 - `Workspaces` manages the list of active workspace entities and saved workspace state. Preserve the distinction between persisted state and live workspace entries.
+- Use concise module-qualified calls for platform UI affordances, such as `platform_bridge::trigger_haptic(HapticFeedback::ImpactLight)`. Normal taps and workspace switches use light haptics; reserve stronger feedback for long press, confirmation, or destructive actions.
 
 ## GPUI Patterns In This Crate
 
@@ -40,12 +41,15 @@ Main mobile app crate. Owns GPUI application flow, workspace orchestration, plat
 - Always use `platform_bridge::bridge()` for platform-specific behavior from shared UI code.
 - Native UIKit and Android integration belongs behind the platform bridge or the native platform modules, not inside general GPUI views.
 - iOS custom sheet hosting relies on the ownership split in `src/ios/app.rs` and `src/platform_bridge.rs`. Preserve that flow instead of inventing a parallel presentation path.
-- Android app lifecycle and surface management are main-thread-sensitive. Be conservative when changing `src/android/app.rs`, `src/android/jni.rs`, or the command queue.
+- Android app lifecycle and surface management are main-thread-sensitive. Be conservative when changing `src/android/entry.rs`, `src/android/jni.rs`, or the command queue.
+- New `extern "C"` Rust→Swift call: add a weak stub in `src/ios_stub.c` matching the function signature or the iOS staticlib link fails with undefined symbol.
 
 ## Workspace And Terminal Integration
 
 - `WorkspaceTerminal` is the seam between app-level terminal management and `zedra-terminal`. Keep terminal attach, resize, title updates, and active-input registration aligned there.
 - If you change connection or sync behavior, verify the interaction among `Workspace`, `Workspaces`, `SessionState`, and `WorkspaceState::sync_from_session`.
+- Keep lifecycle helpers aligned with their names. Entry points that own the user action own policy checks (dedupe, reconnect, stale cleanup); lower-level create/connect/initialize helpers must not also switch entries, disconnect existing state, or hide caller contracts.
+- For workspace reconnect and duplicate-entry handling, treat `Connected`, `Idle`, and in-flight connecting phases as active entries to switch to. Only `Failed` or `Disconnected` entries are stale reconnect candidates.
 - Saved workspace persistence is intentionally lightweight JSON under the app data directory. Do not mix transient UI state into the persisted model.
 
 ## Logging And Manual Validation
@@ -73,4 +77,4 @@ Main mobile app crate. Owns GPUI application flow, workspace orchestration, plat
 - `src/workspaces.rs` — saved-state list and active workspace switching
 - `src/workspace_state.rs` — persisted display model
 - `src/platform_bridge.rs` — shared platform abstraction boundary
-- `src/ios/app.rs` and `src/android/app.rs` — native app bootstrap and surface lifecycle
+- `src/ios/app.rs` and `src/android/entry.rs` — native app bootstrap and surface lifecycle

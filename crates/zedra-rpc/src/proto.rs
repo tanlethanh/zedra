@@ -225,7 +225,7 @@ pub enum ZedraProto {
 // ALPN protocol identifier
 // ---------------------------------------------------------------------------
 
-pub const ZEDRA_ALPN: &[u8] = b"zedra/rpc/3";
+pub const ZEDRA_ALPN: &[u8] = b"zedra/rpc/4";
 
 /// Default page size for `FsList` requests (host uses this when `limit == 0`).
 pub const FS_LIST_DEFAULT_LIMIT: u32 = 50;
@@ -521,8 +521,8 @@ pub struct TerminalSyncEntry {
     #[serde(default)]
     pub icon_name: Option<String>,
     /// Foreground command line; survives prompt-ready between agent turns,
-    /// cleared on command end. Clients derive the agent identity (kind/icon)
-    /// from this after reconnect.
+    /// cleared on command end. Informational (running-command display); agent
+    /// identity comes from the host-resolved `agent_slug`, not this field.
     #[serde(default)]
     pub agent_command: Option<String>,
     #[serde(default)]
@@ -531,6 +531,11 @@ pub struct TerminalSyncEntry {
     pub last_exit_code: Option<i32>,
     #[serde(default)]
     pub agent_state: AgentState,
+    /// Host-resolved agent slug for this terminal's foreground process, or
+    /// `None` for a plain shell. Authoritative agent identity — clients render
+    /// it directly instead of re-detecting from the command line.
+    #[serde(default)]
+    pub agent_slug: Option<String>,
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -800,6 +805,11 @@ pub enum HostEvent {
         id: String,
         /// The launch command run in the terminal, if any.
         launch_cmd: Option<String>,
+        /// Host-resolved agent slug for the launch command, or `None` for a
+        /// plain shell. A spawned launch command emits no command-line OSC, so
+        /// without this the client would have no agent identity until reconnect.
+        /// Appended at `zedra/rpc/4`.
+        agent_slug: Option<String>,
     },
     /// Host-side git working tree state changed and the client should refresh.
     GitChanged,
@@ -813,7 +823,7 @@ pub enum HostEvent {
     /// Payload is a raw JSON string — postcard cannot serialize `serde_json::Value`
     /// directly (unknown-length maps/arrays are unsupported).
     AgentHookReceived {
-        agent_kind: AgentKind,
+        agent_slug: String,
         event_name: String,
         payload: String,
     },
@@ -823,6 +833,13 @@ pub enum HostEvent {
         /// The agent's own session identifier (e.g. Claude conversation id, Codex thread id).
         agent_session_id: String,
         state: AgentState,
+    },
+    /// Host-resolved agent identity for a terminal changed. `agent_slug` is
+    /// `None` when the foreground process is no longer a recognized agent.
+    /// Appended at `zedra/rpc/4`.
+    TerminalAgentChanged {
+        terminal_id: String,
+        agent_slug: Option<String>,
     },
 }
 
@@ -1110,24 +1127,6 @@ pub struct AiPromptResult {
 // Managed AI agent types
 // ---------------------------------------------------------------------------
 
-/// Managed agent kind.
-///
-/// Wire form is a bare postcard varint discriminant. postcard is not
-/// self-describing, so a discriminant a build lacks fails decode and bricks the
-/// whole enclosing response. Cross-version skew is gated by `ZEDRA_ALPN`: a host
-/// and client only connect on a matching protocol version, so within a version
-/// the variant set is fixed. Append new known variants only; never reorder or
-/// remove, and bump the ALPN when the set changes. A non-versioned forward-compat
-/// decoding scheme is tracked in `docs/PROTOCOL_SPECS.md` §2.4 (issue #140).
-#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Hash)]
-pub enum AgentKind {
-    Claude,
-    Codex,
-    OpenCode,
-    Pi,
-    Hermes,
-}
-
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct AgentListReq {
     #[serde(default)]
@@ -1142,7 +1141,9 @@ pub struct AgentListResult {
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct AgentSessionsReq {
-    pub kind: AgentKind,
+    /// Stable actor slug. Unknown slugs return a typed error rather than
+    /// making the postcard schema incompatible with newer hosts.
+    pub slug: String,
     /// When false, return the host cache populated at daemon start unless missing.
     #[serde(default)]
     pub refresh: bool,
@@ -1161,7 +1162,7 @@ pub struct AgentSessionsResult {
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct AgentResumeReq {
-    pub kind: AgentKind,
+    pub slug: String,
     pub session_id: String,
     pub cols: u16,
     pub rows: u16,
@@ -1197,11 +1198,10 @@ pub struct InstalledAgentEntry {
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct AgentSummary {
-    pub kind: AgentKind,
+    pub slug: String,
     pub display_name: String,
     pub cli: AgentCliSummary,
     pub setup: AgentSetupSummary,
-    pub capabilities: AgentCapabilities,
     pub workspace: AgentWorkspaceSummary,
     pub sessions: AgentSessionCounts,
     pub last_activity_at: Option<DateTime<Utc>>,
@@ -1211,6 +1211,10 @@ pub struct AgentSummary {
     pub account: AgentAccountSummary,
     /// Live rate-limit snapshot fetched from the provider's API.
     pub usage: Option<AgentUsageSnapshot>,
+    /// One-line card highlight, composed host-side from `usage.extra`. Empty when none.
+    pub highlight: String,
+    /// Host-owned: agent aggregates sessions/account/usage worth a detail screen.
+    pub shows_detail: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Default)]
@@ -1226,7 +1230,7 @@ pub struct AgentInfoField {
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct AgentFilesReq {
-    pub kind: AgentKind,
+    pub slug: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Default)]
@@ -1275,17 +1279,6 @@ pub enum AgentSetupState {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
-pub struct AgentCapabilities {
-    pub list_sessions: bool,
-    pub resume_session: bool,
-    pub live_binding: bool,
-    pub confirm_action: bool,
-    pub select_action: bool,
-    pub lifecycle_events: bool,
-    pub usage_snapshot: bool,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct AgentWorkspaceSummary {
     pub workdir: String,
     pub provider_project_id: Option<String>,
@@ -1302,7 +1295,7 @@ pub struct AgentSessionCounts {
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct AgentSessionSummary {
-    pub kind: AgentKind,
+    pub slug: String,
     pub session_id: String,
     pub title: Option<String>,
     pub cwd: Option<String>,
@@ -1332,20 +1325,16 @@ pub struct AgentGitSummary {
     pub pr_repository: Option<String>,
 }
 
+/// The usage gauge: rate-limit windows only. Per-agent spend/credits/weekly
+/// windows go in `extra`, rendered as `label: value`.
 #[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq)]
 pub struct AgentUsageSnapshot {
-    pub context_used_percent: Option<f32>,
-    pub total_cost_usd: Option<f64>,
-    pub total_duration_ms: Option<u64>,
-    pub total_api_duration_ms: Option<u64>,
-    pub lines_added: Option<i64>,
-    pub lines_removed: Option<i64>,
     pub rate_limit_five_hour_used_percent: Option<f32>,
     pub rate_limit_seven_day_used_percent: Option<f32>,
-    /// Unix seconds at which the 5-hour rate-limit window resets. None when not provided by the API.
+    /// Unix seconds at which each rate-limit window resets. None when not provided by the API.
     pub rate_limit_five_hour_resets_at: Option<i64>,
-    /// Unix seconds at which the 7-day rate-limit window resets. None when not provided by the API.
     pub rate_limit_seven_day_resets_at: Option<i64>,
+    pub extra: Vec<AgentInfoField>,
 }
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
@@ -1537,6 +1526,7 @@ mod tests {
                 shell_state: TermShellState::Idle,
                 last_exit_code: Some(0),
                 agent_state: AgentState::Idle,
+                agent_slug: Some("codex".into()),
             }],
         };
         let encoded = postcard::to_allocvec(&result).unwrap();
@@ -1617,7 +1607,7 @@ mod tests {
         let now = Utc::now();
         let result = AgentListResult {
             agents: vec![AgentSummary {
-                kind: AgentKind::Claude,
+                slug: "claude".into(),
                 display_name: "Claude".into(),
                 cli: AgentCliSummary {
                     available: true,
@@ -1630,15 +1620,6 @@ mod tests {
                     plugin_installed: true,
                     hooks_installed: true,
                     error: None,
-                },
-                capabilities: AgentCapabilities {
-                    list_sessions: true,
-                    resume_session: true,
-                    live_binding: true,
-                    confirm_action: true,
-                    select_action: true,
-                    lifecycle_events: true,
-                    usage_snapshot: true,
                 },
                 workspace: AgentWorkspaceSummary {
                     workdir: "/repo".into(),
@@ -1660,6 +1641,8 @@ mod tests {
                 }],
                 account: AgentAccountSummary::default(),
                 usage: None,
+                highlight: "Opus weekly: 8%".into(),
+                shows_detail: true,
             }],
             error: None,
         };
@@ -1689,7 +1672,7 @@ mod tests {
     fn agent_session_summary_roundtrip() {
         let now = Utc::now();
         let session = AgentSessionSummary {
-            kind: AgentKind::Codex,
+            slug: "codex".into(),
             session_id: "019e".into(),
             title: Some("Work session".into()),
             cwd: Some("/repo".into()),
@@ -1710,16 +1693,14 @@ mod tests {
                 pr_repository: None,
             }),
             usage: Some(AgentUsageSnapshot {
-                context_used_percent: Some(50.0),
-                total_cost_usd: Some(0.1),
-                total_duration_ms: Some(1000),
-                total_api_duration_ms: Some(900),
-                lines_added: Some(3),
-                lines_removed: Some(1),
-                rate_limit_five_hour_used_percent: None,
-                rate_limit_seven_day_used_percent: None,
+                rate_limit_five_hour_used_percent: Some(42.0),
+                rate_limit_seven_day_used_percent: Some(12.0),
                 rate_limit_five_hour_resets_at: None,
                 rate_limit_seven_day_resets_at: None,
+                extra: vec![AgentInfoField {
+                    label: "Opus weekly".into(),
+                    value: "8%".into(),
+                }],
             }),
             transcript_size_bytes: Some(4096),
         };
