@@ -4,6 +4,10 @@ An experimental remote code editor on mobile with GPU-accelerated rendering powe
 
 ![Zedra](https://raw.githubusercontent.com/tanlethanh/zedra/main/packages/landing/public/OG.png)
 
+## Security Note
+
+Zedra is early, but it provides the most secure approach with e2e encryption, direct connection, and zero-trust model in a near future. If you have any concern about security, email me at [tanle@zedra.dev](mailto:tanle@zedra.dev), I will support to bring Zedra to your workflow with trust.
+
 ## Download App
 
 - iOS — [AppStore](https://apps.apple.com/vn/app/zedra-code-from-anywhere/id6760534630) or [TestFlight](https://testflight.apple.com/join/1EWe2kRH)
