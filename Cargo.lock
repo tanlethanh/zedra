@@ -10112,6 +10112,7 @@ dependencies = [
  "jni",
  "log",
  "mermaid-rs-renderer",
+ "metal",
  "ndk",
  "ndk-context",
  "once_cell",
