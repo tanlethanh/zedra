@@ -3,6 +3,7 @@ use std::cmp::min;
 use std::ops::{Index, Range};
 use std::path::{Path, PathBuf};
 use std::sync::mpsc as std_mpsc;
+use std::time::Duration;
 use tracing::{error, info};
 
 use alacritty_terminal::event::{Event as AlacTermEvent, EventListener};
@@ -20,6 +21,17 @@ use tokio::sync::{broadcast, mpsc};
 use zedra_osc::{OscEvent, OscScanner};
 
 const REMOTE_TOUCH_SCROLL_STEP_PX: f32 = 12.0;
+
+/// Cadence of the drag-to-edge selection auto-scroll tick. A GPUI timer drives
+/// it (rather than the hit-test stream) because UIKit stops issuing hit-tests
+/// once the drag finger is held stationary at the edge.
+const EDGE_AUTOSCROLL_INTERVAL: Duration = Duration::from_millis(60);
+/// Maximum consecutive timer ticks the auto-scroll runs without a fresh edge
+/// hit-test re-arming it. A moving finger keeps topping the leash back up; a
+/// lifted finger stops producing hit-tests, so the leash drains and the tick
+/// self-cancels instead of scrolling away on its own. This is the safety net
+/// for the missing touch-up signal (see `set_edge_autoscroll`).
+const EDGE_AUTOSCROLL_STATIONARY_LEASH: u32 = 40;
 
 use crate::keys::to_esc_str;
 use crate::selection::TerminalSelectionDocument;
@@ -206,6 +218,17 @@ pub struct TerminalSelection {
     pub focus: Point,
 }
 
+/// Which viewport edge a held selection handle is auto-scrolling toward.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum EdgeAutoScroll {
+    /// Toward the top of the viewport: reveals older scrollback, so the
+    /// selection focus marches up onto each newly revealed top line.
+    Top,
+    /// Toward the bottom of the viewport: reveals newer output (down to the
+    /// live tail), so the focus marches down onto each newly revealed line.
+    Bottom,
+}
+
 /// Minimal terminal state wrapping alacritty_terminal::Term
 pub struct Terminal {
     term: Term<ZedraListener>,
@@ -221,6 +244,14 @@ pub struct Terminal {
     input_tx: Option<mpsc::Sender<Vec<u8>>>,
     output_task: Option<Task<()>>,
     selection: Option<TerminalSelection>,
+    /// Armed edge for drag-to-edge selection auto-scroll; `None` when idle.
+    edge_autoscroll: Option<EdgeAutoScroll>,
+    /// Cancel-on-drop handle for the running auto-scroll timer task. Dropping
+    /// it (via `stop_edge_autoscroll` or a re-arm) cancels the tick.
+    edge_autoscroll_task: Option<Task<()>>,
+    /// Remaining self-driven ticks before the auto-scroll stops itself; topped
+    /// up on every edge hit-test.
+    edge_autoscroll_leash: u32,
     theme: TerminalTheme,
 }
 
@@ -257,6 +288,9 @@ impl Terminal {
             input_tx: None,
             output_task: None,
             selection: None,
+            edge_autoscroll: None,
+            edge_autoscroll_task: None,
+            edge_autoscroll_leash: 0,
             theme,
         };
         terminal
@@ -611,6 +645,7 @@ impl Terminal {
     pub fn set_selection_range(&mut self, range: Range<usize>) {
         if range.is_empty() {
             self.selection = None;
+            self.stop_edge_autoscroll();
             return;
         }
         let document = self.selection_document();
@@ -622,11 +657,138 @@ impl Terminal {
     }
 
     pub fn clear_selection_range(&mut self) -> bool {
+        self.stop_edge_autoscroll();
         self.selection.take().is_some()
     }
 
     pub fn selection_active(&self) -> bool {
         self.selection.is_some()
+    }
+
+    /// Arm, refresh, or disarm drag-to-edge selection auto-scroll.
+    ///
+    /// Called from the selection hit-test path each time UIKit reports the drag
+    /// finger's position: `Some(edge)` while the finger sits within a line of a
+    /// viewport edge, `None` otherwise. Arming spawns a GPUI timer that scrolls
+    /// one line toward `edge` per tick and extends the selection focus onto the
+    /// newly revealed line, so the selection keeps growing even while the finger
+    /// is held perfectly still (UIKit stops issuing hit-tests then, so the tick,
+    /// not the hit-test stream, must drive it).
+    ///
+    /// There is no touch-up callback on this input path, so a lifted finger is
+    /// indistinguishable from a stationary one by the hit-test stream alone. The
+    /// stationary leash bridges that gap: every arming call tops it back up, and
+    /// once hit-tests stop arriving (finger lifted) the leash drains and the
+    /// tick cancels itself rather than scrolling to the scrollback bound. A
+    /// precise stop-on-lift would need a touch-end signal the current
+    /// `InputHandler` does not expose.
+    pub fn set_edge_autoscroll(
+        &mut self,
+        direction: Option<EdgeAutoScroll>,
+        cx: &mut Context<Self>,
+    ) {
+        let Some(direction) = direction else {
+            self.stop_edge_autoscroll();
+            return;
+        };
+        // Only auto-scroll while there is a selection whose focus we can extend.
+        if self.selection.is_none() {
+            self.stop_edge_autoscroll();
+            return;
+        }
+
+        // Refresh the leash on every hit-test so a moving finger never expires.
+        self.edge_autoscroll_leash = EDGE_AUTOSCROLL_STATIONARY_LEASH;
+        if self.edge_autoscroll == Some(direction) && self.edge_autoscroll_task.is_some() {
+            // Already ticking toward this edge; leash refresh above is enough.
+            return;
+        }
+
+        self.edge_autoscroll = Some(direction);
+        let task = cx.spawn(async move |this, cx| {
+            loop {
+                cx.background_executor()
+                    .timer(EDGE_AUTOSCROLL_INTERVAL)
+                    .await;
+                let keep_going = this
+                    .update(cx, |this, cx| this.edge_autoscroll_tick(direction, cx))
+                    .unwrap_or(false);
+                if !keep_going {
+                    break;
+                }
+            }
+        });
+        self.edge_autoscroll_task = Some(task);
+    }
+
+    /// Cancel any running auto-scroll tick (dropping the task stops the timer).
+    pub fn stop_edge_autoscroll(&mut self) {
+        self.edge_autoscroll = None;
+        self.edge_autoscroll_leash = 0;
+        self.edge_autoscroll_task = None;
+    }
+
+    /// One auto-scroll step: scroll a line toward the armed edge and re-anchor
+    /// the selection focus to the newly revealed edge line. Returns `false` to
+    /// end the tick (selection gone, scrollback bound reached, or leash drained).
+    fn edge_autoscroll_tick(&mut self, direction: EdgeAutoScroll, cx: &mut Context<Self>) -> bool {
+        let Some(selection) = self.selection else {
+            self.stop_edge_autoscroll();
+            return false;
+        };
+        if self.edge_autoscroll_leash == 0 {
+            self.stop_edge_autoscroll();
+            return false;
+        }
+        self.edge_autoscroll_leash -= 1;
+
+        // `scroll` takes positive = up (older). Toward the bottom edge we reveal
+        // newer content, which is a downward (negative) scroll.
+        let scroll_lines = match direction {
+            EdgeAutoScroll::Top => 1,
+            EdgeAutoScroll::Bottom => -1,
+        };
+        let before = self.display_offset();
+        self.scroll(scroll_lines);
+        if self.display_offset() == before {
+            // Clamped at the top of history / the live tail: nothing revealed.
+            self.stop_edge_autoscroll();
+            return false;
+        }
+
+        // Extend the focus onto the freshly revealed edge line.
+        let focus = Self::edge_focus_point(
+            direction,
+            self.display_offset(),
+            self.size.rows,
+            self.size.columns,
+        );
+        self.selection = Some(TerminalSelection {
+            anchor: selection.anchor,
+            focus,
+        });
+        cx.notify();
+        true
+    }
+
+    /// Absolute grid point on the viewport edge row for `direction`, at the far
+    /// column of that edge so the whole newly revealed line is covered. Uses
+    /// `visible_row = line + display_offset`: the top row is `-display_offset`,
+    /// the bottom row is `rows - 1 - display_offset`.
+    fn edge_focus_point(
+        direction: EdgeAutoScroll,
+        display_offset: usize,
+        rows: usize,
+        cols: usize,
+    ) -> Point {
+        let display_offset = display_offset as i32;
+        match direction {
+            EdgeAutoScroll::Top => Point::new(Line(-display_offset), Column(0)),
+            EdgeAutoScroll::Bottom => Point::new(
+                Line(rows as i32 - 1 - display_offset),
+                Column(cols.saturating_sub(1)),
+            ),
+        }
     }
 
     /// Scroll the terminal by a number of lines (positive = up)
@@ -4627,5 +4789,34 @@ mod tests {
         let links = terminal.detect_plain_links();
         assert_eq!(links.len(), 1, "expected only URL match, got {:?}", links);
         assert_eq!(links[0].kind, super::DetectedLinkKind::Url);
+    }
+
+    // Drag-to-edge auto-scroll: the focus point each tick re-anchors to must
+    // land on the newly revealed edge row (`visible_row = line +
+    // display_offset`), at the far column of that edge so the whole new line is
+    // covered. This guards the direction/edge-line math that the on-device
+    // gesture depends on; the gesture itself has no host test.
+    #[test]
+    fn edge_focus_point_tracks_the_revealed_edge_line() {
+        use super::EdgeAutoScroll;
+
+        // 4 rows, 80 cols. Bottom edge = row 3 => abs line `3 - display_offset`.
+        assert_eq!(
+            Terminal::edge_focus_point(EdgeAutoScroll::Bottom, 5, 4, 80),
+            Point::new(Line(3 - 5), Column(79)),
+        );
+        assert_eq!(
+            Terminal::edge_focus_point(EdgeAutoScroll::Bottom, 0, 4, 80),
+            Point::new(Line(3), Column(79)),
+        );
+        // Top edge = row 0 => abs line `-display_offset`, column 0.
+        assert_eq!(
+            Terminal::edge_focus_point(EdgeAutoScroll::Top, 5, 4, 80),
+            Point::new(Line(-5), Column(0)),
+        );
+        assert_eq!(
+            Terminal::edge_focus_point(EdgeAutoScroll::Top, 0, 4, 80),
+            Point::new(Line(0), Column(0)),
+        );
     }
 }

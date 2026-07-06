@@ -5,7 +5,7 @@ use smallvec::SmallVec;
 
 use crate::keyboard_accessory::AccessoryKey;
 use crate::selection::TerminalSelectionDocument;
-use crate::terminal::Terminal;
+use crate::terminal::{EdgeAutoScroll, Terminal};
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 struct TextInputPreflight {
@@ -449,6 +449,24 @@ impl TerminalInputHandler {
 
     fn set_selection_candidate(&mut self, index: usize) {
         self.selection_candidate = Some(index);
+    }
+
+    /// Arm/refresh/disarm drag-to-edge selection auto-scroll from a hit-test.
+    /// Only fires while a selection is active (a live handle drag); the terminal
+    /// timer, not this call, keeps scrolling once the finger stops moving.
+    fn update_edge_autoscroll(&mut self, point: Point<Pixels>, cx: &mut App) {
+        let direction = if !self.selection_active(cx) {
+            None
+        } else if point.y <= self.bounds.top() + self.line_height {
+            Some(EdgeAutoScroll::Top)
+        } else if point.y >= self.bounds.bottom() - self.line_height {
+            Some(EdgeAutoScroll::Bottom)
+        } else {
+            None
+        };
+
+        let entity = self.entity.clone();
+        let _ = entity.update(cx, |term, cx| term.set_edge_autoscroll(direction, cx));
     }
 }
 
@@ -1028,6 +1046,11 @@ impl InputHandler for TerminalInputHandler {
         _window: &mut Window,
         cx: &mut App,
     ) -> Option<usize> {
+        // UIKit routes selection-handle drags through this callback. Feed the
+        // finger position to the edge auto-scroll so a drag held near the top or
+        // bottom edge keeps scrolling the terminal and extending the selection.
+        self.update_edge_autoscroll(point, cx);
+
         if self.using_selection_document(cx) {
             return self
                 .selection_document(cx)

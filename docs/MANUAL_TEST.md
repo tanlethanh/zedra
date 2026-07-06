@@ -1547,3 +1547,59 @@ id in production). The trailing shows the aggregate `done/total` rollup.
 1. With the droplet on, rotate the device.
 2. Expected: no crash, no stale grab artifacts; the droplet keeps rendering at its
    logical position and refraction stays sharp after the size change.
+
+## Selection Drag-To-Edge Auto-Scroll (iOS)
+
+Stacks on the selection-survives-scroll re-anchor (Phase 1): the selection is stored as
+absolute grid `{anchor, focus}` points, so extending the focus onto newly revealed lines
+keeps the selection correct after each scroll step. This gesture has NO host test (a headless
+agent cannot record an on-device drag); the host suite only regression-guards the terminal-side
+scroll + focus math. **On-device screen recording is required to sign this off.**
+
+Preconditions for every case below:
+- Run a command that produces well more than one screenful of output (e.g. `seq 1 400`) so
+  there is real scrollback above and below.
+- Scroll up into the scrollback so both the top and bottom edges have content to reveal.
+
+### Bottom edge auto-scroll and extend
+1. Long-press a word near the MIDDLE of the screen to start a selection, then drag the LOWER
+   selection handle down until your finger sits within about one line-height of the bottom edge.
+2. Hold the finger STATIONARY at the bottom edge (do not keep moving it).
+3. Expected: the terminal scrolls upward one line at a time on a steady tick (roughly 16
+   lines/second), and the selection keeps extending downward to cover each newly revealed
+   bottom line — the growth continues while the finger is held still, not only when it moves.
+4. Lift the finger. Expected: scrolling stops promptly (within a fraction of a second) and the
+   selection stays exactly where the last revealed line left it. It must NOT keep scrolling to
+   the bottom on its own after release.
+
+### Top edge auto-scroll and extend
+1. Long-press a word near the middle to start a selection, then drag the UPPER selection handle
+   up until the finger is within about one line-height of the top edge, and hold it still.
+2. Expected: the terminal scrolls downward into older scrollback one line per tick, and the
+   selection extends upward to cover each newly revealed top line while the finger is held.
+3. Lift the finger. Expected: scrolling stops promptly; the selection is preserved.
+
+### Bounds clamp (no runaway past history / live tail)
+1. Repeat the bottom-edge drag and hold until the terminal reaches the LIVE TAIL (newest output,
+   display offset 0). Expected: auto-scroll stops at the tail — it does not keep scrolling or
+   flicker past the bottom, and the selection endpoint rests on the last real line.
+2. Repeat the top-edge drag and hold until the terminal reaches the TOP of scrollback (oldest
+   history). Expected: auto-scroll stops at the top — no runaway, no empty rows synthesized
+   below/above the real content.
+
+### Normal (non-selecting) touch scroll is unaffected
+1. With NO selection active, swipe up and down anywhere in the terminal to scroll normally.
+2. Expected: scrolling feels exactly as before this change — smooth sub-line drag, snap-on-release
+   into scrollback, and normal clamping at the history/tail bounds. No auto-scroll tick engages,
+   and nothing gets selected by the swipe.
+3. Start a swipe that passes THROUGH the top or bottom edge region without a selection active.
+   Expected: still just a normal scroll; the edge auto-scroll must only ever engage while a
+   selection handle is being dragged.
+
+### Known limitation to watch for during sign-off
+- There is no touch-up callback on the iOS text-input hit-test path, so the tick self-cancels via
+  a stationary leash (about 40 ticks, ~2.4s) once hit-tests stop arriving. If, during the
+  bottom/top hold cases, a stationary finger stops auto-scrolling after ~2.4s even though it is
+  still held at the edge, that is the leash expiring: note it, because the proper fix is a
+  touch-end signal from the input handler (a GPUI/vendor change, tracked separately). The safety
+  property (no runaway after lift) must hold regardless.
