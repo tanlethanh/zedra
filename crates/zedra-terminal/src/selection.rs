@@ -1,5 +1,6 @@
 use std::ops::Range;
 
+use alacritty_terminal::index::{Column as AlacColumn, Line as AlacLine, Point as AlacPoint};
 use alacritty_terminal::term::cell::Flags as CellFlags;
 use gpui::{Bounds, Pixels, Point, point, px, size};
 use smallvec::SmallVec;
@@ -20,6 +21,10 @@ struct TerminalSelectionChar {
     end_utf16: usize,
     byte_start: usize,
     ch: char,
+    /// Absolute alacritty grid line (display-offset independent).
+    line: i32,
+    /// Leading grid column of this char (`grid_cols` for a synthesized `\n`).
+    col: usize,
 }
 
 #[derive(Clone, Debug)]
@@ -105,6 +110,7 @@ impl TerminalSelectionDocument {
                 .max();
 
             let y = origin.y + line_height * row_idx as f32;
+            let abs_line = row_idx as i32 - content.display_offset as i32;
             let mut cells = Vec::new();
 
             if let Some(last_nonblank_col) = last_nonblank_col {
@@ -131,6 +137,8 @@ impl TerminalSelectionDocument {
                         end_utf16: len_utf16,
                         byte_start,
                         ch,
+                        line: abs_line,
+                        col,
                     });
                     let bounds = Bounds {
                         origin: point(origin.x + cell_width * col as f32, y),
@@ -155,6 +163,8 @@ impl TerminalSelectionDocument {
                     end_utf16: len_utf16,
                     byte_start,
                     ch: '\n',
+                    line: abs_line,
+                    col: content.grid_cols,
                 });
             }
 
@@ -297,6 +307,63 @@ impl TerminalSelectionDocument {
         start.min(end)..start.max(end)
     }
 
+    /// Absolute alacritty grid point of the char containing `offset_utf16`.
+    /// `None` when the offset lies at or past the end of the document.
+    pub fn abs_point_for_utf16(&self, offset_utf16: usize) -> Option<AlacPoint> {
+        self.chars
+            .iter()
+            .find(|ch| ch.start_utf16 <= offset_utf16 && offset_utf16 < ch.end_utf16)
+            .map(|ch| AlacPoint::new(AlacLine(ch.line), AlacColumn(ch.col)))
+    }
+
+    /// UTF-16 start offset of the char at absolute grid `point`.
+    /// `None` when no char occupies that point in the current viewport.
+    pub fn utf16_for_abs_point(&self, point: AlacPoint) -> Option<usize> {
+        self.chars
+            .iter()
+            .find(|ch| ch.line == point.line.0 && ch.col == point.column.0)
+            .map(|ch| ch.start_utf16)
+    }
+
+    /// Project a selection anchored at absolute grid points onto the current
+    /// visible document, yielding a UTF-16 range. `anchor`/`focus` are the
+    /// first/last selected cells (both inclusive), in absolute, display-offset
+    /// independent coordinates. Endpoints above the visible window clamp to the
+    /// document start; endpoints below clamp to the document end, so a selection
+    /// whose anchor has scrolled off-screen still projects onto its visible
+    /// remainder and re-resolves exactly once scrolled back.
+    pub fn utf16_range_for_selection(&self, anchor: AlacPoint, focus: AlacPoint) -> Range<usize> {
+        if self.chars.is_empty() {
+            return 0..0;
+        }
+        let (start_pt, end_pt) = if point_le(anchor, focus) {
+            (anchor, focus)
+        } else {
+            (focus, anchor)
+        };
+        let start = self.clamp_start_point(start_pt);
+        let end = self.clamp_end_point(end_pt);
+        start.min(end)..start.max(end)
+    }
+
+    /// UTF-16 start of the first char at or after `point` in grid order
+    /// (`len_utf16` when `point` is below every visible char).
+    fn clamp_start_point(&self, point: AlacPoint) -> usize {
+        match self.chars.iter().find(|ch| !char_lt_point(ch, point)) {
+            Some(ch) => ch.start_utf16,
+            None => self.len_utf16,
+        }
+    }
+
+    /// UTF-16 end of the last char at or before `point` in grid order
+    /// (`0` when `point` is above every visible char).
+    fn clamp_end_point(&self, point: AlacPoint) -> usize {
+        match self.chars.iter().rev().find(|ch| !char_gt_point(ch, point)) {
+            Some(ch) => ch.end_utf16,
+            None => 0,
+        }
+    }
+
     fn caret_bounds(&self, offset_utf16: usize) -> Option<Bounds<Pixels>> {
         if self.lines.is_empty() {
             return None;
@@ -404,6 +471,18 @@ fn cell_for_x(line: &TerminalSelectionLine, x: Pixels) -> Option<&TerminalSelect
     line.cells.get(index)
 }
 
+fn point_le(a: AlacPoint, b: AlacPoint) -> bool {
+    (a.line.0, a.column.0) <= (b.line.0, b.column.0)
+}
+
+fn char_lt_point(ch: &TerminalSelectionChar, point: AlacPoint) -> bool {
+    (ch.line, ch.col) < (point.line.0, point.column.0)
+}
+
+fn char_gt_point(ch: &TerminalSelectionChar, point: AlacPoint) -> bool {
+    (ch.line, ch.col) > (point.line.0, point.column.0)
+}
+
 fn is_selectable_cell(cell: &IndexedCell) -> bool {
     !cell
         .cell
@@ -433,10 +512,33 @@ fn row_soft_wraps(row: &[&IndexedCell], grid_cols: usize) -> bool {
 
 #[cfg(test)]
 mod tests {
+    use std::ops::Range;
+
     use gpui::{point, px};
 
     use super::*;
     use crate::Terminal;
+
+    fn doc_now(terminal: &Terminal) -> TerminalSelectionDocument {
+        let content = terminal.content();
+        TerminalSelectionDocument::new(&content, point(px(0.0), px(0.0)), px(10.0), px(20.0))
+    }
+
+    /// UTF-16 range of `marker` within the current viewport (ASCII-safe).
+    fn marker_range(terminal: &Terminal, marker: &str) -> Range<usize> {
+        let doc = doc_now(terminal);
+        let text = doc.text_for_range(0..doc.len_utf16()).1;
+        let byte = text.find(marker).expect("marker must be visible");
+        let start = text[..byte].encode_utf16().count();
+        start..start + marker.encode_utf16().count()
+    }
+
+    /// Text covered by the terminal's derived selection range against the
+    /// current viewport, or `None` when nothing is selected.
+    fn selection_text_now(terminal: &Terminal) -> Option<String> {
+        let range = terminal.selection_range()?;
+        Some(doc_now(terminal).text_for_range(range).1)
+    }
 
     fn selection_text(output: &[u8], cols: usize, rows: usize) -> String {
         let mut terminal = Terminal::new(cols, rows, px(10.0), px(20.0));
@@ -554,5 +656,98 @@ mod tests {
                 .1
                 .contains("crates/foo/file_a.rs")
         );
+    }
+
+    // (a) A word selected while scrolled stays covered after a further scroll,
+    // because the selection is anchored to absolute grid points, not to
+    // viewport-relative UTF-16 offsets.
+    #[test]
+    fn selection_survives_scroll_via_absolute_grid_points() {
+        let mut terminal = Terminal::new(20, 4, px(10.0), px(20.0));
+        terminal.advance_bytes(b"aaaa\r\nbbbb\r\ncccc MARK dddd\r\n");
+        for line in 0..20 {
+            terminal.advance_bytes(format!("filler {line}\r\n").as_bytes());
+        }
+        terminal.scroll(1000); // to the top of scrollback
+
+        let range = marker_range(&terminal, "MARK");
+        terminal.set_selection_range(range.clone());
+        // Same viewport: exact round-trip through the absolute-point anchor.
+        assert_eq!(terminal.selection_range(), Some(range));
+        assert_eq!(selection_text_now(&terminal).as_deref(), Some("MARK"));
+
+        // Scroll down one row: MARK sits on a new visible row but the same
+        // absolute grid point, so the derived range still covers it.
+        terminal.scroll(-1);
+        assert_eq!(selection_text_now(&terminal).as_deref(), Some("MARK"));
+    }
+
+    // (b) When the anchor scrolls off the top, the projection clamps to the
+    // document edge (the visible remainder), and scrolling back re-resolves the
+    // EXACT original range.
+    #[test]
+    fn off_screen_anchor_clamps_and_resolves_exactly() {
+        let mut terminal = Terminal::new(20, 4, px(10.0), px(20.0));
+        terminal.advance_bytes(b"aaaa\r\nbbbb\r\ncccc MARK dddd\r\n");
+        for line in 0..20 {
+            terminal.advance_bytes(format!("filler {line}\r\n").as_bytes());
+        }
+        terminal.scroll(1000); // top: aaaa / bbbb / cccc MARK dddd / filler 0
+
+        // Select from the start of "aaaa" through "MARK" (spans three rows).
+        let doc = doc_now(&terminal);
+        let text = doc.text_for_range(0..doc.len_utf16()).1;
+        let end_byte = text.find("MARK").unwrap() + "MARK".len();
+        let range = 0..text[..end_byte].encode_utf16().count();
+        let expected_full = doc.text_for_range(range.clone()).1;
+        terminal.set_selection_range(range.clone());
+        assert_eq!(terminal.selection_range(), Some(range.clone()));
+
+        // Scroll down two rows: "aaaa" and "bbbb" (the anchor side) leave the
+        // viewport. The projection clamps to the top edge of the visible doc.
+        terminal.scroll(-2);
+        let clamped = terminal.selection_range().unwrap();
+        assert_eq!(clamped.start, 0);
+        assert_eq!(selection_text_now(&terminal).as_deref(), Some("cccc MARK"));
+
+        // Scroll back: the original three-row range resolves exactly.
+        terminal.scroll(2);
+        assert_eq!(terminal.selection_range(), Some(range));
+        assert_eq!(
+            selection_text_now(&terminal).as_deref(),
+            Some(expected_full.as_str())
+        );
+    }
+
+    // (c) A soft-wrapped logical line keeps its wrap-join (no stray '\n') across
+    // scroll, both fully visible and when partially clamped.
+    #[test]
+    fn soft_wrapped_selection_keeps_wrap_join_after_scroll() {
+        let mut terminal = Terminal::new(5, 4, px(10.0), px(20.0));
+        terminal.advance_bytes(b"helloworld\r\n");
+        for _ in 0..20 {
+            terminal.advance_bytes(b"x\r\n");
+        }
+        terminal.scroll(1000); // top: "hello" / "world" soft-wrapped across two rows
+
+        let range = marker_range(&terminal, "helloworld");
+        terminal.set_selection_range(range.clone());
+        assert_eq!(terminal.selection_range(), Some(range));
+        // Fully visible: the wrap-join means no '\n' between the two rows.
+        assert_eq!(selection_text_now(&terminal).as_deref(), Some("helloworld"));
+
+        // Scroll the first wrapped row off-screen: the visible remainder is
+        // "world", still with no stray '\n'.
+        terminal.scroll(-1);
+        let partial = selection_text_now(&terminal).unwrap();
+        assert!(
+            !partial.contains('\n'),
+            "wrap-join must not introduce a newline"
+        );
+        assert_eq!(partial, "world");
+
+        // Scroll back: the full soft-wrapped join resolves again.
+        terminal.scroll(1);
+        assert_eq!(selection_text_now(&terminal).as_deref(), Some("helloworld"));
     }
 }

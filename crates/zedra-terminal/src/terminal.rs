@@ -22,6 +22,7 @@ use zedra_osc::{OscEvent, OscScanner};
 const REMOTE_TOUCH_SCROLL_STEP_PX: f32 = 12.0;
 
 use crate::keys::to_esc_str;
+use crate::selection::TerminalSelectionDocument;
 use crate::theme::TerminalTheme;
 /// Events emitted by the terminal to observers.
 #[derive(Debug, Clone)]
@@ -192,6 +193,19 @@ pub struct KeyboardInputContextEdit {
     pub selection_range: Range<usize>,
 }
 
+/// A text selection anchored to ABSOLUTE alacritty grid points. Because
+/// `Point::line` is display-offset independent (`visible_row = line +
+/// display_offset`), the selection survives scrolling: the visible UTF-16 range
+/// is re-derived from these points against each frame's document rather than
+/// being stored as viewport-relative offsets.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct TerminalSelection {
+    /// First selected cell (inclusive), absolute grid coordinates.
+    pub anchor: Point,
+    /// Last selected cell (inclusive), absolute grid coordinates.
+    pub focus: Point,
+}
+
 /// Minimal terminal state wrapping alacritty_terminal::Term
 pub struct Terminal {
     term: Term<ZedraListener>,
@@ -206,7 +220,7 @@ pub struct Terminal {
     alacritty_event_rx: std_mpsc::Receiver<AlacTermEvent>,
     input_tx: Option<mpsc::Sender<Vec<u8>>>,
     output_task: Option<Task<()>>,
-    selection_range: Option<Range<usize>>,
+    selection: Option<TerminalSelection>,
     theme: TerminalTheme,
 }
 
@@ -242,7 +256,7 @@ impl Terminal {
             alacritty_event_rx,
             input_tx: None,
             output_task: None,
-            selection_range: None,
+            selection: None,
             theme,
         };
         terminal
@@ -565,20 +579,54 @@ impl Terminal {
         }
     }
 
+    /// The selection as a UTF-16 range over the CURRENT visible viewport,
+    /// derived each call by projecting the stored absolute grid points onto a
+    /// freshly-built document. Returns `None` when nothing is selected. A stored
+    /// selection whose endpoints have scrolled off-screen still returns a range
+    /// (clamped to the document edge), and re-resolves exactly on scroll-back.
     pub fn selection_range(&self) -> Option<Range<usize>> {
-        self.selection_range.clone()
+        let selection = self.selection?;
+        let document = self.selection_document();
+        Some(document.utf16_range_for_selection(selection.anchor, selection.focus))
     }
 
+    /// Build the per-frame selection document for the current content. Pixel
+    /// origin is irrelevant to the grid<->UTF-16 translation, so it is `(0, 0)`.
+    fn selection_document(&self) -> TerminalSelectionDocument {
+        let content = self.content();
+        TerminalSelectionDocument::new(
+            &content,
+            GpuiPoint {
+                x: px(0.0),
+                y: px(0.0),
+            },
+            self.size.cell_width,
+            self.size.line_height,
+        )
+    }
+
+    /// Store a selection given as a UTF-16 range over the current viewport,
+    /// re-anchoring it to absolute grid points so it survives scrolling. An
+    /// empty range clears the selection (nothing to anchor).
     pub fn set_selection_range(&mut self, range: Range<usize>) {
-        self.selection_range = Some(range);
+        if range.is_empty() {
+            self.selection = None;
+            return;
+        }
+        let document = self.selection_document();
+        let anchor = document.abs_point_for_utf16(range.start);
+        let focus = document.abs_point_for_utf16(range.end - 1);
+        self.selection = anchor
+            .zip(focus)
+            .map(|(anchor, focus)| TerminalSelection { anchor, focus });
     }
 
     pub fn clear_selection_range(&mut self) -> bool {
-        self.selection_range.take().is_some()
+        self.selection.take().is_some()
     }
 
     pub fn selection_active(&self) -> bool {
-        self.selection_range.is_some()
+        self.selection.is_some()
     }
 
     /// Scroll the terminal by a number of lines (positive = up)
