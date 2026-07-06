@@ -24,6 +24,7 @@ use crate::session_registry::{
     ConsumeSlotResult, HostTermMeta, OutputSenderSlot, PairingSlotMode, ServerSession,
     SessionRegistry, TermBacklog, TermSession, MAX_WATCHED_PATHS_PER_SESSION,
 };
+use crate::uploads;
 use crate::utils;
 use anyhow::Result;
 use iroh::endpoint::ConnectionError;
@@ -1025,7 +1026,7 @@ fn connection_latency_sample(
 /// Resolve `user_path` relative to `workdir`, then verify the canonical path
 /// stays inside `workdir`. Rejects absolute paths, `..` escapes, and symlinks
 /// that point outside the jail.
-fn resolve_path(workdir: &Path, user_path: &str) -> Result<PathBuf> {
+pub(crate) fn resolve_path(workdir: &Path, user_path: &str) -> Result<PathBuf> {
     // Reject empty paths
     anyhow::ensure!(!user_path.is_empty(), "empty path");
     let joined = workdir.join(user_path);
@@ -2807,6 +2808,39 @@ async fn dispatch(
             };
             let ok = state.fs.write(&path, &msg.content).is_ok();
             let _ = msg.tx.send(FsWriteResult { ok }).await;
+        }
+
+        ZedraMessage::FsUpload(msg) => {
+            if msg.data.len() > FS_UPLOAD_MAX_BYTES {
+                tracing::warn!(
+                    "FsUpload: rejected {} byte payload (max {})",
+                    msg.data.len(),
+                    FS_UPLOAD_MAX_BYTES
+                );
+                let _ = msg
+                    .tx
+                    .send(FsUploadResult {
+                        path: String::new(),
+                        error: Some("image exceeds the maximum upload size".to_string()),
+                    })
+                    .await;
+                return Ok(());
+            }
+            match uploads::store_upload(&state.workdir, &msg.data, &msg.extension) {
+                Ok(path) => {
+                    let _ = msg.tx.send(FsUploadResult { path, error: None }).await;
+                }
+                Err(e) => {
+                    tracing::warn!("FsUpload: store failed: {e:#}");
+                    let _ = msg
+                        .tx
+                        .send(FsUploadResult {
+                            path: String::new(),
+                            error: Some(e.to_string()),
+                        })
+                        .await;
+                }
+            }
         }
 
         ZedraMessage::FsStat(msg) => {

@@ -1316,6 +1316,97 @@ pub extern "system" fn Java_dev_zedra_app_MainActivity_nativeDeltaGoogleSignInEr
     platform_bridge::dispatch_delta_google_sign_in_error(callback_id as u32, message);
 }
 
+// =============================================================================
+// Image acquisition (photo picker / clipboard image read)
+// =============================================================================
+
+/// Acquire an image natively. `source`: 0 = photo library, 1 = clipboard.
+/// Delivers exactly one of `nativeImageAcquireResult`/`Cancel`/`Error` from Kotlin.
+pub fn acquire_image(id: u32, source: i32) {
+    jni_call("acquire_image", move || {
+        with_main_activity("acquire_image", |env, class| {
+            env.call_static_method(
+                class,
+                "acquireImage",
+                "(II)V",
+                &[(id as jint).into(), (source as jint).into()],
+            )?;
+            Ok(())
+        });
+    });
+}
+
+/// Cheap synchronous check: does the clipboard currently hold an image?
+pub fn clipboard_has_image() -> bool {
+    let mut has_image = false;
+    jni_call(
+        "clipboard_has_image",
+        std::panic::AssertUnwindSafe(|| {
+            with_main_activity_class("clipboard_has_image", |env, class| {
+                let Ok(value) = env.call_static_method(class, "clipboardHasImage", "()Z", &[])
+                else {
+                    return;
+                };
+                has_image = value.z().unwrap_or(false);
+            });
+        }),
+    );
+    has_image
+}
+
+/// Delivered from `MainActivity` once the picker/clipboard read + downscale
+/// finishes. `extension` is "jpg" or "png".
+#[unsafe(no_mangle)]
+pub extern "system" fn Java_dev_zedra_app_MainActivity_nativeImageAcquireResult(
+    mut env: JNIEnv,
+    _class: JClass,
+    callback_id: jint,
+    data: jni::objects::JByteArray,
+    extension: jni::objects::JString,
+) {
+    if callback_id <= 0 {
+        return;
+    }
+    let bytes = env.convert_byte_array(&data).unwrap_or_default();
+    let extension = jstring_to_string(&mut env, &extension).unwrap_or_default();
+    platform_bridge::dispatch_image_acquire_result(
+        callback_id as u32,
+        platform_bridge::PickedImage {
+            data: bytes,
+            extension,
+        },
+    );
+}
+
+/// Delivered when the user cancels the picker, or the clipboard held no image.
+#[unsafe(no_mangle)]
+pub extern "system" fn Java_dev_zedra_app_MainActivity_nativeImageAcquireCancel(
+    _env: JNIEnv,
+    _class: JClass,
+    callback_id: jint,
+) {
+    if callback_id <= 0 {
+        return;
+    }
+    platform_bridge::dispatch_image_acquire_cancel(callback_id as u32);
+}
+
+/// Delivered on a decode/processing failure.
+#[unsafe(no_mangle)]
+pub extern "system" fn Java_dev_zedra_app_MainActivity_nativeImageAcquireError(
+    mut env: JNIEnv,
+    _class: JClass,
+    callback_id: jint,
+    message: jni::objects::JString,
+) {
+    if callback_id <= 0 {
+        return;
+    }
+    let message = jstring_to_string(&mut env, &message)
+        .unwrap_or_else(|| "image processing failed".to_string());
+    platform_bridge::dispatch_image_acquire_error(callback_id as u32, message);
+}
+
 pub fn show_text_input(id: u32, title: &str, placeholder: &str, initial_value: &str) {
     let title = title.to_string();
     let placeholder = placeholder.to_string();
@@ -1512,6 +1603,44 @@ pub fn hide_native_dictation_preview(id: u32) {
                 &[(id as jint).into()],
             ) {
                 tracing::error!(?error, "jni: hideNativeDictationPreview failed");
+            }
+        });
+    });
+}
+
+pub fn present_native_progress(id: u32, message: &str) {
+    let message = message.to_string();
+    jni_call("present_native_progress", move || {
+        with_main_activity_class("present_native_progress", |env, class| {
+            let message = match env.new_string(&message) {
+                Ok(value) => value,
+                Err(error) => {
+                    tracing::error!(?error, "jni: progress message string failed");
+                    return;
+                }
+            };
+            if let Err(error) = env.call_static_method(
+                class,
+                "presentNativeProgress",
+                "(ILjava/lang/String;)V",
+                &[(id as jint).into(), (&message).into()],
+            ) {
+                tracing::error!(?error, "jni: presentNativeProgress failed");
+            }
+        });
+    });
+}
+
+pub fn dismiss_native_progress(id: u32) {
+    jni_call("dismiss_native_progress", move || {
+        with_main_activity_class("dismiss_native_progress", |env, class| {
+            if let Err(error) = env.call_static_method(
+                class,
+                "dismissNativeProgress",
+                "(I)V",
+                &[(id as jint).into()],
+            ) {
+                tracing::error!(?error, "jni: dismissNativeProgress failed");
             }
         });
     });
