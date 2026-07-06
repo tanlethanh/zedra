@@ -23,6 +23,7 @@ pub mod qr;
 pub mod rpc_daemon;
 pub mod session_registry;
 pub mod sqlite_readonly;
+pub mod start_config;
 pub mod telemetry;
 pub mod utils;
 pub mod version_check;

@@ -2146,6 +2146,9 @@ pub async fn create_terminal(
 
     let id = session.next_terminal_id().await;
     opts.env.push(("ZEDRA_TERMINAL_ID".to_string(), id.clone()));
+    // Lets `zedra update` recognize (and not kill) the daemon owning its terminal.
+    opts.env
+        .push(("ZEDRA_HOST_PID".to_string(), std::process::id().to_string()));
     if let Some(workdir) = &opts.workdir {
         opts.env.push((
             "ZEDRA_WORKDIR".to_string(),

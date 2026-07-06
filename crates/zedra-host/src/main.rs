@@ -20,7 +20,7 @@ use zedra_host::client as zedra_client;
 use zedra_host::ga4::Ga4;
 use zedra_host::{
     api, delta, identity, iroh_listener, metrics, net_monitor, paths, qr, rpc_daemon,
-    session_registry, utils, version_check, workspace_lock,
+    session_registry, start_config, utils, version_check, workspace_lock,
 };
 use zedra_rpc::ZedraPairingTicket;
 use zedra_telemetry::Event;
@@ -984,6 +984,26 @@ async fn main() -> Result<()> {
 
             let _lock = workspace_lock::acquire(&workdir)?;
             tracing::info!("Acquired workspace lock for {}", workdir.display());
+
+            // Persist launch flags so `zedra update` can restart this daemon faithfully.
+            let launch_config = start_config::StartConfig {
+                verbose,
+                relay_url: relay_url.clone(),
+                no_telemetry,
+                debug_telemetry,
+                relay_only,
+                static_qr,
+                usage_refresh_secs,
+            };
+            match workspace_lock::lock_config_dir(&workdir) {
+                Ok(dir) => {
+                    if let Err(e) = start_config::save(&dir, &launch_config) {
+                        tracing::warn!("Failed to persist start config: {e}");
+                    }
+                }
+                Err(e) => tracing::warn!("Failed to resolve workspace config dir: {e}"),
+            }
+
             let start_mode = if std::env::var_os("ZEDRA_DETACHED").is_some() {
                 metrics::DaemonStartMode::Detached
             } else {
@@ -2059,26 +2079,44 @@ fn should_restart_daemons(input: &str) -> bool {
     input.eq_ignore_ascii_case("y") || input.eq_ignore_ascii_case("yes")
 }
 
-/// Stop each live daemon and relaunch it detached with the freshly installed binary.
+/// Stop each live daemon and relaunch it detached with the freshly installed
+/// binary, reusing the launch flags persisted in its `config.yaml`.
 fn restart_daemons_after_update(alive: &[&(PathBuf, workspace_lock::LockInfo, bool)], exe: &Path) {
-    for (_, lock, _) in alive {
-        let workdir = PathBuf::from(&lock.workdir);
+    // Killing the daemon that owns this terminal would hang up the updater
+    // itself before the relaunch runs; skip it and hand the restart back.
+    let own_daemon_pid = std::env::var("ZEDRA_HOST_PID")
+        .ok()
+        .and_then(|v| v.parse::<u32>().ok());
+    for (config_dir, lock, _) in alive {
         eprintln!();
+        if own_daemon_pid == Some(lock.pid) {
+            utils::eprintln_warn(format!(
+                "Skipped {}: it hosts this terminal. Restart it from outside:",
+                lock.workdir
+            ));
+            utils::eprintln_shell_command(format!(
+                "zedra stop -w {dir} && zedra start --detach -w {dir}",
+                dir = utils::shell_arg(&lock.workdir)
+            ));
+            continue;
+        }
+        let workdir = PathBuf::from(&lock.workdir);
         utils::eprintln_step(format!("Restarting {}", lock.workdir));
         if let Err(e) = workspace_lock::kill_and_unlock(&workdir, 5) {
             utils::eprintln_error(format!("Failed to stop pid {}: {e}", lock.pid));
             continue;
         }
+        let config = start_config::load(config_dir);
         let started = start_detached(DetachedStartOptions {
             exe: exe.to_path_buf(),
             workdir,
-            verbose: false,
-            relay_url: Vec::new(),
-            no_telemetry: false,
-            debug_telemetry: false,
-            relay_only: false,
-            static_qr: false,
-            usage_refresh_secs: 300,
+            verbose: config.verbose,
+            relay_url: config.relay_url,
+            no_telemetry: config.no_telemetry,
+            debug_telemetry: config.debug_telemetry,
+            relay_only: config.relay_only,
+            static_qr: config.static_qr,
+            usage_refresh_secs: config.usage_refresh_secs,
         });
         match started {
             Ok(daemon) => utils::eprintln_success(format!("Restarted (pid {}).", daemon.pid)),
