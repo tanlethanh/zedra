@@ -1437,6 +1437,9 @@ pub struct DaemonState {
     /// Delta client; updated at runtime when a mobile client reports its
     /// Delta info via `SetClientDeltaInfo`. `None` if Delta is not configured.
     pub delta: Arc<tokio::sync::RwLock<Option<Arc<crate::delta::DeltaClient>>>>,
+    /// Shared clipboard state: dedup hash between the poll watcher and the
+    /// `ClipboardSet` handler so a manual send does not echo back to clients.
+    pub clipboard: Arc<crate::clipboard::ClipboardSync>,
 }
 
 impl std::fmt::Debug for DaemonState {
@@ -1462,6 +1465,7 @@ impl DaemonState {
             started_at: std::time::Instant::now(),
             agent_cache: agent_cache::AgentCache::new(),
             delta: Arc::new(tokio::sync::RwLock::new(delta)),
+            clipboard: crate::clipboard::ClipboardSync::new(),
         }
     }
 }
@@ -2739,6 +2743,26 @@ async fn dispatch(
             }
             *state.delta.write().await = None;
             let _ = msg.tx.send(ClearClientDeltaInfoResult {}).await;
+        }
+
+        ZedraMessage::ClipboardSet(msg) => {
+            // The clipboard thread records the written value's hash on success,
+            // so this write is not echoed back to clients as a ClipboardChanged.
+            let result = state.clipboard.write(msg.content.clone()).await;
+            let _ = msg
+                .tx
+                .send(ClipboardSetResult {
+                    error: result.err(),
+                })
+                .await;
+        }
+
+        ZedraMessage::ClipboardGet(msg) => {
+            let (content, error) = match state.clipboard.read().await {
+                Ok(content) => (content, None),
+                Err(e) => (None, Some(e)),
+            };
+            let _ = msg.tx.send(ClipboardGetResult { content, error }).await;
         }
 
         ZedraMessage::FsRead(msg) => {

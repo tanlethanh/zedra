@@ -1547,3 +1547,24 @@ id in production). The trailing shows the aggregate `done/total` rollup.
 1. With the droplet on, rotate the device.
 2. Expected: no crash, no stale grab artifacts; the droplet keeps rendering at its
    logical position and refraction stays sharp after the size change.
+
+## Clipboard Sync (host <-> iOS, text v1)
+
+Requires a paired host daemon with a reachable system clipboard (a normal macOS/Linux desktop session, not a headless server).
+
+### Host to device (auto)
+1. Open Settings and turn **Clipboard sync** on (it defaults off).
+2. On the host machine, copy some text with the OS clipboard tool (`pbcopy` on macOS, `xclip`/`wl-copy` on Linux) or select+copy.
+3. With the app foreground, expected: within ~1s the device pasteboard holds that text, paste into any iOS text field to confirm.
+4. Turn Clipboard sync **off**, copy new text on the host.
+5. Expected: the device pasteboard does NOT change (no auto-write when off).
+
+### Device to host (manual)
+1. Copy text on the device.
+2. Tap **Send clipboard**.
+3. Expected: the host system clipboard now holds that text (verify with the OS clipboard tool, e.g. `pbpaste`/`xclip -o`/`wl-paste`, or paste into another app).
+4. Expected: the send does not bounce back and overwrite the device pasteboard.
+
+### Degraded host
+1. Point the app at a headless host with no display server / clipboard.
+2. Expected: no crash; auto-sync is silently inactive and Send clipboard surfaces a clear error rather than hanging.

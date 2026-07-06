@@ -9,7 +9,7 @@ use tokio::sync::{broadcast, mpsc};
 use tracing::*;
 use uuid::Uuid;
 use zedra_rpc::ZedraPairingTicket;
-use zedra_rpc::proto::{HostEvent, SyncSessionResult};
+use zedra_rpc::proto::{ClipboardContent, HostEvent, SyncSessionResult};
 use zedra_session::{
     ConnectEvent, ConnectPhase, ConnectSnapshot, ReconnectReason, Session, SessionHandle,
     SessionState, signer::ClientSigner,
@@ -31,7 +31,9 @@ use crate::terminal_state::TerminalState;
 use crate::theme;
 use crate::transport_badge::ConnectionStatusIndicator;
 use crate::ui::{DrawerEvent, DrawerHost, DrawerSide};
-use crate::workspace_action::{self, GoHome, OpenFileSearch, OpenQuickAction, RequestDisconnect};
+use crate::workspace_action::{
+    self, GoHome, OpenFileSearch, OpenQuickAction, RequestDisconnect, SendClipboard,
+};
 use crate::workspace_action::{
     AddSelectionToChat, CloseDrawer, CloseTerminal, CreateAgent, CreateNewTerminal, GitCommit,
     GitShowItemActions, GitStage, GitUnstage, HideConnecting, NavigateBack, OpenAgentDetail,
@@ -894,6 +896,26 @@ impl Workspace {
                             break;
                         }
                     }
+                    Ok(HostEvent::ClipboardChanged(payload)) => {
+                        // Auto-apply the host clipboard to the device pasteboard,
+                        // but only when the user opted in and the app is foreground
+                        // (iOS blocks background pasteboard writes, and silently
+                        // clobbering the pasteboard uninvited is undesirable).
+                        if platform_bridge::is_app_in_foreground()
+                            && crate::settings::read_clipboard_sync_enabled()
+                        {
+                            if let ClipboardContent::Text(text) = payload.content {
+                                let should_break = workspace
+                                    .update(cx, |_ws, cx| {
+                                        cx.write_to_clipboard(ClipboardItem::new_string(text));
+                                    })
+                                    .is_err();
+                                if should_break {
+                                    break;
+                                }
+                            }
+                        }
+                    }
                     Ok(_) => {}
                     Err(broadcast::error::RecvError::Lagged(skipped)) => {
                         tracing::warn!("workspace host event listener lagged by {}", skipped);
@@ -1213,6 +1235,7 @@ impl Workspace {
 
                         if is_initial_connect {
                             refresh_task.await;
+                            let _ = workspace.update(cx, |ws, cx| ws.spawn_clipboard_seed(cx));
                         } else {
                             refresh_task.detach();
                         }
@@ -1491,6 +1514,39 @@ impl Workspace {
         .detach();
     }
 
+    /// On connect, pull the host's current clipboard once so the device starts
+    /// in sync; later changes arrive via `HostEvent::ClipboardChanged`. No-op
+    /// unless clipboard sync is enabled, and only applied while foreground.
+    fn spawn_clipboard_seed(&self, cx: &mut Context<Self>) {
+        if !crate::settings::read_clipboard_sync_enabled() {
+            return;
+        }
+        // Caller invokes this only after the post-sync `has_client()` readiness
+        // gate, so no re-poll here; a dropped client just makes clipboard_get err.
+        let handle = self.session_handle().clone();
+        cx.spawn(
+            async move |workspace, cx| match handle.clipboard_get().await {
+                Ok(Some(ClipboardContent::Text(text))) => {
+                    // Re-check both gates after the await: the user may have toggled
+                    // sync off or backgrounded during the round trip. If a live
+                    // ClipboardChanged already applied a newer value in this window,
+                    // this one-shot seed can regress it to the older value; the race
+                    // is connect-window-only and self-heals on the next host copy.
+                    if platform_bridge::is_app_in_foreground()
+                        && crate::settings::read_clipboard_sync_enabled()
+                    {
+                        let _ = workspace.update(cx, |_ws, cx| {
+                            cx.write_to_clipboard(ClipboardItem::new_string(text));
+                        });
+                    }
+                }
+                Ok(_) => {}
+                Err(err) => tracing::warn!("clipboard seed on connect failed: {err:#}"),
+            },
+        )
+        .detach();
+    }
+
     pub fn restart_connection(&mut self, cx: &mut Context<Self>) {
         let Some(mut request) = self.connection_request.clone() else {
             warn!("restart connection requested without a connection request");
@@ -1764,6 +1820,54 @@ impl Workspace {
                 }
             },
         );
+    }
+
+    fn handle_send_clipboard(
+        &mut self,
+        _action: &SendClipboard,
+        _window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let Some(text) = cx.read_from_clipboard().and_then(|item| item.text()) else {
+            platform_bridge::show_alert(
+                "Nothing to send",
+                "The clipboard is empty.",
+                vec![AlertButton::cancel("OK")],
+                |_| {},
+            );
+            return;
+        };
+        if text.len() > zedra_rpc::proto::CLIPBOARD_MAX_BYTES {
+            platform_bridge::show_alert(
+                "Clipboard too large",
+                "This clipboard content exceeds the size limit.",
+                vec![AlertButton::cancel("OK")],
+                |_| {},
+            );
+            return;
+        }
+        let handle = self.session_handle().clone();
+        cx.spawn(async move |_workspace, _cx| {
+            match handle.clipboard_set(ClipboardContent::Text(text)).await {
+                // Confirm the send happened; the push has no on-screen result, so
+                // without this the button press feels like nothing occurred.
+                Ok(()) => platform_bridge::trigger_haptic(HapticFeedback::NotificationSuccess),
+                Err(err) => {
+                    // Surface the failure: the empty/oversized pre-checks above alert,
+                    // so a silent network failure here would mislead the user into
+                    // thinking the paste reached the host.
+                    tracing::warn!("send clipboard to host failed: {err}");
+                    platform_bridge::trigger_haptic(HapticFeedback::NotificationError);
+                    platform_bridge::show_alert(
+                        "Send failed",
+                        "Could not send the clipboard to the host. Check the connection and try again.",
+                        vec![AlertButton::cancel("OK")],
+                        |_| {},
+                    );
+                }
+            }
+        })
+        .detach();
     }
 
     fn handle_toggle_drawer(
@@ -2924,6 +3028,7 @@ impl Render for Workspace {
             .on_action(cx.listener(Self::handle_open_quick_action))
             .on_action(cx.listener(Self::handle_open_file_search))
             .on_action(cx.listener(Self::handle_request_disconnect))
+            .on_action(cx.listener(Self::handle_send_clipboard))
             .on_action(cx.listener(Self::handle_toggle_drawer))
             .on_action(cx.listener(Self::handle_open_drawer))
             .on_action(cx.listener(Self::handle_close_drawer))

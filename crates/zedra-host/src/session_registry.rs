@@ -937,6 +937,17 @@ impl SessionRegistry {
         self.sessions.lock().await.len()
     }
 
+    /// Push a host-initiated event to every session with an active subscriber.
+    /// Sessions without a subscriber drop it silently (see `push_event`).
+    /// Used for host-global events like a system clipboard change.
+    pub async fn broadcast_event(&self, event: HostEvent) {
+        let sessions: Vec<Arc<ServerSession>> =
+            self.sessions.lock().await.values().cloned().collect();
+        for session in sessions {
+            session.push_event(event.clone()).await;
+        }
+    }
+
     /// Return the most recently active session, if any.
     /// Used by the REST API when no session_id is specified, so the request
     /// targets the session a user is actually working in rather than an

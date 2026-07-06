@@ -219,6 +219,18 @@ pub enum ZedraProto {
     /// Kept at enum tail because protocol variants are append-only.
     #[rpc(tx = oneshot::Sender<ClearClientDeltaInfoResult>)]
     ClearClientDeltaInfo(ClearClientDeltaInfoReq),
+
+    /// Client pushes its device clipboard to the host; the host writes it to the
+    /// host system clipboard. Manual and user-initiated because iOS forbids
+    /// background pasteboard reads.
+    /// Kept at enum tail because protocol variants are append-only.
+    #[rpc(tx = oneshot::Sender<ClipboardSetResult>)]
+    ClipboardSet(ClipboardSetReq),
+
+    /// Client reads the host's current system clipboard, e.g. to seed on connect.
+    /// Kept at enum tail because protocol variants are append-only.
+    #[rpc(tx = oneshot::Sender<ClipboardGetResult>)]
+    ClipboardGet(ClipboardGetReq),
 }
 
 // ---------------------------------------------------------------------------
@@ -692,6 +704,63 @@ pub struct FsStatResult {
     pub error: Option<String>,
 }
 
+// ---------------------------------------------------------------------------
+// Clipboard types
+// ---------------------------------------------------------------------------
+
+/// Maximum clipboard payload size accepted on the wire (2 MiB). Larger content
+/// is dropped by the host and rejected by the client before it crosses the
+/// tunnel, so one oversized image cannot stall the stream.
+pub const CLIPBOARD_MAX_BYTES: usize = 2 * 1024 * 1024;
+
+/// Clipboard content carried in both directions.
+///
+/// `Image` is reserved for v1.1 and is neither produced nor consumed in v1
+/// (text only). It ships now so the wire stays append-only when image support
+/// lands after the `gpui_ios` image-clipboard spike.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub enum ClipboardContent {
+    Text(String),
+    Image {
+        format: ClipboardImageFormat,
+        #[serde(with = "serde_bytes")]
+        bytes: Vec<u8>,
+    },
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+pub enum ClipboardImageFormat {
+    Png,
+    Jpeg,
+}
+
+/// Latest host clipboard value pushed to the client via `HostEvent`.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct ClipboardPayload {
+    pub content: ClipboardContent,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+pub struct ClipboardSetReq {
+    pub content: ClipboardContent,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+pub struct ClipboardSetResult {
+    /// `None` on success; a message the client can surface on failure.
+    pub error: Option<String>,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+pub struct ClipboardGetReq {}
+
+#[derive(Debug, Serialize, Deserialize)]
+pub struct ClipboardGetResult {
+    /// `None` when the host clipboard is empty or unsupported.
+    pub content: Option<ClipboardContent>,
+    pub error: Option<String>,
+}
+
 #[derive(Debug, Serialize, Deserialize)]
 pub struct FsWatchReq {
     /// Relative directory path to observe (for example: ".", "src", "src/editor").
@@ -841,6 +910,10 @@ pub enum HostEvent {
         terminal_id: String,
         agent_slug: Option<String>,
     },
+    /// The host system clipboard changed. The client applies the value to the
+    /// device pasteboard when clipboard sync is enabled and the app is
+    /// foreground. Appended at `zedra/rpc/4`.
+    ClipboardChanged(ClipboardPayload),
 }
 
 // ---------------------------------------------------------------------------
@@ -1453,6 +1526,58 @@ mod tests {
         let encoded = postcard::to_allocvec(&req).unwrap();
         let decoded: PingReq = postcard::from_bytes(&encoded).unwrap();
         assert_eq!(decoded.timestamp_ms, 9_999_999);
+    }
+
+    #[test]
+    fn clipboard_set_req_text_roundtrip() {
+        let req = ClipboardSetReq {
+            content: ClipboardContent::Text("export TOKEN=abc123".to_string()),
+        };
+        let encoded = postcard::to_allocvec(&req).unwrap();
+        let decoded: ClipboardSetReq = postcard::from_bytes(&encoded).unwrap();
+        assert_eq!(decoded.content, req.content);
+    }
+
+    #[test]
+    fn clipboard_get_result_roundtrip() {
+        let result = ClipboardGetResult {
+            content: Some(ClipboardContent::Text("hello".to_string())),
+            error: None,
+        };
+        let encoded = postcard::to_allocvec(&result).unwrap();
+        let decoded: ClipboardGetResult = postcard::from_bytes(&encoded).unwrap();
+        assert_eq!(decoded.content, result.content);
+        assert!(decoded.error.is_none());
+    }
+
+    #[test]
+    fn clipboard_changed_event_roundtrip() {
+        let event = HostEvent::ClipboardChanged(ClipboardPayload {
+            content: ClipboardContent::Text("copied on host".to_string()),
+        });
+        let encoded = postcard::to_allocvec(&event).unwrap();
+        let decoded: HostEvent = postcard::from_bytes(&encoded).unwrap();
+        match decoded {
+            HostEvent::ClipboardChanged(p) => {
+                assert_eq!(
+                    p.content,
+                    ClipboardContent::Text("copied on host".to_string())
+                )
+            }
+            other => panic!("unexpected event: {other:?}"),
+        }
+    }
+
+    // The v1.1 image variant must survive the wire even though v1 never emits it.
+    #[test]
+    fn clipboard_image_variant_roundtrip() {
+        let content = ClipboardContent::Image {
+            format: ClipboardImageFormat::Png,
+            bytes: vec![0x89, 0x50, 0x4e, 0x47],
+        };
+        let encoded = postcard::to_allocvec(&content).unwrap();
+        let decoded: ClipboardContent = postcard::from_bytes(&encoded).unwrap();
+        assert_eq!(decoded, content);
     }
 
     #[test]

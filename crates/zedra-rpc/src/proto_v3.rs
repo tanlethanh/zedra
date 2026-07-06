@@ -608,6 +608,8 @@ fn host_event_v3(e: proto::HostEvent) -> Option<HostEvent> {
             state,
         }),
         proto::HostEvent::TerminalAgentChanged { .. } => None,
+        // v4-only: v3 clients have no clipboard support.
+        proto::HostEvent::ClipboardChanged(..) => None,
     }
 }
 
@@ -769,5 +771,16 @@ mod tests {
         // A newer actor slug has no `v3` enum variant and must be dropped.
         assert!(agent_kind("amp").is_none());
         assert_eq!(agent_kind("hermes"), Some(AgentKind::Hermes));
+    }
+
+    #[test]
+    fn clipboard_changed_is_dropped_for_v3() {
+        // v4-only event; a v3 client cannot decode it, so the filter drops it.
+        let event = proto::HostEvent::ClipboardChanged(proto::ClipboardPayload {
+            content: proto::ClipboardContent::Text("secret".into()),
+        });
+        assert!(host_event_v3(event).is_none());
+        // A shared event still passes through, proving we didn't over-filter.
+        assert!(host_event_v3(proto::HostEvent::GitChanged).is_some());
     }
 }
