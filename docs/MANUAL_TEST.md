@@ -1401,7 +1401,7 @@ id in production). The trailing shows the aggregate `done/total` rollup.
 ## 21. iOS Release logging
 
 1. Install a **Release** build on device (not Xcode Run with debugger attached)
-2. Connect via **Scan QR**; optional: `scripts/log-ios.sh --grep connect`
+2. Connect via **Scan QR**; optional: `scripts/ios-log.sh tail --filter connect`
 3. Expected: no burst of per-packet iroh/quinn trace lines (`tracing-subscriber` requires `debug-logs`)
 
 ## 22. Terminal appearance (light/dark)
@@ -1604,3 +1604,93 @@ id in production). The trailing shows the aggregate `done/total` rollup.
    and recently-uploaded files are left alone.
 5. Run `git status` in the workspace after uploading a few images.
 6. Expected: `.zedra/uploads/` does not appear as untracked or modified.
+
+## 25. GPUI Devtool on iOS (shared `gpui_devtool` crate)
+
+Verifies the iOS devtool backend added alongside the pre-existing Android one — same
+HTTP surface, same shared `gpui_devtool` crate, different platform-side tap dispatch.
+
+### Simulator
+1. `./scripts/run-ios.sh sim --devtool`
+2. `./scripts/devtool.sh bridge-ios` — expected: "Simulator target ... shares localhost —
+   no bridge needed" followed by a successful `/ping`.
+3. `./scripts/devtool.sh list` — expected: a non-empty element table for the current screen.
+4. `./scripts/devtool.sh press <leaf>` on a visible tagged element (e.g. a Home workspace card) —
+   expected: the same navigation/action a real tap would trigger.
+5. `./scripts/devtool.sh tap-xy <x> <y>` on an untagged region — expected: `{"ok":true,...}`
+   and a visible tap effect (e.g. hover/press state) at that point.
+
+### Physical device
+1. `./scripts/run-ios.sh device --devtool`
+2. `./scripts/devtool.sh bridge-ios` — expected: spawns `iproxy` and reports the forwarded
+   port; re-running in the same session should reuse the existing iproxy process instead of
+   spawning a second one.
+3. Repeat steps 3-5 from the simulator case above.
+4. Regression check: confirm a release build (`./scripts/run-ios.sh device --release --devtool`)
+   is rejected by `build-ios.sh` with "release builds cannot enable ... --devtool"; confirm
+   `./scripts/build-android.sh --devtool` (no `--debug`) is rejected the same way.
+
+## 25a. Devtool — Default Gestures
+
+Verifies press/long-press work on any `.id(...)`'d element with no declaration.
+
+1. `./scripts/run-ios.sh sim --devtool` then `./scripts/devtool.sh press ws-card-0` —
+   expected: navigates into that workspace, same as a real tap.
+2. Relaunch to reset to Home, `./scripts/devtool.sh long-press ws-card-0` —
+   expected: the native Rename/Disconnect/Delete/Cancel action sheet appears
+   (this calls `handle_workspace_long_press` via the same path a real
+   long-press uses). Confirm with a simulator screenshot (`xcrun simctl io
+   <udid> screenshot <path>`), since the sheet itself is invisible to
+   `/elements`. Dismiss with `./scripts/devtool.sh tap-xy` at the Cancel
+   button's coordinates.
+3. `./scripts/devtool.sh press does-not-exist` — expected: the error body
+   `{"ok":false,"error":"element not found"}` is printed (not swallowed) and the command
+   exits non-zero.
+
+## 25a2. `/sequence` — Batched Multi-Step Operations
+
+Verifies `POST /sequence` runs steps in order, in one round trip, and stops at
+the first step that can't resolve.
+
+1. `./scripts/devtool.sh sequence '[{"type":"press","element_id":"ws-card-0"},{"type":"wait_for_element","element_id":"connecting-close-button","timeout_ms":3000}]'`
+   — expected: `"ok":true`, `"steps_completed":2`, both step results present,
+   the `wait_for_element` result has `"found":true`.
+2. Same but with a deliberately-wrong element in the middle step (e.g.
+   `"does-not-exist"` with a short `timeout_ms`) followed by a third step —
+   expected: `"ok":false`, `"steps_completed":2` (not 3 — the third step must
+   never run), the failing step's result shows the timeout error.
+3. A step with `"type":"bogus_type"` — expected: `"ok":false` and
+   `"error":"unknown step type: ..."` for that step, sequence stops there.
+4. Malformed JSON body or `[]` (empty steps array) — expected: `400 Bad
+   Request` with a clear `"error"` field, not a partial/empty 200.
+
+## 25b. iOS Log Daemon (fixed location + simulator/device capture)
+
+1. `./scripts/ios-log.sh daemon start`, then immediately `./scripts/ios-log.sh daemon stop`
+   (same shell) — expected: stop reports the daemon's pgid and actually terminates it; confirm
+   no `devicectl`/`simctl launch` process survives (`ps aux`) — rotation is an in-process bash
+   function (`rotate_sink`) piped into from the same backgrounded pipeline, not a separate
+   process, so there's nothing beyond the capture pipeline itself to check for.
+2. Start again, `./scripts/ios-log.sh daemon status` — expected: reports running with a
+   growing log size/line count; `./scripts/ios-log.sh query --since 1m` returns recent lines.
+3. With a simulator as the active target (per `run-ios.sh sim`'s saved pref), confirm `start`
+   logs "... via simctl console (relaunches the app)" and that the app visibly relaunches
+   (terminate-and-relaunch, same as device — no more "attaches to whatever's running").
+4. With a physical device as the active target (per `run-ios.sh device`'s saved pref), confirm
+   `start` logs "... via devicectl console (relaunches the app)" and that the app visibly
+   relaunches; confirm captured lines are fully readable on **both** simulator and device (no
+   `<private>` or `<decode: missing data>` on either) and each carries a `Mon DD HH:MM:SS`
+   timestamp (from `crates/zedra/src/ios/logger.rs`'s stderr sink) — without it, `--since`/
+   `--until` can't discriminate recent from stale lines. Confirm `--since 1h --until 1h` (a
+   window with no possible overlap) returns nothing.
+5. Regression check: run `start` then `stop` from two different shells — expected: `stop`
+   still finds and kills the daemon (fixed path, not session-scoped). Same for device/sim
+   *selection*: it now reads one global pref file (`/tmp/zedra-ios-device`, no `$PPID`), so a
+   `bridge-ios`/`ios-log.sh daemon start` from a different shell than the one that ran
+   `run-ios.sh` picks the same target, not a divergent fallback guess.
+6. Port-collision guard: with a simulator built `--devtool` running (bound directly to 9777)
+   and a physical device also connected, set the pref to the device and run
+   `./scripts/devtool.sh bridge-ios` — expected: it refuses with an error naming the existing
+   `pid` and does *not* start `iproxy`. Switch the pref back to the simulator and re-run
+   `bridge-ios` — expected: `/ping`'s `pid` matches the simulator's process, and no stray
+   `iproxy` remains (`ps aux | grep iproxy`).
