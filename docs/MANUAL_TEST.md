@@ -460,7 +460,7 @@ app still builds, but push registration reports an error instead of a token.
 
 ## 1d. Windows Host CLI
 
-1. On an x86_64 Windows machine, run `powershell -c "irm https://zedra.dev/install.ps1 | iex"` from Command Prompt or Windows Terminal
+1. On an x86_64 Windows machine, run `irm https://zedra.dev/install.ps1 | iex` from PowerShell
 2. Expected: `zedra.exe` is installed under `%LOCALAPPDATA%\Programs\zedra\bin`, the directory is added to the user `Path`, and `zedra --help` works from the current shell
 3. Start the daemon from PowerShell: `zedra start --workdir C:\path\to\repo --detach`
 4. Expected: startup succeeds, Windows may show a firewall prompt, and `daemon.lock` plus `daemon.log` are written under `%APPDATA%\zedra\workspaces\` using their respective workspace hashes
