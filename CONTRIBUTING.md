@@ -97,7 +97,7 @@ physical device when changing app behavior. Helper scripts are mainly for logs,
 quick rebuilds, and simulator deeplinks:
 
 ```sh
-./scripts/log-ios.sh --filter zedra
+./scripts/ios-log.sh tail --filter zedra
 ./scripts/run-ios.sh sim --no-build --launch-url 'zedra://connect?ticket=...'
 ```
 

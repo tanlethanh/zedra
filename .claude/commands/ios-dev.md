@@ -4,24 +4,29 @@ Build, install, launch, and monitor the iOS app on a connected device.
 
 - `--preview` — enable the `preview` cargo feature (opens `PreviewApp` instead of `ZedraApp`)
 - `--debug` — use debug Rust profile (faster compile, no optimizations)
+- `--devtool` — enable the in-app HTTP devtool (127.0.0.1:9777, debug only); see `docs/DEVTOOL.md`
 - `--select-device` — ignore saved preference and prompt for device selection
 
 Flags can be combined: `./scripts/run-ios.sh device --preview --debug`
 
 ## Device selection
 
-The device preference is scoped to this Claude Code session using `$PPID` (the parent
-process ID, which is stable for the lifetime of one Claude Code session).
+The device preference is one global target per repo checkout — not scoped to a
+session or shell. Earlier this used `$PPID`, but a child script sees its
+invoker's PID, not the invoker's own `$PPID`, so that scoping was fragile
+across separate tool calls and let `devtool.sh`/`ios-log.sh daemon` silently
+diverge on which device they thought was current. Shared by `run-ios.sh`,
+`ios-log.sh`, and `devtool.sh`.
 
 ```bash
-PREF_FILE="/tmp/zedra-ios-device-$PPID"
+PREF_FILE="/tmp/zedra-ios-device"
 ```
 
 **Step 1 — Check for saved preference** (skip if `--select-device` was passed):
 ```bash
 cat "$PREF_FILE" 2>/dev/null
 ```
-The file contains `<UDID>|<Name>` if a device was already chosen this session.
+The file contains `<UDID>|<Name>` if a device was already chosen.
 
 **Step 2 — If no preference (or `--select-device`)**, enumerate connected devices:
 ```bash
@@ -35,7 +40,7 @@ and idevicesyslog). Then use `AskUserQuestion` to present the list and ask the u
 >
 > Which device would you like to target?
 
-**Step 3 — Save the chosen device** for the rest of this session:
+**Step 3 — Save the chosen device** as the current global target:
 ```bash
 echo "<UDID>|<Name>" > "$PREF_FILE"
 ```

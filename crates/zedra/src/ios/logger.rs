@@ -1,4 +1,17 @@
-/// iOS logger that routes `log` output through NSLog (visible in idevicesyslog).
+/// iOS logger. Every message goes out on two independent, intentionally
+/// duplicate channels — deliberate, not something to consolidate to one:
+///
+/// | Channel | Written by                | Read by                          |
+/// |---------|----------------------------|-----------------------------------|
+/// | NSLog (unified logging) | `zedra_nslog` FFI → `nslog_bridge.m` | Console.app (has local dSYM, decodes fine) |
+/// | stderr (raw stdio)      | `eprintln!` below, timestamped       | `xcrun devicectl device process launch --console` — what `scripts/ios-log.sh daemon` actually uses |
+///
+/// Neither channel subsumes the other. `idevicesyslog` reads the NSLog
+/// channel but can't locally decode a third-party binary's compact log
+/// entries without its dSYM (shows `<decode: missing data>` regardless of
+/// the `%{public}s` marker in `nslog_bridge.m`) — that's *why* the stderr
+/// channel exists, not a redundant afterthought. Console.app has no CLI/
+/// automation equivalent, so it stays on NSLog. See docs/DEVTOOL.md.
 ///
 /// Release builds use only this path. `tracing` macros are not subscribed unless
 /// the `debug-logs` feature is enabled — matching v0.2.4 behavior and avoiding
@@ -106,6 +119,11 @@ impl Drop for IosTracingWriter {
 }
 
 fn write_ios_log(message: &str) {
+    // Classic syslog timestamp ("Jul  6 17:42:55"), matching idevicesyslog's own
+    // format — devicectl's --console capture has no per-line timestamp otherwise,
+    // which would break ios-log.sh's `query` time-range filtering.
+    let timestamp = chrono::Local::now().format("%b %e %H:%M:%S");
+    eprintln!("{timestamp} {message}");
     if let Ok(c) = CString::new(message) {
         unsafe { zedra_nslog(c.as_ptr()) };
     }
