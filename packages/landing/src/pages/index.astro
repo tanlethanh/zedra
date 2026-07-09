@@ -1,4 +1,13 @@
 ---
+import { Picture } from "astro:assets";
+
+import codeEditorImg from "../assets/demo/code-editor.png";
+import fileExplorerSearchImg from "../assets/demo/file-explorer-search.png";
+import gitImg from "../assets/demo/git.png";
+import manageAgentsImg from "../assets/demo/manage-agents.png";
+import markdownImg from "../assets/demo/markdown.png";
+import remoteTerminalImg from "../assets/demo/remote-terminal.png";
+
 // Each tab has blocks[]. Each block has lines[] and gets its own copy button.
 // Copy text = non-comment lines joined by \n.
 const installTabs = [
@@ -118,6 +127,9 @@ const socialLinks = [
 ];
 
 const demoVideo = "/zedra-demo-17-06.mp4";
+const demoImageFormats = ["avif", "webp"] as const;
+const demoImageWidths = [460, 680, 920, 1360];
+const demoImageSizes = "(max-width: 900px) min(460px, calc(100vw - 24px)), 680px";
 
 const supportedAgents = [
   { name: "Claude Code", href: "/claude-code" },
@@ -139,7 +151,7 @@ const features = [
     icon: lucide('<polyline points="4 17 10 11 4 5"/><line x1="12" x2="20" y1="19" y2="19"/>'),
     body: "Run Claude Code, Codex, OpenCode, or any CLI in a real terminal on your machine. Type, scroll history, and answer approval prompts as they appear.",
     demo: "terminal: agent running, approval prompt on screen",
-    demoImg: "/demo/remote-terminal.png",
+    demoImg: remoteTerminalImg,
   },
   {
     title: "Manage agents",
@@ -148,7 +160,7 @@ const features = [
     ),
     body: "See every agent across your workspaces: what is running, what needs you, current usage, and recent sessions you can resume.",
     demo: "agents: usage card and session history",
-    demoImg: "/demo/manage-agents.png",
+    demoImg: manageAgentsImg,
   },
   {
     title: "File browser & search",
@@ -157,14 +169,14 @@ const features = [
     ),
     body: "Browse the repo tree, search across files, and get a docs tree for quick access to the files agents reference most.",
     demo: "file browser: repo tree, search open",
-    demoImg: "/demo/file-explorer-search.png",
+    demoImg: fileExplorerSearchImg,
   },
   {
     title: "Code editor",
     icon: lucide('<polyline points="16 18 22 12 16 6"/><polyline points="8 6 2 12 8 18"/>'),
     body: "Read code with highlighting, GPU scrolling, native selection, and code mentions back to agent chat.",
     demo: "editor: the file the agent just changed",
-    demoImg: "/demo/code-editor.png",
+    demoImg: codeEditorImg,
   },
   {
     title: "Git view",
@@ -173,7 +185,7 @@ const features = [
     ),
     body: "Review the agent's changes file by file, with staged and unstaged diffs ready before you commit.",
     demo: "git diff: staged and unstaged changes",
-    demoImg: "/demo/git.png",
+    demoImg: gitImg,
   },
   {
     title: "Markdown preview",
@@ -182,7 +194,7 @@ const features = [
     ),
     body: "Read docs, plans, specs, and agent reports as rendered Markdown, with Mermaid diagrams, tables, and code blocks.",
     demo: "markdown: a plan rendered for reading",
-    demoImg: "/demo/markdown.png",
+    demoImg: markdownImg,
   },
 ];
 
@@ -259,9 +271,9 @@ const faqSchema = {
   })),
 };
 
-const pageTitle = "Zedra - Remote Control for AI Coding Agents";
+const pageTitle = "Zedra \u2014 Remote control for AI coding agents";
 const pageDescription =
-  "A real dev workspace on your phone: terminal, code editor, and git diff for Claude Code, Codex, or any agent. Direct, encrypted tunnel to your machine. No VPN.";
+  "Remote control for AI coding agents, with a dev workspace on your phone: terminal, editor, markdown, and git diff. Pair by QR for a direct encrypted tunnel. No VPN.";
 const canonicalUrl = "https://zedra.dev/";
 ---
 
@@ -292,8 +304,8 @@ const canonicalUrl = "https://zedra.dev/";
     <meta name="twitter:title" content={pageTitle} />
     <meta name="twitter:description" content={pageDescription} />
     <meta name="twitter:image" content="https://zedra.dev/OG.png" />
-    <meta name="twitter:image:alt" content="Zedra: a real dev workspace on your phone" />
-    <meta property="og:image:alt" content="Zedra: a real dev workspace on your phone" />
+    <meta name="twitter:image:alt" content="Zedra: remote control for AI coding agents" />
+    <meta property="og:image:alt" content="Zedra: remote control for AI coding agents" />
     <link rel="canonical" href={canonicalUrl} />
     <link rel="icon" href="/favicon.ico" sizes="32x32" />
     <link rel="icon" type="image/svg+xml" href="/favicon.svg" />
@@ -1660,7 +1672,17 @@ const canonicalUrl = "https://zedra.dev/";
                     data-slide={i}
                   >
                     {feature.demoImg ? (
-                      <img src={feature.demoImg} alt="" loading="lazy" />
+                      <Picture
+                        src={feature.demoImg}
+                        alt=""
+                        loading="lazy"
+                        decoding="async"
+                        formats={demoImageFormats}
+                        fallbackFormat="png"
+                        widths={demoImageWidths}
+                        sizes={demoImageSizes}
+                        quality="high"
+                      />
                     ) : (
                       <>
                         <span class="demo-label">{feature.demo}</span>
@@ -1683,7 +1705,18 @@ const canonicalUrl = "https://zedra.dev/";
                     </div>
                     <p>{feature.body}</p>
                     {feature.demoImg && (
-                      <img class="step-img" src={feature.demoImg} alt={feature.title} loading="lazy" />
+                      <Picture
+                        class="step-img"
+                        src={feature.demoImg}
+                        alt={feature.title}
+                        loading="lazy"
+                        decoding="async"
+                        formats={demoImageFormats}
+                        fallbackFormat="png"
+                        widths={demoImageWidths}
+                        sizes={demoImageSizes}
+                        quality="high"
+                      />
                     )}
                   </div>
                 ))
