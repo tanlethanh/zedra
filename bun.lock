@@ -17,6 +17,7 @@
         "@astrojs/vercel": "^9.0.4",
         "astro": "^5.17.1",
         "firebase": "^12.11.0",
+        "sharp": "^0.34.5",
       },
     },
     "packages/relay-check": {

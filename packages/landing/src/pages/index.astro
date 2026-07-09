@@ -127,9 +127,10 @@ const socialLinks = [
 ];
 
 const demoVideo = "/zedra-demo-17-06.mp4";
-const demoImageFormats = ["avif", "webp"] as const;
+const demoImageFormats = ["webp", "avif"] as const;
 const demoImageWidths = [460, 680, 920, 1360];
 const demoImageSizes = "(max-width: 900px) min(460px, calc(100vw - 24px)), 680px";
+const demoImageQuality = 100;
 
 const supportedAgents = [
   { name: "Claude Code", href: "/claude-code" },
@@ -734,9 +735,14 @@ const canonicalUrl = "https://zedra.dev/";
         justify-items: stretch;
       }
 
+      .demo-slide.has-img picture,
       .demo-slide.has-img img {
         width: 100%;
         height: 100%;
+        display: block;
+      }
+
+      .demo-slide.has-img img {
         /* contain, not cover: all slides share one frame box but each
            capture has its own native aspect ratio — cover cropped whatever
            didn't match (cut straight through the keyboard on the terminal
@@ -744,7 +750,6 @@ const canonicalUrl = "https://zedra.dev/";
            the cosmic background instead of clipping content. */
         object-fit: contain;
         object-position: center;
-        display: block;
       }
 
       .demo-label {
@@ -1681,7 +1686,7 @@ const canonicalUrl = "https://zedra.dev/";
                         fallbackFormat="png"
                         widths={demoImageWidths}
                         sizes={demoImageSizes}
-                        quality="high"
+                        quality={demoImageQuality}
                       />
                     ) : (
                       <>
@@ -1715,7 +1720,7 @@ const canonicalUrl = "https://zedra.dev/";
                         fallbackFormat="png"
                         widths={demoImageWidths}
                         sizes={demoImageSizes}
-                        quality="high"
+                        quality={demoImageQuality}
                       />
                     )}
                   </div>
