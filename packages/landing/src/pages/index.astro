@@ -2550,6 +2550,9 @@ const canonicalUrl = "https://zedra.dev/";
           }
           ctx.restore();
         };
+        // Repaint the static frame when each icon finishes loading, so chips/cards
+        // aren't icon-less under prefers-reduced-motion if SVGs arrive late.
+        for (const img of Object.values(icons)) img.addEventListener("load", () => draw(1.1));
         runCanvasLoop(agents, resize, draw, 1.1);
       }
 

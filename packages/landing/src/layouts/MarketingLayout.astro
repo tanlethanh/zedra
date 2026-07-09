@@ -44,10 +44,12 @@ const canonicalUrl = path === "/" ? "https://zedra.dev/" : `https://zedra.dev${p
     <link rel="apple-touch-icon" href="/apple-touch-icon.png" />
     <link rel="preconnect" href="https://fonts.googleapis.com" />
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+    <link
+      rel="stylesheet"
+      href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500;600&family=Lora:wght@400&display=swap"
+    />
     {jsonLd.map((schema) => <script type="application/ld+json" set:html={JSON.stringify(schema)} />)}
     <style is:global>
-      @import url("https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500;600&family=Lora:wght@400&display=swap");
-
       *,
       *::before,
       *::after {
