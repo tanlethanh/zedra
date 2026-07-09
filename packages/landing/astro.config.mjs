@@ -73,6 +73,17 @@ export default defineConfig({
       sidebar: [
         { label: "Why Zedra?", slug: "docs" },
         { label: "Installation", slug: "docs/installation" },
+        {
+          label: "Guides",
+          items: [
+            { label: "Run Claude Code from phone", slug: "docs/guides/run-claude-code-from-phone" },
+            { label: "Run Codex CLI from phone", slug: "docs/guides/run-codex-cli-from-phone" },
+            {
+              label: "Control agents from iPhone",
+              slug: "docs/guides/control-coding-agents-from-iphone",
+            },
+          ],
+        },
         { label: "Security & architecture", slug: "docs/security" },
         { label: "Troubleshooting", slug: "docs/troubleshooting" },
         {

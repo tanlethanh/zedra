@@ -23,6 +23,12 @@ const pages = [
   { path: "/compare/blink-shell", jsonLd: ["FAQPage"] },
 ];
 
+const guidePaths = [
+  "/docs/guides/run-claude-code-from-phone",
+  "/docs/guides/run-codex-cli-from-phone",
+  "/docs/guides/control-coding-agents-from-iphone",
+];
+
 const failures = [];
 const fail = (page, msg) => failures.push(`${page}: ${msg}`);
 
@@ -48,6 +54,35 @@ const sitemap = readFileSync(join(DIST, "sitemap-0.xml"), "utf8");
 const robots = readFileSync(join(DIST, "robots.txt"), "utf8");
 if (!robots.includes(`${SITE}/sitemap-index.xml`)) {
   fail("robots.txt", "missing Sitemap: line pointing at sitemap-index.xml");
+}
+for (const agent of ["OAI-SearchBot", "ChatGPT-User", "GPTBot", "Googlebot", "Bingbot"]) {
+  if (!robots.includes(`User-agent: ${agent}`)) {
+    fail("robots.txt", `missing explicit ${agent} policy`);
+  }
+}
+
+const llmsPath = join(DIST, "llms.txt");
+if (!existsSync(llmsPath)) {
+  fail("llms.txt", "missing public AI content map");
+} else {
+  const llms = readFileSync(llmsPath, "utf8");
+  for (const required of [
+    "https://zedra.dev/docs/installation/",
+    "https://zedra.dev/claude-code/",
+    "https://zedra.dev/codex/",
+    "https://zedra.dev/mobile-coding-agents/",
+  ]) {
+    if (!llms.includes(required)) fail("llms.txt", `missing ${required}`);
+  }
+}
+
+for (const path of guidePaths) {
+  const canonicalUrl = `${SITE}${path}/`;
+  const file = join(DIST, `${path.slice(1)}/index.html`);
+  if (!existsSync(file)) fail(path, `built guide missing at ${file}`);
+  if (!sitemap.includes(`<loc>${canonicalUrl}</loc>`)) {
+    fail(path, "guide URL not in sitemap-0.xml");
+  }
 }
 
 for (const { path, jsonLd } of pages) {
@@ -95,6 +130,11 @@ for (const { path, jsonLd } of pages) {
   for (const required of jsonLd) {
     if (!types.includes(required)) {
       fail(path, `missing JSON-LD @type "${required}" (found: ${types.join(", ") || "none"})`);
+    }
+  }
+  for (const required of ["Organization", "WebSite"]) {
+    if (!types.includes(required)) {
+      fail(path, `missing base JSON-LD @type "${required}"`);
     }
   }
 

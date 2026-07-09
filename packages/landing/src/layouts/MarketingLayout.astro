@@ -1,6 +1,8 @@
 ---
 // Shared shell for marketing pages (/claude-code, /codex, /compare, ...).
 // Matches the landing page: dark, IBM Plex Mono, same tokens and footer.
+import { baseSchemas } from "../seo";
+
 interface Props {
   title: string;
   description: string;
@@ -12,6 +14,7 @@ const { title, description, path, jsonLd = [] } = Astro.props;
 // Trailing slash matches @astrojs/sitemap output — canonical and sitemap
 // must agree or Google treats them as two URLs.
 const canonicalUrl = path === "/" ? "https://zedra.dev/" : `https://zedra.dev${path}/`;
+const schemas = [...baseSchemas, ...jsonLd];
 ---
 
 <!doctype html>
@@ -48,7 +51,7 @@ const canonicalUrl = path === "/" ? "https://zedra.dev/" : `https://zedra.dev${p
       rel="stylesheet"
       href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500;600&family=Lora:wght@400&display=swap"
     />
-    {jsonLd.map((schema) => <script type="application/ld+json" set:html={JSON.stringify(schema)} />)}
+    {schemas.map((schema) => <script type="application/ld+json" set:html={JSON.stringify(schema)} />)}
     <style is:global>
       *,
       *::before,

@@ -7,6 +7,7 @@ import gitImg from "../assets/demo/git.png";
 import manageAgentsImg from "../assets/demo/manage-agents.png";
 import markdownImg from "../assets/demo/markdown.png";
 import remoteTerminalImg from "../assets/demo/remote-terminal.png";
+import { baseSchemas } from "../seo";
 
 // Each tab has blocks[]. Each block has lines[] and gets its own copy button.
 // Copy text = non-comment lines joined by \n.
@@ -325,14 +326,18 @@ const canonicalUrl = "https://zedra.dev/";
         applicationCategory: "DeveloperApplication",
         operatingSystem: "iOS, Android",
         offers: { "@type": "Offer", price: "0", priceCurrency: "USD" },
-        author: { "@type": "Organization", name: "Zedra", url: canonicalUrl },
+        author: { "@id": "https://zedra.dev/#organization" },
+        publisher: { "@id": "https://zedra.dev/#organization" },
         sameAs: [
           "https://github.com/tanlethanh/zedra",
           "https://x.com/zedradev",
+          "https://discord.gg/39MmkSS8sc",
           "https://apps.apple.com/app/zedra-code-from-anywhere/id6760534630",
+          "https://play.google.com/store/apps/details?id=dev.zedra.app",
         ],
       })}
     />
+    {baseSchemas.map((schema) => <script type="application/ld+json" set:html={JSON.stringify(schema)} />)}
     <script type="application/ld+json" set:html={JSON.stringify(faqSchema)} />
     <style>
       @import url("https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500;600&family=Lora:wght@400&display=swap");

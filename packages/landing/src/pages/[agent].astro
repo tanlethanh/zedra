@@ -15,6 +15,17 @@ if (!page) {
 }
 
 const siblings = pages.filter((p) => p.slug !== page.slug);
+const guideByAgent: Record<string, { href: string; label: string }> = {
+  "claude-code": {
+    href: "/docs/guides/run-claude-code-from-phone/",
+    label: "How to run Claude Code from your phone",
+  },
+  codex: {
+    href: "/docs/guides/run-codex-cli-from-phone/",
+    label: "How to run Codex CLI from your phone",
+  },
+};
+const guide = guideByAgent[page.slug];
 
 const faqSchema = {
   "@context": "https://schema.org",
@@ -35,6 +46,18 @@ const appSchema = {
   applicationCategory: "DeveloperApplication",
   operatingSystem: "iOS, Android",
   offers: { "@type": "Offer", price: "0", priceCurrency: "USD" },
+  publisher: { "@id": "https://zedra.dev/#organization" },
+  isPartOf: { "@id": "https://zedra.dev/#website" },
+  about: [
+    { "@type": "SoftwareApplication", name: page.name },
+    { "@type": "Thing", name: "mobile coding agents" },
+    { "@type": "Thing", name: "remote code editor" },
+  ],
+  sameAs: [
+    "https://github.com/tanlethanh/zedra",
+    "https://apps.apple.com/app/zedra-code-from-anywhere/id6760534630",
+    "https://play.google.com/store/apps/details?id=dev.zedra.app",
+  ],
 };
 ---
 
@@ -81,7 +104,7 @@ const appSchema = {
       <h3>Run the daemon</h3>
       <pre
         class="mk-code"><span class="c"># In your working directory</span>
-zedra start -d</pre>
+zedra start --detach</pre>
       <p>Or start it from inside the agent: {page.startNote} <code>{page.startCmd}</code>.</p>
     </div>
     <div class="mk-step">
@@ -93,6 +116,18 @@ zedra start -d</pre>
       </p>
     </div>
   </div>
+
+  {
+    guide && (
+      <>
+        <h2>Step-by-step guide</h2>
+        <p>
+          Need the full walkthrough? Read <a href={guide.href}>{guide.label}</a> for install,
+          pairing, agent setup, and troubleshooting steps.
+        </p>
+      </>
+    )
+  }
 
   <h2>What you get on the phone</h2>
   <ul>

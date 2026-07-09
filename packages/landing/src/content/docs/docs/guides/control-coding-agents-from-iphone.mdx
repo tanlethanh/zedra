@@ -1,0 +1,91 @@
+---
+title: How to control coding agents from iPhone
+description: Use Zedra to control Claude Code, Codex, OpenCode, and other terminal-based coding agents from iPhone or iPad.
+---
+
+Most coding agents are desktop tools. Zedra keeps them there and turns your iPhone or iPad into a remote workspace for the same machine: terminal, files, editor, markdown preview, git diff, history, and notifications.
+
+## Choose the agent setup
+
+Use the setup command for the agent you want to control:
+
+```sh
+zedra setup claude    # Claude Code
+zedra setup codex     # Codex CLI
+zedra setup opencode  # OpenCode
+```
+
+To set up every detected agent:
+
+```sh
+zedra setup
+```
+
+Zedra also works with terminal-based agents and CLI tools because the phone gets an interactive terminal connected to your machine.
+
+## Install Zedra
+
+On your computer:
+
+```sh
+curl -fsSL zedra.dev/install.sh | sh
+```
+
+On Windows:
+
+```powershell
+powershell -c "irm zedra.dev/install.ps1 | iex"
+```
+
+On your phone, install Zedra from the [App Store](https://apps.apple.com/app/zedra-code-from-anywhere/id6760534630). Android users can install from [Google Play](https://play.google.com/store/apps/details?id=dev.zedra.app).
+
+## Start a workspace
+
+Run Zedra from the project directory you want to control:
+
+```sh
+cd /path/to/project
+zedra start
+```
+
+This prints a QR code for pairing. A project directory is a Zedra workspace, so start the daemon in each project you want to reach.
+
+For a background daemon:
+
+```sh
+zedra start --detach
+```
+
+## Pair the phone
+
+1. Open Zedra on your iPhone or iPad.
+2. Tap **Scan QR**.
+3. Scan the QR printed by the desktop daemon.
+
+The QR carries identity material for the workspace. After pairing, reconnects use device keys, so the connection survives network changes.
+
+## Control the agent
+
+Open the paired workspace on your phone, then use the terminal to run the agent:
+
+```sh
+claude
+codex
+opencode
+```
+
+When the agent changes files, use the file browser, editor, and git diff views to inspect the result before committing.
+
+## Why not just use SSH?
+
+SSH works if you want a terminal and already have networking solved. Zedra adds mobile pairing, notifications, file browsing, code reading, markdown preview, git diff, and agent-specific hooks without requiring a VPN or port forwarding.
+
+## Security model
+
+Your code and agents stay on your computer. Zedra connects directly when possible and uses encrypted relay fallback when networks block the direct path. Relays forward encrypted packets and cannot read terminal output, files, or code. Read [Security & architecture](/docs/security/) for details.
+
+## Next
+
+- [Run Claude Code from your phone](/docs/guides/run-claude-code-from-phone/).
+- [Run Codex CLI from your phone](/docs/guides/run-codex-cli-from-phone/).
+- [Compare mobile AI coding agent apps](/compare/).

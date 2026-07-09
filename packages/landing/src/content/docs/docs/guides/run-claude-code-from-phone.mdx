@@ -1,0 +1,87 @@
+---
+title: How to run Claude Code from your phone
+description: Set up Zedra to control Claude Code from iPhone, iPad, or Android while Claude Code keeps running on your own machine.
+---
+
+Claude Code runs on your computer. Zedra gives your phone a remote workspace for that machine: terminal, file browser, code editor, git diff, markdown preview, and notifications when Claude Code needs you.
+
+## What you need
+
+- Claude Code installed and signed in on your computer.
+- Zedra installed on your computer and phone.
+- A project directory you want to control from your phone.
+
+## 1. Install Zedra on your computer
+
+```sh
+curl -fsSL zedra.dev/install.sh | sh
+```
+
+On Windows:
+
+```powershell
+powershell -c "irm zedra.dev/install.ps1 | iex"
+```
+
+## 2. Install the Claude Code integration
+
+Run this once on the computer where Claude Code is installed:
+
+```sh
+zedra setup claude
+```
+
+This installs the hooks Zedra uses for session tracking and waiting notifications.
+
+## 3. Start a Zedra workspace
+
+Open the project directory you want to reach from your phone:
+
+```sh
+cd /path/to/project
+zedra start
+```
+
+`zedra start` prints a QR code. Leave this process running while you pair the phone.
+
+For a background daemon:
+
+```sh
+zedra start --detach
+```
+
+## 4. Pair your phone
+
+1. Install Zedra from the [App Store](https://apps.apple.com/app/zedra-code-from-anywhere/id6760534630) or [Google Play](https://play.google.com/store/apps/details?id=dev.zedra.app).
+2. Open the app.
+3. Tap **Scan QR**.
+4. Scan the QR printed by `zedra start`.
+
+Pairing is one-time per workspace. The QR registers device keys; it does not move your source code into Zedra's cloud.
+
+## 5. Start Claude Code from your phone
+
+After pairing, open the workspace in Zedra and use the terminal to run Claude Code as usual. You can also start through the Zedra Claude integration:
+
+```sh
+/zedra-start
+```
+
+The phone terminal is interactive, so Claude Code permission prompts, follow-up prompts, and command output are visible from the phone.
+
+## What Zedra adds around Claude Code
+
+- Approve Claude Code prompts from your phone.
+- Read changed files in a mobile code editor.
+- Review staged and unstaged git diffs.
+- Read plans, specs, and reports in markdown preview.
+- Get notified when Claude Code finishes or waits for approval.
+
+## Troubleshooting
+
+If the phone cannot connect, check [Troubleshooting](/docs/troubleshooting/). If you want to understand what relays can see, read [Security & architecture](/docs/security/).
+
+## Next
+
+- [Run Claude Code from your phone](/claude-code/) for the product overview.
+- [Mobile coding agents](/mobile-coding-agents/) for Codex, OpenCode, and other CLI agents.
