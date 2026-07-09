@@ -1,0 +1,160 @@
+---
+import { pages } from "../agent-pages";
+// Intent landing pages: /claude-code, /codex, /opencode.
+// One template, per-agent copy. Facts must match /docs/installation.
+import MarketingLayout from "../layouts/MarketingLayout.astro";
+
+export function getStaticPaths() {
+  return pages.map((page) => ({ params: { agent: page.slug } }));
+}
+
+const { agent } = Astro.params;
+const page = pages.find((p) => p.slug === agent);
+if (!page) {
+  throw new Error(`Unknown agent page: ${agent}`);
+}
+
+const siblings = pages.filter((p) => p.slug !== page.slug);
+const guideByAgent: Record<string, { href: string; label: string }> = {
+  "claude-code": {
+    href: "/docs/guides/run-claude-code-from-phone/",
+    label: "How to run Claude Code from your phone",
+  },
+  codex: {
+    href: "/docs/guides/run-codex-cli-from-phone/",
+    label: "How to run Codex CLI from your phone",
+  },
+};
+const guide = guideByAgent[page.slug];
+
+const faqSchema = {
+  "@context": "https://schema.org",
+  "@type": "FAQPage",
+  mainEntity: page.faq.map((item) => ({
+    "@type": "Question",
+    name: item.q,
+    acceptedAnswer: { "@type": "Answer", text: item.a.replace(/`/g, "") },
+  })),
+};
+
+const appSchema = {
+  "@context": "https://schema.org",
+  "@type": "SoftwareApplication",
+  name: "Zedra",
+  description: page.description,
+  url: `https://zedra.dev/${page.slug}`,
+  applicationCategory: "DeveloperApplication",
+  operatingSystem: "iOS, Android",
+  offers: { "@type": "Offer", price: "0", priceCurrency: "USD" },
+  publisher: { "@id": "https://zedra.dev/#organization" },
+  isPartOf: { "@id": "https://zedra.dev/#website" },
+  about: [
+    { "@type": "SoftwareApplication", name: page.name },
+    { "@type": "Thing", name: "mobile coding agents" },
+    { "@type": "Thing", name: "remote code editor" },
+  ],
+  sameAs: [
+    "https://github.com/tanlethanh/zedra",
+    "https://apps.apple.com/app/zedra-code-from-anywhere/id6760534630",
+    "https://play.google.com/store/apps/details?id=dev.zedra.app",
+  ],
+};
+---
+
+<MarketingLayout
+  title={page.title}
+  description={page.description}
+  path={`/${page.slug}`}
+  jsonLd={[faqSchema, appSchema]}
+>
+  <h1>Run {page.name} from your phone</h1>
+  <p>{page.intro}</p>
+
+  <ul>
+    <li>
+      <a
+        href="https://apps.apple.com/app/zedra-code-from-anywhere/id6760534630"
+        target="_blank"
+        rel="noopener noreferrer">Download iOS</a
+      >
+    </li>
+    <li>
+      <a
+        href="https://play.google.com/store/apps/details?id=dev.zedra.app"
+        target="_blank"
+        rel="noopener noreferrer">Download Android</a
+      >
+    </li>
+    <li><a href="/docs/installation/">Installation guide</a></li>
+  </ul>
+
+  <h2>Set up the host</h2>
+  <div class="mk-steps">
+    <div class="mk-step">
+      <h3>Install Zedra on your machine</h3>
+      <pre class="mk-code">curl -fsSL zedra.dev/install.sh | sh</pre>
+    </div>
+    <div class="mk-step">
+      <h3>Hook up {page.name}</h3>
+      <pre
+        class="mk-code"><span class="c"># Installs hooks for notifications and session tracking</span>
+{page.setupCmd}</pre>
+    </div>
+    <div class="mk-step">
+      <h3>Run the daemon</h3>
+      <pre
+        class="mk-code"><span class="c"># In your working directory</span>
+zedra start --detach</pre>
+      <p>Or start it from inside the agent: {page.startNote} <code>{page.startCmd}</code>.</p>
+    </div>
+    <div class="mk-step">
+      <h3>Pair your phone</h3>
+      <p>
+        Open Zedra on your phone and scan the QR the daemon prints. Pairing is once per workspace;
+        the connection survives network changes after that. Full steps in the
+        <a href="/docs/installation/">installation guide</a>.
+      </p>
+    </div>
+  </div>
+
+  {
+    guide && (
+      <>
+        <h2>Step-by-step guide</h2>
+        <p>
+          Need the full walkthrough? Read <a href={guide.href}>{guide.label}</a> for install,
+          pairing, agent setup, and troubleshooting steps.
+        </p>
+      </>
+    )
+  }
+
+  <h2>What you get on the phone</h2>
+  <ul>
+    <li>A real terminal for {page.name}: send input, scroll history, answer prompts.</li>
+    <li>File browser, docs tree, and code editor for reading what changed.</li>
+    <li>Git view for staged and unstaged diffs before anything lands.</li>
+    <li>Markdown preview for docs, plans, specs, and agent reports.</li>
+    <li>Push notifications when {page.name} finishes or needs approval.</li>
+  </ul>
+
+  <h2>FAQ</h2>
+  <div class="mk-faq">
+    {
+      page.faq.map((item) => (
+        <details>
+          <summary>{item.q}</summary>
+          <p set:html={item.a.replace(/`([^`]+)`/g, "<code>$1</code>")} />
+        </details>
+      ))
+    }
+  </div>
+
+  <h2>Works with your other agents too</h2>
+  <p>
+    Zedra is agent-neutral. The same workspace runs
+    {siblings.map((p) => <Fragment><a href={`/${p.slug}`}>{p.name}</a>, </Fragment>)}
+    Pi, Hermes, and any CLI that belongs in your workflow. See how Zedra
+    <a href="/compare">compares to Happy, Omnara, and SSH + tmux</a>.
+  </p>
+</MarketingLayout>

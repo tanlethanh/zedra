@@ -1,0 +1,42 @@
+---
+title: Security & architecture
+description: How Zedra connects your phone to your machine — QR pairing, PKI identity, a direct end-to-end encrypted QUIC tunnel, relay fallback, and what our servers can and cannot see.
+---
+
+You are pairing your phone with the machine you code on. This page explains exactly what connects to what, what is encrypted, and what our infrastructure can see. Zedra is open source — every claim here can be checked against the [source](https://github.com/tanlethanh/zedra) and the [protocol spec](https://github.com/tanlethanh/zedra/blob/main/docs/PROTOCOL_SPECS.md).
+
+## The short version
+
+- Your code and agents stay on your machine. The phone is a remote view, not a copy.
+- Phone and desktop connect directly over QUIC/UDP (powered by [Iroh](https://github.com/n0-computer/iroh)) with TLS 1.3 end-to-end encryption.
+- When a direct path is blocked, an encrypted relay forwards packets it cannot read.
+- No account is required to pair or code. Devices trust each other through keys exchanged at QR pairing, not through our servers.
+
+## Pairing
+
+`zedra start` prints a QR code. The QR carries your machine's public key and a one-time secret — not your network address — so pairing establishes *identity*, and the connection survives IP changes, network switches, and laptop moves.
+
+After the first scan, the devices re-authenticate with public-key cryptography on every reconnect. There is no password, and nothing to phish.
+
+## The tunnel
+
+Each side holds its own key pair. The QUIC connection is end-to-end encrypted with TLS 1.3, keyed to the device identities from pairing — a relay or any middlebox on the path sees only ciphertext.
+
+Connection order:
+
+1. **Direct path.** Iroh attempts UDP hole-punching for a direct phone-to-desktop path. Most home and office networks get this.
+2. **Relay fallback.** When NAT or a firewall blocks the direct path, an encrypted relay forwards packets. The relay cannot decrypt them; it only moves bytes.
+
+If you already run Tailscale, Zedra works over it too — an extra WireGuard layer, at some latency cost.
+
+## What our servers see
+
+- **Relays** forward encrypted packets when a direct path is unavailable. They cannot read terminal output, code, or files.
+- **Push notifications** need a backend: it stores your device push token and delivers events like "agent is waiting for approval". Notification payloads carry event labels, not code.
+- **Telemetry** is anonymous, opt-out, and never includes code, paths, hostnames, or IPs. See [Telemetry](/docs/telemetry/).
+
+Your code never transits or rests on any Zedra server.
+
+## Agent credentials
+
+Zedra does not hold agent credentials. Claude Code, Codex, OpenCode, and the rest run on your machine with the logins and plans you already have; they talk to their vendors' APIs exactly as they do without Zedra.
