@@ -1119,11 +1119,13 @@ const canonicalUrl = "https://zedra.dev/";
           color 0.15s;
       }
 
-      .install-block:hover .copy-btn {
+      .install-block:hover .copy-btn,
+      .install-block:focus-within .copy-btn {
         opacity: 1;
       }
 
-      .copy-btn:hover {
+      .copy-btn:hover,
+      .copy-btn:focus-visible {
         color: var(--text);
       }
 
@@ -1483,9 +1485,9 @@ const canonicalUrl = "https://zedra.dev/";
         }
       }
 
-      /* Always show copy button on touch devices (no hover) */
+      /* Touch devices have no hover; reveal the button on focus instead. */
       @media (hover: none) {
-        .copy-btn {
+        .install-block:focus-within .copy-btn {
           opacity: 1;
         }
       }
