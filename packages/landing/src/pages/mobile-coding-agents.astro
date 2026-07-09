@@ -1,0 +1,85 @@
+---
+import MarketingLayout from "../layouts/MarketingLayout.astro";
+
+const title = "Mobile Coding Agents for iPhone and Android: Zedra";
+const description =
+  "Control Claude Code, Codex, OpenCode, and other coding agents from iPhone or Android with Zedra's terminal, files, git diff, and notifications.";
+
+const faq = [
+  {
+    q: "Can I control AI coding agents from my phone?",
+    a: "Yes. Zedra connects your phone to the machine where the agent runs, so you can answer prompts, send follow-ups, read code, and review diffs from iOS or Android.",
+  },
+  {
+    q: "Which coding agents does Zedra support?",
+    a: "Zedra has first-class setup for Claude Code, Codex, and OpenCode, and works with terminal-based agents because it gives you an interactive remote terminal.",
+  },
+  {
+    q: "Is Zedra only for Claude Code?",
+    a: "No. Zedra is agent-neutral. You can run Claude Code, Codex, OpenCode, Pi, Hermes, or other CLI tools in the same workspace.",
+  },
+  {
+    q: "How is this different from a chat app?",
+    a: "A chat app shows the conversation. Zedra shows the workspace around the conversation: terminal, file tree, editor, markdown preview, git diff, history, and notifications.",
+  },
+];
+
+const faqSchema = {
+  "@context": "https://schema.org",
+  "@type": "FAQPage",
+  mainEntity: faq.map((item) => ({
+    "@type": "Question",
+    name: item.q,
+    acceptedAnswer: { "@type": "Answer", text: item.a },
+  })),
+};
+---
+
+<MarketingLayout title={title} description={description} path="/mobile-coding-agents" jsonLd={[faqSchema]}>
+  <h1>Mobile coding agents for iPhone and Android</h1>
+  <p>
+    Coding agents are most useful when you can keep them moving. Zedra gives your phone the
+    workspace needed to approve commands, steer tasks, inspect code, and review diffs without
+    moving your source code into another cloud IDE.
+  </p>
+
+  <h2>Agent workflows</h2>
+  <ul>
+    <li><a href="/claude-code/">Run Claude Code from your phone</a></li>
+    <li><a href="/codex/">Run Codex CLI from your phone</a></li>
+    <li><a href="/opencode/">Run OpenCode from your phone</a></li>
+  </ul>
+
+  <h2>Why a workspace matters</h2>
+  <p>
+    Agent work rarely ends at a text reply. You need to see what changed, read the files, check
+    the diff, and approve the next command. Zedra keeps those actions in one mobile-native
+    workspace connected to your own machine.
+  </p>
+
+  <h2>Core features</h2>
+  <ul>
+    <li>Interactive terminal for prompts, shells, tests, and long-running sessions.</li>
+    <li>File browser and code editor for reading changes on a small screen.</li>
+    <li>Git diff view for reviewing agent output before committing.</li>
+    <li>Push notifications when agents finish or wait for approval.</li>
+    <li>Encrypted direct connection with relay fallback when the network blocks P2P.</li>
+  </ul>
+
+  <h2>FAQ</h2>
+  <div class="mk-faq">
+    {
+      faq.map((item) => (
+        <details>
+          <summary>{item.q}</summary>
+          <p>{item.a}</p>
+        </details>
+      ))
+    }
+  </div>
+
+  <p>
+    Compare options in <a href="/compare/">mobile clients for AI coding agents</a> or read the
+    broader <a href="/remote-code-editor-ipad/">remote code editor for iPhone and iPad</a> page.
+  </p>
+</MarketingLayout>

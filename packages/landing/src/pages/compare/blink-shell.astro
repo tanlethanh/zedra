@@ -1,0 +1,107 @@
+---
+import MarketingLayout from "../../layouts/MarketingLayout.astro";
+
+const title = "Zedra vs Blink Shell: Remote Coding on iPad";
+const description =
+  "Compare Zedra and Blink Shell for remote coding on iPhone and iPad: terminal, files, editor, git diff, notifications, and coding-agent workflows.";
+
+const rows = [
+  { feature: "Primary job", zedra: "Remote dev workspace", blink: "Pro terminal for iOS and iPadOS" },
+  { feature: "Terminal", zedra: "Yes", blink: "Yes" },
+  { feature: "Mosh / SSH focus", zedra: "No, custom workspace protocol", blink: "Yes" },
+  { feature: "File browser", zedra: "Native workspace files", blink: "SFTP and Files workflows" },
+  { feature: "Code editor", zedra: "Built in for reading and review", blink: "Blink Code / VS Code workflows" },
+  { feature: "Git diff", zedra: "Native diff view", blink: "CLI or external workflow" },
+  { feature: "Agent notifications", zedra: "Yes", blink: "Terminal/session based" },
+  { feature: "Best fit", zedra: "Reviewing and steering agent work from mobile", blink: "Power-user terminal and SSH/Mosh sessions" },
+];
+
+const faq = [
+  {
+    q: "Is Zedra a Blink Shell alternative?",
+    a: "It can be, if your goal is remote coding and agent control from iPhone or iPad. Blink Shell is a strong terminal-first app; Zedra is a workspace-first app with terminal, files, code editor, git diff, markdown, and notifications.",
+  },
+  {
+    q: "Should I use Blink Shell or Zedra for iPad coding?",
+    a: "Use Blink Shell if you primarily want an excellent iOS terminal with SSH and Mosh. Use Zedra if you want a mobile workspace around the terminal: code review, git diffs, file browsing, and coding-agent prompts.",
+  },
+  {
+    q: "Does Zedra support SSH or Mosh?",
+    a: "Zedra does not position itself as an SSH/Mosh client. It pairs with a Zedra daemon and streams workspace data over an encrypted connection to your machine.",
+  },
+];
+
+const faqSchema = {
+  "@context": "https://schema.org",
+  "@type": "FAQPage",
+  mainEntity: faq.map((item) => ({
+    "@type": "Question",
+    name: item.q,
+    acceptedAnswer: { "@type": "Answer", text: item.a },
+  })),
+};
+---
+
+<MarketingLayout title={title} description={description} path="/compare/blink-shell" jsonLd={[faqSchema]}>
+  <h1>Zedra vs Blink Shell for remote coding on iPad</h1>
+  <p>
+    Blink Shell is one of the strongest terminal-first tools on iOS. Zedra solves a different
+    version of the same mobile-development problem: it gives your phone or iPad a complete remote
+    workspace for the machine where your code and coding agents already run.
+  </p>
+
+  <div class="mk-table-wrap">
+    <table class="mk-table compare-table">
+      <thead>
+        <tr>
+          <th>Feature</th>
+          <th>Zedra</th>
+          <th>Blink Shell</th>
+        </tr>
+      </thead>
+      <tbody>
+        {
+          rows.map((row) => (
+            <tr>
+              <td>{row.feature}</td>
+              <td>{row.zedra}</td>
+              <td>{row.blink}</td>
+            </tr>
+          ))
+        }
+      </tbody>
+    </table>
+  </div>
+
+  <h2>Choose Zedra when</h2>
+  <ul>
+    <li>You want to control Claude Code, Codex, OpenCode, or another coding agent from mobile.</li>
+    <li>You need files, editor, markdown preview, and git diff in addition to a terminal.</li>
+    <li>You want approval/completion notifications for long-running agent work.</li>
+    <li>You prefer QR pairing to configuring SSH keys, VPNs, or port forwarding for every workflow.</li>
+  </ul>
+
+  <h2>Choose Blink Shell when</h2>
+  <ul>
+    <li>Your main workflow is SSH or Mosh into servers.</li>
+    <li>You want a terminal-first iOS environment with mature keyboard customization.</li>
+    <li>You already use VS Code web, Codespaces, or server-side editor workflows through Blink.</li>
+  </ul>
+
+  <h2>FAQ</h2>
+  <div class="mk-faq">
+    {
+      faq.map((item) => (
+        <details>
+          <summary>{item.q}</summary>
+          <p>{item.a}</p>
+        </details>
+      ))
+    }
+  </div>
+
+  <p>
+    Also compare <a href="/compare/">mobile clients for AI coding agents</a>, or read the
+    <a href="/remote-code-editor-ipad/">remote code editor for iPhone and iPad</a> page.
+  </p>
+</MarketingLayout>

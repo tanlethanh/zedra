@@ -18,6 +18,9 @@ const pages = [
   { path: "/codex", jsonLd: ["FAQPage"] },
   { path: "/opencode", jsonLd: ["FAQPage"] },
   { path: "/compare", jsonLd: ["FAQPage"] },
+  { path: "/remote-code-editor-ipad", jsonLd: ["FAQPage"] },
+  { path: "/mobile-coding-agents", jsonLd: ["FAQPage"] },
+  { path: "/compare/blink-shell", jsonLd: ["FAQPage"] },
 ];
 
 const failures = [];

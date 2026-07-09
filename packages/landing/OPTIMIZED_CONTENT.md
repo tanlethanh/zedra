@@ -16,10 +16,13 @@ The strategy: win intent queries with dedicated pages, and always pair the brand
 | Page | Target queries | Notes |
 |------|----------------|-------|
 | `/` | brand + category, "remote control for AI coding agents" | Hero + agents, workspace, how-it-works, FAQ sections. `SoftwareApplication` schema with `sameAs`, `FAQPage` schema. |
+| `/remote-code-editor-ipad` | "remote code editor for iPad", "code from iPhone", "code from Android", "code from iPad" | Category page for broader mobile coding searches beyond agent-specific intent. |
+| `/mobile-coding-agents` | "mobile coding agents", "control coding agents from phone" | Category page linking Claude Code, Codex, and OpenCode intent pages. |
 | `/claude-code` | "run claude code from phone", "claude code iphone" | Generated from `src/agent-pages.ts` via `src/pages/[agent].astro`. |
 | `/codex` | "codex cli from phone", "codex mobile" | Same template. |
 | `/opencode` | "opencode mobile" | Same template. |
 | `/compare` | "best ios app for ai coding agents", "zedra vs happy" | Honest table vs Happy, Omnara, SSH + tmux. |
+| `/compare/blink-shell` | "Blink Shell alternative", "Zedra vs Blink Shell", "remote coding on iPad" | Comparison page for terminal-first iOS searchers. |
 | `/docs/*` | long-tail support queries | Starlight docs. |
 
 All pages emit into `sitemap-index.xml` automatically via `@astrojs/sitemap`.
@@ -29,6 +32,7 @@ All pages emit into `sitemap-index.xml` automatically via `@astrojs/sitemap`.
 - Facts on marketing pages must match `/docs/installation`. When setup commands change, update `src/agent-pages.ts` and the homepage install tabs in the same change.
 - Agent names must appear in crawlable text, not only in UI labels or SVGs.
 - FAQ questions are written as literal search queries. Answers stay honest about limits (laptop sleep pauses the session; relays forward encrypted packets).
+- Category pages should target one clear intent each. Keep `/remote-code-editor-ipad` for broad mobile editor searches and `/mobile-coding-agents` for agent-control searches.
 - The compare page states a "last checked" date. Recheck competitor pricing and agent support before editing it, and keep the tone generous — the page ranks and converts because it is credible.
 - New agent page: add an entry to `src/agent-pages.ts`, link it from the homepage agents row and both footers.
 - Follow the design idiom in `MarketingLayout.astro`: hairline rules, Lora serif headings, terminal-comment section labels, no filled cards, no white CTA pills.
