@@ -32,7 +32,7 @@ const canonicalUrl = path === "/" ? "https://zedra.dev/" : `https://zedra.dev${p
     <meta property="og:image" content="https://zedra.dev/OG.png" />
     <meta property="og:image:width" content="1200" />
     <meta property="og:image:height" content="630" />
-    <meta property="og:image:alt" content="Zedra: remote control for AI coding agents" />
+    <meta property="og:image:alt" content="Zedra: a real dev workspace on your phone" />
     <meta name="twitter:card" content="summary_large_image" />
     <meta name="twitter:site" content="@zedradev" />
     <meta name="twitter:title" content={title} />
@@ -135,7 +135,7 @@ const canonicalUrl = path === "/" ? "https://zedra.dev/" : `https://zedra.dev${p
         margin: 24px 0 0;
         font-family: "Lora", Georgia, serif;
         font-weight: 400;
-        font-size: clamp(32px, 6vw, 44px);
+        font-size: clamp(28px, 4.5vw, 36px);
         line-height: 1.15;
         letter-spacing: 0.01em;
       }
@@ -262,35 +262,6 @@ const canonicalUrl = path === "/" ? "https://zedra.dev/" : `https://zedra.dev${p
         padding: 0 0 16px 27px;
       }
 
-      .mk-cta {
-        display: flex;
-        gap: 12px;
-        flex-wrap: wrap;
-        margin-top: 8px;
-      }
-
-      .mk-btn {
-        display: inline-flex;
-        align-items: center;
-        padding: 10px 16px;
-        border-radius: 8px;
-        border: 1px solid var(--border-strong);
-        background: rgba(255, 255, 255, 0.02);
-        color: var(--text);
-        text-decoration: none;
-        font-size: 14px;
-        font-weight: 500;
-        transition: border-color 0.18s;
-      }
-
-      .mk-btn:hover {
-        border-color: rgba(255, 255, 255, 0.3);
-      }
-
-      .mk-btn.primary {
-        border-color: rgba(255, 255, 255, 0.35);
-      }
-
       .mk-table-wrap {
         overflow-x: auto;
         border-top: 1px solid var(--border-strong);
@@ -386,8 +357,8 @@ const canonicalUrl = path === "/" ? "https://zedra.dev/" : `https://zedra.dev${p
         </a>
         <nav aria-label="Site links">
           <a href="/docs">Docs</a>
-          <a href="/compare">Compare</a>
           <a href="https://github.com/tanlethanh/zedra" target="_blank" rel="noopener noreferrer">GitHub</a>
+          <a href="https://discord.gg/39MmkSS8sc" target="_blank" rel="noopener noreferrer">Discord</a>
         </nav>
       </header>
 

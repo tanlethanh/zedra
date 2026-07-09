@@ -7,7 +7,7 @@ An experimental remote code editor on mobile with GPU-accelerated rendering powe
 ## Download App
 
 - iOS — [AppStore](https://apps.apple.com/vn/app/zedra-code-from-anywhere/id6760534630) or [TestFlight](https://testflight.apple.com/join/1EWe2kRH)
-- Android — Closed testing. Join via [Google Groups](https://groups.google.com/g/zedra-beta)
+- Android — [Google Play](https://play.google.com/store/apps/details?id=dev.zedra.app)
  
 ## Desktop daemon
 

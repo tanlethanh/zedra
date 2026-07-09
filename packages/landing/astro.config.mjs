@@ -73,6 +73,7 @@ export default defineConfig({
       sidebar: [
         { label: "Why Zedra?", slug: "docs" },
         { label: "Installation", slug: "docs/installation" },
+        { label: "Security & architecture", slug: "docs/security" },
         { label: "Troubleshooting", slug: "docs/troubleshooting" },
         {
           label: "References",

@@ -57,23 +57,40 @@ const { frontmatter } = Astro.props;
       .site-header {
         display: flex;
         align-items: center;
+        justify-content: space-between;
+      }
+
+      .site-header nav {
+        display: flex;
+        gap: 20px;
+      }
+
+      .site-header nav a {
+        color: #8b8b92;
+        text-decoration: none;
+        font-size: 14px;
+        transition: color 0.15s;
+      }
+
+      .site-header nav a:hover {
+        color: var(--text);
       }
 
       .logo {
         display: inline-flex;
         align-items: center;
-        gap: 16px;
+        gap: 12px;
         color: var(--text);
         text-decoration: none;
-        font-size: 2.1rem;
+        font-size: 22px;
         font-weight: 400;
         letter-spacing: 0.02em;
         font-family: "Lora", Georgia, serif;
       }
 
       .logo-icon {
-        width: 36px;
-        height: 46px;
+        width: 26px;
+        height: 32px;
         flex-shrink: 0;
       }
 
@@ -188,22 +205,18 @@ const { frontmatter } = Astro.props;
       .footer-links {
         display: flex;
         gap: 24px;
+        flex-wrap: wrap;
       }
 
       .footer-link {
         color: var(--muted);
-        font-size: 0.82rem;
+        font-size: 14px;
         text-decoration: none;
         transition: color 0.15s;
       }
 
       .footer-link:hover {
         color: var(--text);
-      }
-
-      .footer-copy {
-        color: var(--muted);
-        font-size: 0.82rem;
       }
 
       @media (max-width: 640px) {
@@ -248,6 +261,11 @@ const { frontmatter } = Astro.props;
           </svg>
           Zedra
         </a>
+        <nav aria-label="Site links">
+          <a href="/docs">Docs</a>
+          <a href="https://github.com/tanlethanh/zedra" target="_blank" rel="noopener noreferrer">GitHub</a>
+          <a href="https://discord.gg/39MmkSS8sc" target="_blank" rel="noopener noreferrer">Discord</a>
+        </nav>
       </header>
 
       <main class="prose">
@@ -255,16 +273,15 @@ const { frontmatter } = Astro.props;
       </main>
 
       <footer class="site-footer">
-        <div class="footer-links">
-          <a class="footer-link" href="/">Home</a>
-          <a
-            class="footer-link"
-            href="https://github.com/tanlethanh/zedra"
-            target="_blank"
-            rel="noopener noreferrer">GitHub</a
-          >
-        </div>
-        <span class="footer-copy">&copy; 2026 Tan Le</span>
+        <nav class="footer-links" aria-label="Footer links">
+          <a class="footer-link" href="/docs">Docs</a>
+          <a class="footer-link" href="/claude-code">Claude Code</a>
+          <a class="footer-link" href="/codex">Codex</a>
+          <a class="footer-link" href="/opencode">OpenCode</a>
+          <a class="footer-link" href="/compare">Compare</a>
+          <a class="footer-link" href="/privacy">Privacy</a>
+          <a class="footer-link" href="/support">Support</a>
+        </nav>
       </footer>
     </div>
   </body>
