@@ -676,28 +676,22 @@ const canonicalUrl = "https://zedra.dev/";
           transform: none;
         }
 
-        /* Feature text entering: when a step activates, its title and body
-           slide + fade in with a small stagger. Inactive steps' text sits
-           dimmed and offset until the step is focused. */
-        .scrolly-step .step-title,
-        .scrolly-step > p {
+        /* Feature text entering: each step's title and body slide + fade in
+           when the step scrolls into view (via data-reveal), not when .active
+           flips — so the first step (active from load) still animates on
+           scroll-into-view. Smaller lift than the generic reveal. */
+        html.js .scrolly-step .step-title,
+        html.js .scrolly-step > p {
           opacity: 0;
           transform: translateY(8px);
           transition:
             opacity 0.5s cubic-bezier(0.22, 1, 0.36, 1),
             transform 0.5s cubic-bezier(0.22, 1, 0.36, 1);
+          transition-delay: var(--reveal-delay, 0ms);
         }
 
-        .scrolly-step .step-title {
-          transition-delay: 0.08s;
-        }
-
-        .scrolly-step > p {
-          transition-delay: 0.16s;
-        }
-
-        .scrolly-step.active .step-title,
-        .scrolly-step.active > p {
+        html.js .scrolly-step .step-title.is-visible,
+        html.js .scrolly-step > p.is-visible {
           opacity: 1;
           transform: none;
         }
@@ -1024,15 +1018,9 @@ const canonicalUrl = "https://zedra.dev/";
           opacity: 1;
         }
 
-        /* On mobile, steps read as a plain list — undo the desktop entering
-           effect so all step text is visible regardless of .active state. */
-        .scrolly-step .step-title,
-        .scrolly-step > p {
-          opacity: 1;
-          transform: none;
-          transition: none;
-          transition-delay: 0s;
-        }
+        /* On mobile, steps read as a plain list — the data-reveal observer
+           still fires on scroll, so text enters naturally per step. No
+           override needed; the html.js guard covers the no-JS case. */
 
         .step-img {
           display: block;
@@ -1813,11 +1801,11 @@ const canonicalUrl = "https://zedra.dev/";
               {
                 features.map((feature, i) => (
                   <div class={`scrolly-step${i === 0 ? " active" : ""}`} data-step={i}>
-                    <div class="step-title">
+                    <div class="step-title" data-reveal>
                       <Fragment set:html={feature.icon} />
                       <h3>{feature.title}</h3>
                     </div>
-                    <p>{feature.body}</p>
+                    <p data-reveal style="--reveal-delay: 100ms">{feature.body}</p>
                     {feature.demoImg && (
                       <Picture
                         class="step-img"
