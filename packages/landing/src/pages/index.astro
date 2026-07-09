@@ -30,7 +30,7 @@ const installTabs = [
     label: "windows",
     icon: `<svg class="tab-icon" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><path d="M3 5.4 10.6 4.3v7.2H3V5.4Zm8.6-1.2L21 2.8v8.7h-9.4V4.2ZM3 12.5h7.6v7.2L3 18.6v-6.1Zm8.6 0H21v8.7l-9.4-1.4v-7.3Z"></path></svg>`,
     blocks: [
-      [{ text: 'powershell -c "irm zedra.dev/install.ps1 | iex"' }],
+      [{ text: "irm https://zedra.dev/install.ps1 | iex" }],
       [{ text: "# Install agent hooks for notification", comment: true }, { text: "zedra setup" }],
       [
         { text: "# Start daemon in working directory", comment: true },

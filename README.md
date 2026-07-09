@@ -25,7 +25,7 @@ zedra start --detach
 **Windows**
 
 ```powershell
-powershell -c "irm zedra.dev/install.ps1 | iex"
+irm https://zedra.dev/install.ps1 | iex
 zedra start --detach
 ```
 
