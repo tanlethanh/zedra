@@ -1518,3 +1518,20 @@ id in production). The trailing shows the aggregate `done/total` rollup.
 1. Present a native selection/list picker whose Google action image is passed as `"Google.svg"`
    or a path-prefixed name.
 2. Expected: the Google glyph keeps its 2pt inset (the inset lookup now uses the normalized name).
+
+## 0h. Landing Page Scroll Reveal And Smooth Scroll
+1. Run `bun run dev` in `packages/landing` and open the homepage.
+2. Scroll from the hero down through the workspace, agents, how-it-works, why-zedra, and FAQ
+   sections.
+3. Expected: each section's header/copy/canvas/table/list fades and lifts in as it enters the
+   viewport. Feature pillars and FAQ items stagger slightly (per-item `--reveal-delay`).
+4. Expected: in the scrolly workspace section, the active feature step and its demo capture
+   crossfade with a subtle settle (translate/scale ease), not an abrupt opacity snap.
+5. Click an in-page anchor that targets a section id (or set `scroll-behavior` is honored):
+   expected a smooth animated jump, not an instant teleport.
+6. Enable OS "reduce motion" (`prefers-reduced-motion: reduce`) and reload.
+7. Expected: all reveal content is visible immediately with no fade/transform, scrolly steps use
+   the plain opacity crossfade, and anchor jumps are instant. No content is ever stuck hidden.
+8. Disable JavaScript and reload.
+9. Expected: all `[data-reveal]` content is visible (the `html.js` gating class is absent, so the
+   hiding rule never applies). No invisible sections.
