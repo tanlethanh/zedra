@@ -1525,8 +1525,9 @@ id in production). The trailing shows the aggregate `done/total` rollup.
    sections.
 3. Expected: each section's header/copy/canvas/table/list fades and lifts in as it enters the
    viewport. Feature pillars and FAQ items stagger slightly (per-item `--reveal-delay`).
-4. Expected: in the scrolly workspace section, the active feature step and its demo capture
-   crossfade with a subtle settle (translate/scale ease), not an abrupt opacity snap.
+4. Expected: in the scrolly workspace section, the active feature step's title and body text
+   slide and fade in distinctly (staggered), and its demo capture crossfades with a subtle
+   settle (translate/scale ease), not an abrupt opacity snap.
 5. Click an in-page anchor that targets a section id (or set `scroll-behavior` is honored):
    expected a smooth animated jump, not an instant teleport.
 6. Enable OS "reduce motion" (`prefers-reduced-motion: reduce`) and reload.
@@ -1535,3 +1536,32 @@ id in production). The trailing shows the aggregate `done/total` rollup.
 8. Disable JavaScript and reload.
 9. Expected: all `[data-reveal]` content is visible (the `html.js` gating class is absent, so the
    hiding rule never applies). No invisible sections.
+
+## Water Droplet Effect (iOS)
+
+### Toggle and basic refraction
+1. Open **Settings → Appearance** and switch **Water droplet** to **On**.
+2. Expected: a droplet appears near the top left, magnifying and tinting the UI
+   beneath it with a specular highlight.
+3. Switch the toggle to **Off**. Expected: the droplet disappears immediately and
+   rendering behaves exactly as before the toggle existed.
+
+### Drag and shape
+1. With the droplet on, drag it slowly over terminal or editor text.
+2. Expected: text under the droplet appears refracted (bent toward the center),
+   slightly magnified and cool-tinted; the droplet lags the finger like liquid.
+3. Flick the droplet fast across the screen.
+4. Expected: the shape stretches along the motion and shows a trailing drip blob;
+   on release it springs to rest and the wobble settles (no permanent animation
+   loop — frame updates stop once it rests).
+
+### Touch suppression
+1. Rest the droplet on top of a button or terminal, then tap and drag it.
+2. Expected: the UI underneath never reacts — no button press, no terminal
+   focus, no scroll — while the finger interacts with the droplet. Content
+   under a resting droplet is reachable again after dragging the droplet aside.
+
+### Rotation and resize
+1. With the droplet on, rotate the device.
+2. Expected: no crash, no stale grab artifacts; the droplet keeps rendering at its
+   logical position and refraction stays sharp after the size change.

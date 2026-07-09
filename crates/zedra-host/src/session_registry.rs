@@ -367,6 +367,9 @@ pub struct HostTermMeta {
     pub current_command: Option<String>,
     pub shell_state: TermShellState,
     pub last_exit_code: Option<i32>,
+    /// Host-resolved agent slug for the foreground process. Recomputed via
+    /// `refresh_agent_slug` after OSC events; authoritative agent identity.
+    pub agent_slug: Option<&'static str>,
 }
 
 impl Default for HostTermMeta {
@@ -379,6 +382,7 @@ impl Default for HostTermMeta {
             current_command: None,
             shell_state: TermShellState::Unknown,
             last_exit_code: None,
+            agent_slug: None,
         }
     }
 }
@@ -401,6 +405,19 @@ impl HostTermMeta {
             OscEvent::PromptReady => self.shell_state = TermShellState::Idle,
             _ => {}
         }
+    }
+
+    /// Recompute the resolved agent slug from the current command (with the
+    /// OSC 1 icon name as fallback). Returns `true` when the identity changed,
+    /// so the caller can push a `TerminalAgentChanged` event.
+    pub fn refresh_agent_slug(&mut self) -> bool {
+        let resolved = crate::agent::detect::resolve_terminal_agent(
+            self.current_command.as_deref(),
+            self.icon_name.as_deref(),
+        );
+        let changed = resolved != self.agent_slug;
+        self.agent_slug = resolved;
+        changed
     }
 }
 
@@ -1428,6 +1445,7 @@ impl ServerSession {
                     agent_command: meta.current_command.clone(),
                     shell_state: meta.shell_state,
                     last_exit_code: meta.last_exit_code,
+                    agent_slug: meta.agent_slug.map(str::to_string),
                     ..TerminalSyncEntry::default()
                 })
                 .unwrap_or_default();

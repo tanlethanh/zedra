@@ -431,7 +431,7 @@ impl Render for MarkdownView {
             .child(
                 selection_area(markdown_list)
                     .id(MARKDOWN_SELECTION_AREA_ID)
-                    .action_with_image("Add to Chat", "Zedra", AddSelectionToChat)
+                    .action_with_image("Add to Chat", "zedra", AddSelectionToChat)
                     .into_any_element(),
             )
     }

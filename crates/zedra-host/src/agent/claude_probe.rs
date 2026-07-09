@@ -1,15 +1,9 @@
-//! Claude CLI PTY probe — unstructured fallback for usage/plan when OAuth file token is absent.
-//!
-//! Used when there is no readable OAuth token file, or when OAuth API calls fail and the host
-//! falls back here. Spawns `claude`, drives `/usage` and `/status`, and parses plain-text TUI
-//! output (layout inspired by codexbar `ClaudeStatusProbe`).
-//!
-//! **Reliability:** best-effort, not a stable API. Percents are usually stable;
-//! `rate_limit_*_resets_at` may be wrong or missing (host-local time, glued TUI tokens).
-//! Clients should treat missing reset fields as duration unknown.
-//!
-//! **Performance:** one combined probe per cache window (~seconds). `PTY_LOCK` serializes probes;
-//! `PTY_CACHE` dedupes parallel `scan_account_usage` / `scan_account_plans`.
+//! Claude CLI PTY probe — best-effort usage/plan fallback when no OAuth token file is readable
+//! (or OAuth calls fail). Spawns `claude`, drives `/usage` and `/status`, parses plain-text TUI
+//! output (layout from codexbar `ClaudeStatusProbe`). Not a stable API: percents are usually
+//! reliable, but `rate_limit_*_resets_at` may be missing or wrong (host-local time, glued tokens)
+//! — treat missing resets as duration-unknown. One combined probe per cache window: `PTY_LOCK`
+//! serializes, `PTY_CACHE` dedupes parallel usage/plan scans.
 //! Env: `ZEDRA_DEBUG_CLAUDE_PTY=1`, `ZEDRA_CLAUDE_PTY_CACHE_SECS` (10–300, default 60).
 
 use chrono::{
@@ -76,6 +70,9 @@ impl ClaudePtySession {
 
         let mut cmd = std::process::Command::new(claude_bin);
         cmd.args(["--allowed-tools", ""]);
+        // Disable the no-flicker alt-screen TUI; it collapses `/usage` onto one
+        // line. `0` keeps it line-by-line so windows parse.
+        cmd.env("CLAUDE_CODE_NO_FLICKER", "0");
         unsafe {
             cmd.stdin(std::process::Stdio::from_raw_fd(slave_stdin))
                 .stdout(std::process::Stdio::from_raw_fd(slave_stdout))
@@ -212,6 +209,74 @@ impl ClaudePtySession {
     fn finish(mut self) {
         let _ = self.child.kill();
         let _ = self.child.wait();
+    }
+}
+
+/// Strip ANSI escapes from a byte slice. Multi-byte UTF-8 is consumed whole by leading-byte
+/// length; sequences truncated at the buffer end (split reads) are dropped, not replaced.
+fn strip_ansi(input: &[u8]) -> String {
+    let mut out = String::with_capacity(input.len());
+    let mut i = 0;
+    while i < input.len() {
+        if input[i] == b'\x1b' {
+            i += 1;
+            if i >= input.len() {
+                break;
+            }
+            if input[i] == b'[' {
+                // CSI sequence: skip until a byte in 0x40–0x7E
+                i += 1;
+                while i < input.len() && !(0x40..=0x7e).contains(&input[i]) {
+                    i += 1;
+                }
+                i += 1; // skip final byte
+            } else if matches!(input[i], b']' | b'P' | b'^' | b'_' | b'X') {
+                // OSC / DCS / PM / APC / SOS: scan until BEL or ST (ESC \)
+                i += 1;
+                while i < input.len() {
+                    if input[i] == b'\x07' {
+                        i += 1;
+                        break;
+                    }
+                    if input[i] == b'\x1b' && i + 1 < input.len() && input[i + 1] == b'\\' {
+                        i += 2;
+                        break;
+                    }
+                    i += 1;
+                }
+            } else {
+                // Other two-byte escape sequence: skip one more byte
+                i += 1;
+            }
+        } else if input[i] < 0x20 && input[i] != b'\n' && input[i] != b'\r' && input[i] != b'\t' {
+            // Skip other control bytes (e.g. cursor movement OSC)
+            i += 1;
+        } else {
+            // Push the whole UTF-8 character by leading-byte width, not byte-by-byte.
+            let char_len = utf8_char_len(input[i]);
+            if i + char_len <= input.len() {
+                if let Ok(s) = std::str::from_utf8(&input[i..i + char_len]) {
+                    out.push_str(s);
+                }
+                // Skip every byte of the char even if invalid, so continuation bytes
+                // aren't treated as independent characters.
+                i += char_len;
+            } else {
+                break; // truncated char at buffer end
+            }
+        }
+    }
+    out
+}
+
+/// Expected UTF-8 char length from the leading byte; stray continuation and
+/// invalid lead bytes count as 1 so they never consume following valid bytes.
+fn utf8_char_len(b: u8) -> usize {
+    match b {
+        0x00..=0x7F | 0x80..=0xBF | 0xC0..=0xC1 | 0xF5..=0xFF => 1,
+        0xC2..=0xDF => 2,
+        0xE0..=0xEF => 3,
+        0xF0..=0xF4 => 4,
     }
 }
 
@@ -435,7 +500,7 @@ fn extract_claude_cli_login_method(text: &str) -> Option<String> {
         if lower.contains("claude code v") {
             continue;
         }
-        if let Some(plan) = claude_plan_from_cli_login_phrase(line) {
+        if let Some(plan) = super::utils::plan_label_from_token(line) {
             return Some(plan);
         }
     }
@@ -444,27 +509,7 @@ fn extract_claude_cli_login_method(text: &str) -> Option<String> {
 
 fn claude_plan_from_cli_login_method(raw: &str) -> Option<String> {
     let cleaned = clean_cli_plan_label(raw);
-    claude_plan_from_cli_login_phrase(&cleaned)
-}
-
-fn claude_plan_from_cli_login_phrase(text: &str) -> Option<String> {
-    let lower = text.to_ascii_lowercase();
-    if lower.contains("enterprise") {
-        return Some("Enterprise".to_string());
-    }
-    if lower.contains("ultra") {
-        return Some("Ultra".to_string());
-    }
-    if lower.contains("max") {
-        return Some("Max".to_string());
-    }
-    if lower.contains("team") {
-        return Some("Team".to_string());
-    }
-    if lower.contains("pro") {
-        return Some("Pro".to_string());
-    }
-    None
+    super::utils::plan_label_from_token(&cleaned)
 }
 
 fn clean_cli_plan_label(raw: &str) -> String {
@@ -524,83 +569,6 @@ fn which_claude() -> Option<std::path::PathBuf> {
         .find(|p| p.is_file())
 }
 
-/// Strip ANSI escape sequences from a byte slice, returning plain text.
-///
-/// Multi-byte UTF-8 characters are handled correctly: the leading byte determines
-/// the character length and all continuation bytes are consumed together.
-/// Truncated sequences at the end of the buffer (split across read boundaries)
-/// are dropped rather than emitting replacement characters.
-fn strip_ansi(input: &[u8]) -> String {
-    let mut out = String::with_capacity(input.len());
-    let mut i = 0;
-    while i < input.len() {
-        if input[i] == b'\x1b' {
-            i += 1;
-            if i >= input.len() {
-                break;
-            }
-            if input[i] == b'[' {
-                // CSI sequence: skip until a byte in 0x40–0x7E
-                i += 1;
-                while i < input.len() && !(0x40..=0x7e).contains(&input[i]) {
-                    i += 1;
-                }
-                i += 1; // skip final byte
-            } else if matches!(input[i], b']' | b'P' | b'^' | b'_' | b'X') {
-                // OSC / DCS / PM / APC / SOS: scan until BEL or ST (ESC \)
-                i += 1;
-                while i < input.len() {
-                    if input[i] == b'\x07' {
-                        i += 1;
-                        break;
-                    }
-                    if input[i] == b'\x1b' && i + 1 < input.len() && input[i + 1] == b'\\' {
-                        i += 2;
-                        break;
-                    }
-                    i += 1;
-                }
-            } else {
-                // Other two-byte escape sequence: skip one more byte
-                i += 1;
-            }
-        } else if input[i] < 0x20 && input[i] != b'\n' && input[i] != b'\r' && input[i] != b'\t' {
-            // Skip other control bytes (e.g. cursor movement OSC)
-            i += 1;
-        } else {
-            // Determine the UTF-8 character width from the leading byte, then
-            // validate and push the whole character. This handles multi-byte
-            // sequences correctly instead of processing one byte at a time.
-            let char_len = utf8_char_len(input[i]);
-            if i + char_len <= input.len() {
-                if let Ok(s) = std::str::from_utf8(&input[i..i + char_len]) {
-                    out.push_str(s);
-                }
-                // Skip all bytes of this character even if invalid — avoids
-                // treating continuation bytes as independent characters.
-                i += char_len;
-            } else {
-                // Truncated sequence at end of buffer — skip remaining bytes.
-                break;
-            }
-        }
-    }
-    out
-}
-
-/// Returns the expected byte length of a UTF-8 character given its leading byte.
-fn utf8_char_len(b: u8) -> usize {
-    if b < 0x80 {
-        1
-    } else if b < 0xE0 {
-        2
-    } else if b < 0xF0 {
-        3
-    } else {
-        4
-    }
-}
-
 // CLI-only: parse `Resets …` lines after `/usage` window labels (fragile; see module docs).
 // CLI-only: parse `Resets …` lines after `/usage` window labels (fragile; see PTY note above).
 fn claude_session_label(lower: &str) -> bool {
@@ -655,11 +623,16 @@ fn is_other_current_section(line: &str, label_key: &str) -> bool {
 }
 fn parse_claude_reset_line(line: &str) -> Option<i64> {
     let lower = line.to_ascii_lowercase();
-    if !lower.contains("reset") {
-        return None;
+    if lower.contains("reset") {
+        let body = strip_claude_resets_prefix(line)?;
+        return parse_claude_reset_body(body);
     }
-    let body = strip_claude_resets_prefix(line)?;
-    parse_claude_reset_body(body)
+    // The \r redraw can corrupt the "Resets" word (e.g. "Reses11:40pm"); fall back
+    // to any line carrying a trailing "(timezone)" and parse the time within.
+    if split_trailing_timezone(line).1.is_some() {
+        return parse_claude_reset_body(line.trim());
+    }
+    None
 }
 
 fn strip_claude_resets_prefix(line: &str) -> Option<&str> {
@@ -677,87 +650,62 @@ fn strip_claude_resets_prefix(line: &str) -> Option<&str> {
 fn parse_claude_reset_body(body: &str) -> Option<i64> {
     let (text, _tz) = split_trailing_timezone(body);
     let text = normalize_claude_reset_text(text);
+    let tokens: Vec<&str> = text.split_whitespace().collect();
     let now = Local::now();
 
-    if let Some(ts) = parse_claude_reset_month_day_time(&text, now) {
-        return Some(ts);
-    }
+    // The clock value is the last token that parses as a time.
+    let time = tokens.iter().rev().find_map(|t| parse_reset_time(t))?;
 
-    let datetime_formats = [
-        "%b %d, %Y, %I:%M%p",
-        "%b %d, %Y, %I%p",
-        "%b %d %Y %I:%M%p",
-        "%b %d %Y %I%p",
-        "%b %d, %I:%M%p",
-        "%b %d, %I%p",
-        "%b %d %I:%M%p",
-        "%b %d %I%p",
-        "%b %d at %I:%M%p",
-        "%b %d at %I%p",
-        "%b %d, %H:%M",
-        "%b %d %H:%M",
-    ];
-    for fmt in datetime_formats {
-        if let Ok(ndt) = NaiveDateTime::parse_from_str(&text, fmt) {
-            let year = ndt.date().year();
-            if let Some(dt) = local_from_month_day_time(year, ndt.date(), ndt.time()) {
-                return Some(dt.timestamp());
-            }
-        }
-    }
-
-    let time_formats = ["%I:%M%p", "%I%p", "%H:%M"];
-    for fmt in time_formats {
-        if let Ok(time) = NaiveTime::parse_from_str(&text, fmt) {
+    // A leading `Mon Day` pins the date; otherwise it's the next occurrence of
+    // that wall-clock time (today, or tomorrow if already past).
+    let date = match parse_reset_month_day(&tokens, now.year()) {
+        Some(date) => date,
+        None => {
             let today = now.date_naive();
-            if let Some(dt) = local_from_month_day_time(now.year(), today, time) {
-                if dt < now {
-                    if let Some(tomorrow) = today.succ_opt() {
-                        if let Some(dt) = local_from_month_day_time(now.year(), tomorrow, time) {
-                            return Some(dt.timestamp());
-                        }
-                    }
-                }
-                return Some(dt.timestamp());
+            match local_from_month_day_time(now.year(), today, time) {
+                Some(dt) if dt < now => today.succ_opt().unwrap_or(today),
+                _ => today,
             }
         }
-    }
-    None
-}
-
-/// Parses `May 30 2pm` after spacing normalization (single-digit hours are common in CLI output).
-fn parse_claude_reset_month_day_time(text: &str, now: DateTime<Local>) -> Option<i64> {
-    let parts: Vec<&str> = text.split_whitespace().collect();
-    if parts.len() != 3 {
-        return None;
-    }
-    let year = now.year();
-    let date = format!("{} {} {}", parts[0], parts[1], year);
-    let date = NaiveDate::parse_from_str(&date, "%b %d %Y").ok()?;
-    let time = parse_claude_reset_ampm_token(parts[2])?;
-    local_from_month_day_time(year, date, time).map(|dt| dt.timestamp())
-}
-
-fn parse_claude_reset_ampm_token(token: &str) -> Option<NaiveTime> {
-    let lower = token.to_ascii_lowercase();
-    let (digits, pm) = if let Some(d) = lower.strip_suffix("pm") {
-        (d, true)
-    } else if let Some(d) = lower.strip_suffix("am") {
-        (d, false)
-    } else {
-        return None;
     };
-    let hour12: u32 = digits.parse().ok()?;
-    if !(1..=12).contains(&hour12) {
+    local_from_month_day_time(now.year(), date, time).map(|dt| dt.timestamp())
+}
+
+/// Parse a single clock token (`2pm`, `1:59pm`, `14:30`), tolerating leading
+/// garbage from a corrupted redraw (`Reses11:40pm`).
+fn parse_reset_time(token: &str) -> Option<NaiveTime> {
+    let token = token
+        .trim_start_matches(|c: char| !c.is_ascii_digit())
+        .to_ascii_lowercase();
+    let am_pm = token
+        .strip_suffix("pm")
+        .map(|d| (d, true))
+        .or_else(|| token.strip_suffix("am").map(|d| (d, false)));
+    let Some((digits, pm)) = am_pm else {
+        // 24-hour, e.g. "14:30".
+        return NaiveTime::parse_from_str(&token, "%H:%M").ok();
+    };
+    let (hour, minute) = match digits.split_once(':') {
+        Some((h, m)) => (h.parse().ok()?, m.parse().ok()?),
+        None => (digits.parse().ok()?, 0),
+    };
+    if !(1..=12).contains(&hour) || minute >= 60 {
         return None;
     }
-    let hour24 = match (hour12, pm) {
+    let hour24 = match (hour, pm) {
         (12, false) => 0,
         (12, true) => 12,
         (h, true) => h + 12,
         (h, false) => h,
     };
-    NaiveTime::from_hms_opt(hour24, 0, 0)
+    NaiveTime::from_hms_opt(hour24, minute, 0)
+}
+
+/// First adjacent `Mon Day` pair in the tokens, dated to `year`.
+fn parse_reset_month_day(tokens: &[&str], year: i32) -> Option<NaiveDate> {
+    tokens.windows(2).find_map(|w| {
+        NaiveDate::parse_from_str(&format!("{} {} {year}", w[0], w[1]), "%b %d %Y").ok()
+    })
 }
 
 fn split_trailing_timezone(body: &str) -> (&str, Option<&str>) {
@@ -852,11 +800,9 @@ fn local_from_month_day_time(
     }
 }
 
-/// Parse plain-text from Claude `/usage` PTY capture into `AgentUsageSnapshot`.
-///
-/// Label lines may have no spaces (`Currentsession`, `Currentweek(allmodels)`). Percentages
-/// often appear on the following line. Reset lines are best-effort unix timestamps in host local
-/// time; see PTY module note when `resets_at` is None.
+/// Parse Claude `/usage` PTY text into `AgentUsageSnapshot`. Labels may be unspaced
+/// (`Currentsession`, `Currentweek(allmodels)`) with the percent on the next line; reset lines are
+/// best-effort host-local unix timestamps (see module note when `resets_at` is None).
 fn parse_usage_output(text: &str) -> Option<AgentUsageSnapshot> {
     let mut session_pct: Option<f32> = None;
     let mut week_pct: Option<f32> = None;
@@ -865,7 +811,13 @@ fn parse_usage_output(text: &str) -> Option<AgentUsageSnapshot> {
     let mut credits_used: Option<f64> = None;
     let mut credits_limit: Option<f64> = None;
 
-    let lines: Vec<&str> = text.lines().collect();
+    // Alt-screen redraw separates rows with bare `\r`; treat as line breaks
+    // (dropping empties) so label/percent/reset each land on their own line.
+    let normalized = text.replace('\r', "\n");
+    let lines: Vec<&str> = normalized
+        .lines()
+        .filter(|line| !line.trim().is_empty())
+        .collect();
     let mut i = 0;
     while i < lines.len() {
         let line = lines[i];
@@ -905,25 +857,24 @@ fn parse_usage_output(text: &str) -> Option<AgentUsageSnapshot> {
         return None;
     }
 
-    let context_used = credits_used.zip(credits_limit).and_then(|(u, l)| {
-        if l > 0.0 {
-            Some((u / l * 100.0) as f32)
-        } else {
-            None
-        }
-    });
+    let mut extra = Vec::new();
+    if let Some(used) = credits_used {
+        let value = match credits_limit {
+            Some(limit) => format!("${used:.2} / ${limit:.2}"),
+            None => format!("${used:.2}"),
+        };
+        extra.push(AgentInfoField {
+            label: "Extra credits".to_string(),
+            value,
+        });
+    }
 
     Some(AgentUsageSnapshot {
         rate_limit_five_hour_used_percent: session_pct,
         rate_limit_seven_day_used_percent: week_pct,
         rate_limit_five_hour_resets_at: session_resets_at,
         rate_limit_seven_day_resets_at: week_resets_at,
-        context_used_percent: context_used,
-        total_cost_usd: credits_used,
-        total_duration_ms: None,
-        total_api_duration_ms: None,
-        lines_added: None,
-        lines_removed: None,
+        extra,
     })
 }
 
@@ -1023,6 +974,41 @@ mod tests {
     }
 
     #[test]
+    fn reset_line_shapes_parse() {
+        // Every real `/usage` reset shape: bare time, month-day (whole hour and
+        // with minutes), spaced and glued, and a redraw-corrupted prefix.
+        for s in [
+            "Resets 6:40pm (Asia/Saigon)",
+            "Resets 4:39am (Asia/Saigon)",
+            "Resets2:40pm(Asia/Saigon)",
+            "Resets Jul 4 at 2pm (Asia/Saigon)",
+            "ResetsJul4at2pm(Asia/Saigon)",
+            "Resets Jul 4 at 1:59pm (Asia/Saigon)",
+            "ResetsJul4at1:59pm(Asia/Saigon)",
+            "ResetsMay30at2pm(Asia/Saigon)",
+            "Reses11:40pm (Asia/Saigon)",
+        ] {
+            assert!(parse_claude_reset_line(s).is_some(), "should parse: {s:?}");
+        }
+    }
+
+    #[test]
+    fn parses_cr_glued_corrupted_session_reset() {
+        // Real PTY shape: the 5h window collapses onto one line via `\r` with the
+        // "Resets" word corrupted to "Reses"; the 7d window spans separate `\r\n`
+        // rows (whose empty lines must not break the percent's next-line lookup).
+        let panel = "Current session\r████ 25%used\rReses11:40pm (Asia/Saigon)\nCurrent week (all models)\r\n████ 13%used\r\nResets Jul 4 at 2pm (Asia/Saigon)\r\n";
+        let snap = parse_usage_output(panel).unwrap();
+        assert_eq!(snap.rate_limit_five_hour_used_percent, Some(25.0));
+        assert_eq!(snap.rate_limit_seven_day_used_percent, Some(13.0));
+        assert!(
+            snap.rate_limit_five_hour_resets_at.is_some(),
+            "5h reset should parse from the cr-glued corrupted line"
+        );
+        assert!(snap.rate_limit_seven_day_resets_at.is_some());
+    }
+
+    #[test]
     fn strip_ansi_ascii_passthrough() {
         assert_eq!(strip_ansi(b"hello world\n"), "hello world\n");
     }
@@ -1031,6 +1017,13 @@ mod tests {
     fn strip_ansi_removes_csi_sequences() {
         assert_eq!(strip_ansi(b"\x1b[1mBold\x1b[0m"), "Bold");
         assert_eq!(strip_ansi(b"\x1b[2;5Htext"), "text");
+    }
+
+    #[test]
+    fn strip_ansi_invalid_utf8_bytes_do_not_swallow_valid_chars() {
+        assert_eq!(strip_ansi(b"\x80abc"), "abc");
+        assert_eq!(strip_ansi(b"\xf5abc"), "abc");
+        assert_eq!(strip_ansi(b"\xc0abc"), "abc");
     }
 
     #[test]
@@ -1080,15 +1073,7 @@ mod tests {
     fn cli_plan_fallback_logged_in_when_usage_present() {
         let usage = AgentUsageSnapshot {
             rate_limit_five_hour_used_percent: Some(10.0),
-            rate_limit_seven_day_used_percent: None,
-            rate_limit_five_hour_resets_at: None,
-            rate_limit_seven_day_resets_at: None,
-            context_used_percent: None,
-            total_cost_usd: None,
-            total_duration_ms: None,
-            total_api_duration_ms: None,
-            lines_added: None,
-            lines_removed: None,
+            ..Default::default()
         };
         let fields = plan_with_usage_fallback(None, &Some(usage)).expect("fields");
         assert_eq!(field_value(&fields, "Logged in"), Some("yes"));

@@ -1,12 +1,12 @@
 use gpui::prelude::FluentBuilder;
 use gpui::*;
 use tracing::error;
-use zedra_rpc::proto::{AgentFile, AgentKind, AgentSummary, HostEvent};
+use zedra_rpc::proto::{AgentFile, AgentSessionSummary, AgentSummary, HostEvent};
 use zedra_session::{Session, SessionHandle};
 
 use crate::agent_ui::{
-    AgentSessionListProps, cli_version_display, group_sessions_by_day, managed_agent_name,
-    render_agent_session_list, render_agent_usage_row, setup_label,
+    AgentSessionListProps, cli_version_display, group_sessions_by_day, render_agent_session_list,
+    render_extra_row, render_usage_row, setup_label,
 };
 use crate::file_preview_view::FilePreviewView;
 use crate::fonts;
@@ -27,10 +27,9 @@ enum LoadState {
 }
 
 pub struct AgentDetail {
-    session_handle: SessionHandle,
-    kind: AgentKind,
+    slug: String,
     agent: Option<AgentSummary>,
-    sessions: Vec<zedra_rpc::proto::AgentSessionSummary>,
+    sessions: Vec<AgentSessionSummary>,
     /// Read-only config/memory files (Hermes). Empty for agents without a set.
     files: Vec<AgentFile>,
     /// Persistent preview for the native file sheet; its content swaps per tap.
@@ -38,6 +37,7 @@ pub struct AgentDetail {
     agent_state: LoadState,
     session_state: LoadState,
     loading_epoch: u64,
+    session_handle: SessionHandle,
     _tasks: Vec<Task<()>>,
 }
 
@@ -45,15 +45,14 @@ impl AgentDetail {
     pub fn new(
         session_handle: SessionHandle,
         session: Session,
-        kind: AgentKind,
+        slug: String,
         workspace_state: Entity<WorkspaceState>,
         cx: &mut Context<Self>,
     ) -> Self {
         let file_preview =
             cx.new(|cx| FilePreviewView::new(session_handle.clone(), workspace_state, cx));
         let mut view = Self {
-            session_handle,
-            kind,
+            slug,
             agent: None,
             sessions: Vec::new(),
             files: Vec::new(),
@@ -61,6 +60,7 @@ impl AgentDetail {
             agent_state: LoadState::Loading,
             session_state: LoadState::Loading,
             loading_epoch: 0,
+            session_handle,
             _tasks: Vec::new(),
         };
         view.subscribe_agent_info(session, cx);
@@ -69,12 +69,12 @@ impl AgentDetail {
     }
 
     fn subscribe_agent_info(&mut self, session: Session, cx: &mut Context<Self>) {
-        let kind = self.kind;
+        let slug = self.slug.clone();
         let mut host_event_rx = session.subscribe_host_events();
         let task = cx.spawn(async move |this, cx| {
             loop {
                 match host_event_rx.recv().await {
-                    Ok(HostEvent::AgentInfoChanged { info }) if info.kind == kind => {
+                    Ok(HostEvent::AgentInfoChanged { info }) if info.slug == slug => {
                         let should_break = this
                             .update(cx, |this, cx| {
                                 this.agent = Some(info);
@@ -110,12 +110,12 @@ impl AgentDetail {
         cx.notify();
 
         let handle = self.session_handle.clone();
-        let kind = self.kind;
+        let slug = self.slug.clone();
         let task = cx.spawn(async move |this, cx| {
             let (agents, sessions, files) = tokio::join!(
                 handle.agent_list(refresh),
-                handle.agent_sessions(kind, refresh, 0),
-                handle.agent_files(kind),
+                handle.agent_sessions(slug.clone(), refresh, 0),
+                handle.agent_files(slug.clone()),
             );
             let _ = this.update(cx, |this, cx| {
                 if this.loading_epoch != epoch {
@@ -130,7 +130,7 @@ impl AgentDetail {
                 }
                 match agents {
                     Ok(agents) => {
-                        this.agent = agents.into_iter().find(|agent| agent.kind == kind);
+                        this.agent = agents.into_iter().find(|agent| agent.slug == slug);
                         this.agent_state = if this.agent.is_some() {
                             LoadState::Ready
                         } else {
@@ -138,7 +138,7 @@ impl AgentDetail {
                         };
                     }
                     Err(err) => {
-                        error!(?kind, "agent detail agent list failed: {}", err);
+                        error!(agent = slug, "agent detail agent list failed: {}", err);
                         this.agent = None;
                         this.agent_state = LoadState::Error(err.to_string());
                     }
@@ -149,7 +149,7 @@ impl AgentDetail {
                         this.session_state = LoadState::Ready;
                     }
                     Err(err) => {
-                        error!(?kind, "agent detail sessions failed: {}", err);
+                        error!(agent = slug, "agent detail sessions failed: {}", err);
                         this.sessions.clear();
                         this.session_state = LoadState::Error(err.to_string());
                     }
@@ -164,7 +164,7 @@ impl AgentDetail {
         self.agent
             .as_ref()
             .map(|agent| agent.display_name.clone())
-            .unwrap_or_else(|| managed_agent_name(self.kind).to_string())
+            .unwrap_or_else(|| crate::agent::name(&self.slug))
     }
 
     fn header_description(&self) -> String {
@@ -307,7 +307,8 @@ impl Render for AgentDetail {
                         .gap(px(theme::SPACING_MD))
                         .child(render_detail_metadata(agent, cx))
                         .when_some(agent.usage.as_ref(), |col, usage| {
-                            col.child(render_agent_usage_row(agent.kind, usage, cx))
+                            col.children(render_usage_row(usage, cx))
+                                .children(render_extra_row(&usage.extra, cx))
                         })
                         .when(!self.files.is_empty(), |col| {
                             col.child(self.render_files_section(&self.files, cx))

@@ -17,6 +17,7 @@ Desktop daemon and CLI for serving filesystem, git, PTY, auth, and telemetry ove
 - Treat `SessionRegistry` as the authority for session lifetime, ACLs, active attachment, pairing slots, watched paths, and terminal ownership.
 - Sessions survive transport disconnects. Do not couple connection teardown to session destruction.
 - Maintain the one-active-client-per-session rule unless the product requirement changes explicitly.
+- For agent actors and `zedra setup` flows, follow [Managed Agents](../../docs/MANAGED_AGENTS.md), especially [Setup Flow](../../docs/MANAGED_AGENTS.md#setup-flow-zedra-setup).
 
 ## Safety Boundaries
 
@@ -52,8 +53,9 @@ Desktop daemon and CLI for serving filesystem, git, PTY, auth, and telemetry ove
 
 ## Key Files
 
-- `src/account_usage.rs` — shared `resets_at` parsing for structured provider usage APIs (Claude OAuth, Codex)
-- `src/claude_cli_probe.rs` — Claude CLI PTY `/usage` + `/status` scrape when OAuth file token is absent or API fails; best-effort TUI parse. Env: `ZEDRA_DEBUG_CLAUDE_PTY`, `ZEDRA_CLAUDE_PTY_CACHE_SECS` (10–300, default 60)
+- `src/agent/cache.rs` — agent account/usage cache, incl. shared `resets_at` parsing for provider usage APIs
+- `src/agent/claude_probe.rs` — Claude CLI PTY `/usage` + `/status` scrape when OAuth file token is absent or API fails; best-effort TUI parse. Env: `ZEDRA_DEBUG_CLAUDE_PTY`, `ZEDRA_CLAUDE_PTY_CACHE_SECS` (10–300, default 60)
+- `src/agent/setup.rs` — `zedra setup` registry dispatch and the `SetupCliCtx` toolkit actors build their setup flows on
 - `src/main.rs` — CLI orchestration, daemon startup, telemetry init
 - `src/rpc_daemon.rs` — auth, dispatch, terminal attach, observer loop
 - `src/session_registry.rs` — persistent session state and attachment rules

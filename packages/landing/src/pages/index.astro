@@ -675,6 +675,32 @@ const canonicalUrl = "https://zedra.dev/";
         .scrolly-step.active {
           transform: none;
         }
+
+        /* Feature text entering: when a step activates, its title and body
+           slide + fade in with a small stagger. Inactive steps' text sits
+           dimmed and offset until the step is focused. */
+        .scrolly-step .step-title,
+        .scrolly-step > p {
+          opacity: 0;
+          transform: translateY(8px);
+          transition:
+            opacity 0.5s cubic-bezier(0.22, 1, 0.36, 1),
+            transform 0.5s cubic-bezier(0.22, 1, 0.36, 1);
+        }
+
+        .scrolly-step .step-title {
+          transition-delay: 0.08s;
+        }
+
+        .scrolly-step > p {
+          transition-delay: 0.16s;
+        }
+
+        .scrolly-step.active .step-title,
+        .scrolly-step.active > p {
+          opacity: 1;
+          transform: none;
+        }
       }
 
       .step-title {
@@ -996,6 +1022,16 @@ const canonicalUrl = "https://zedra.dev/";
           min-height: 0;
           padding: 20px 0;
           opacity: 1;
+        }
+
+        /* On mobile, steps read as a plain list — undo the desktop entering
+           effect so all step text is visible regardless of .active state. */
+        .scrolly-step .step-title,
+        .scrolly-step > p {
+          opacity: 1;
+          transform: none;
+          transition: none;
+          transition-delay: 0s;
         }
 
         .step-img {
