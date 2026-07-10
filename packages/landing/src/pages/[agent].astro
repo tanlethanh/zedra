@@ -1,7 +1,8 @@
 ---
 import { pages } from "../agent-pages";
-// Intent landing pages: /claude-code, /codex, /opencode.
+// Intent landing pages: /claude-code, /codex.
 // One template, per-agent copy. Facts must match /docs/installation.
+// OpenCode is the market wedge and has its own bespoke page at src/pages/opencode.astro.
 import MarketingLayout from "../layouts/MarketingLayout.astro";
 
 export function getStaticPaths() {
@@ -153,6 +154,7 @@ zedra start --detach</pre>
   <h2>Works with your other agents too</h2>
   <p>
     Zedra is agent-neutral. The same workspace runs
+    <a href="/opencode">OpenCode</a>,
     {siblings.map((p) => <Fragment><a href={`/${p.slug}`}>{p.name}</a>, </Fragment>)}
     Pi, Hermes, and any CLI that belongs in your workflow. See how Zedra
     <a href="/compare">compares to Happy, Omnara, and SSH + tmux</a>.

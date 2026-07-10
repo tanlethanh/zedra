@@ -1,0 +1,97 @@
+---
+title: How to run OpenCode from your phone
+description: Set up Zedra to control OpenCode from iPhone, iPad, or Android while OpenCode keeps running on your own machine.
+---
+
+OpenCode runs on your computer, local-first, with your own providers and models. Zedra connects your phone to that same session so you can answer permission prompts, steer the task, inspect files, and review diffs — without moving your repository into a cloud IDE.
+
+## What you need
+
+- OpenCode installed and signed in on your computer.
+- Zedra installed on your computer and phone.
+- A project directory you want to control from your phone.
+
+## 1. Install Zedra on your computer
+
+```sh
+curl -fsSL zedra.dev/install.sh | sh
+```
+
+On Windows:
+
+```powershell
+irm https://zedra.dev/install.ps1 | iex
+```
+
+## 2. Install the OpenCode integration
+
+Run this once on the computer where OpenCode is installed:
+
+```sh
+zedra setup opencode
+```
+
+This installs a small OpenCode plugin at `~/.config/opencode/plugins/zedra-agent-hooks.js`. The plugin watches OpenCode's own events and forwards permission and session activity to Zedra so your phone can show state and send notifications. It is a plain plugin file — you can read it, and `zedra setup opencode` removes it again.
+
+## 3. Start a Zedra workspace
+
+Open the project directory you want to reach from your phone:
+
+```sh
+cd /path/to/project
+zedra start
+```
+
+`zedra start` prints a QR code. Leave this process running while you pair the phone.
+
+For a background daemon:
+
+```sh
+zedra start --detach
+```
+
+## 4. Pair your phone
+
+1. Install Zedra from the [App Store](https://apps.apple.com/app/zedra-code-from-anywhere/id6760534630) or [Google Play](https://play.google.com/store/apps/details?id=dev.zedra.app).
+2. Open the app.
+3. Tap **Scan QR**.
+4. Scan the QR printed by `zedra start`.
+
+Pairing is one-time per workspace. The QR registers device keys; it does not move your source code into Zedra's cloud.
+
+## 5. Start OpenCode from your phone
+
+After pairing, open the workspace in Zedra and use the terminal to run OpenCode as usual. You can also start through the Zedra OpenCode skill: reload skills in OpenCode, then run
+
+```sh
+/zedra-start
+```
+
+The phone terminal is interactive, so OpenCode's permission prompts, command output, and follow-up instructions are all visible and answerable from the phone.
+
+## Notifications
+
+Once the integration is installed, Zedra notifies you about the two events that make you leave and come back:
+
+- **Approval** — when OpenCode raises a permission request, you get a `OpenCode requires approval` push. Tap it to answer in the live session.
+- **Completion** — when a turn goes idle, you get a `OpenCode completed` push, so you know work is ready to review.
+
+The session's status (running, waiting, or errored) is also reflected in Zedra's agent view.
+
+## What Zedra adds around OpenCode
+
+- Answer OpenCode permission prompts from your phone.
+- Read changed files in a mobile code editor.
+- Review staged and unstaged git diffs before anything lands.
+- Read plans, specs, and reports in markdown preview.
+- Reopen recent OpenCode sessions from session history.
+
+## Troubleshooting
+
+If the phone cannot connect, check [Troubleshooting](/docs/troubleshooting/). To understand what relays can see, read [Security & architecture](/docs/security/).
+
+## Next
+
+- [OpenCode from your phone](/opencode/) for the product overview.
+- [Coding agent notifications](/coding-agent-notifications/) for the notification workflow across agents.
+- [Mobile coding agents](/mobile-coding-agents/) for Claude Code, Codex, and other CLI agents.

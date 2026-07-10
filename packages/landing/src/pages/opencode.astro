@@ -1,0 +1,360 @@
+---
+import { Image } from "astro:assets";
+import gitImg from "../assets/demo/git.png";
+import manageAgentsImg from "../assets/demo/manage-agents.png";
+import remoteTerminalImg from "../assets/demo/remote-terminal.png";
+import MarketingLayout from "../layouts/MarketingLayout.astro";
+
+// Bespoke flagship page for the OpenCode wedge. Facts must match the shipped
+// OpenCode actor (crates/zedra-host/src/agent/opencode.rs) and /docs/installation.
+const title = "OpenCode from your phone — mobile companion | Zedra";
+const description =
+  "Keep your OpenCode session running on your machine. Zedra notifies you when it needs input and gives you the live terminal, files, Git state, and diffs from iOS or Android.";
+const path = "/opencode";
+
+const workflow = [
+  {
+    title: "Start OpenCode at your desk",
+    body: "Run OpenCode in your project as usual. Zedra attaches to that session — it does not host or replace it.",
+  },
+  {
+    title: "Walk away",
+    body: "OpenCode keeps running on your machine with your own providers, keys, and repo. Nothing moves to a cloud sandbox.",
+  },
+  {
+    title: "Get a notification",
+    body: "When OpenCode asks for a permission or finishes a turn, Zedra sends a push notification to your phone.",
+  },
+  {
+    title: "Open the exact session",
+    body: "Tap the notification to land in that live OpenCode session: terminal, files, and Git state, all streamed from your machine.",
+  },
+  {
+    title: "Inspect, then respond",
+    body: "Read the output, review the diff, and answer the prompt or send a follow-up in the interactive terminal.",
+  },
+  {
+    title: "Let it keep running",
+    body: "OpenCode continues on the original machine. Close the app or lose signal — the session stays alive on your desk.",
+  },
+];
+
+const faq = [
+  {
+    q: "How do I get notified when OpenCode needs input?",
+    a: "Run `zedra setup opencode` on your machine. It installs an OpenCode plugin that forwards permission and session events to Zedra. When OpenCode asks for approval, Zedra sends a `OpenCode requires approval` push; when a turn ends, it sends a `OpenCode completed` push.",
+  },
+  {
+    q: "Does OpenCode run in Zedra's cloud?",
+    a: "No. OpenCode runs on your own machine with your existing providers, models, and login. Zedra is a control surface for that machine — your code and sessions never move to a hosted sandbox.",
+  },
+  {
+    q: "Do I need an extra subscription or API key?",
+    a: "No. Zedra connects to the OpenCode already installed and signed in on your machine. It does not add its own model billing.",
+  },
+  {
+    q: "Does my code pass through Zedra's servers?",
+    a: "No. Zedra connects directly when possible and falls back to an encrypted relay only when the network blocks the direct path. Relays forward ciphertext they cannot read.",
+  },
+  {
+    q: "What happens when I close the app or lose connection?",
+    a: "The session lives on your machine, not your phone. Zedra reconnects and restores the terminal backlog, and OpenCode keeps running the whole time.",
+  },
+  {
+    q: "Is Zedra open source?",
+    a: "Yes. Zedra is MIT-licensed, and the OpenCode integration is a plain OpenCode plugin written to `~/.config/opencode/plugins/` that you can read and remove.",
+  },
+];
+
+const faqSchema = {
+  "@context": "https://schema.org",
+  "@type": "FAQPage",
+  mainEntity: faq.map((item) => ({
+    "@type": "Question",
+    name: item.q,
+    acceptedAnswer: { "@type": "Answer", text: item.a.replace(/`/g, "") },
+  })),
+};
+
+const appSchema = {
+  "@context": "https://schema.org",
+  "@type": "SoftwareApplication",
+  name: "Zedra",
+  description,
+  url: `https://zedra.dev${path}`,
+  applicationCategory: "DeveloperApplication",
+  operatingSystem: "iOS, Android",
+  offers: { "@type": "Offer", price: "0", priceCurrency: "USD" },
+  publisher: { "@id": "https://zedra.dev/#organization" },
+  isPartOf: { "@id": "https://zedra.dev/#website" },
+  about: [
+    { "@type": "SoftwareApplication", name: "OpenCode" },
+    { "@type": "Thing", name: "mobile coding agents" },
+    { "@type": "Thing", name: "coding agent notifications" },
+  ],
+  sameAs: [
+    "https://github.com/tanlethanh/zedra",
+    "https://apps.apple.com/app/zedra-code-from-anywhere/id6760534630",
+    "https://play.google.com/store/apps/details?id=dev.zedra.app",
+  ],
+};
+---
+
+<MarketingLayout title={title} description={description} path={path} jsonLd={[faqSchema, appSchema]}>
+  <p class="oc-kicker">OpenCode mobile companion</p>
+  <h1>OpenCode, from your phone.</h1>
+  <p>
+    Keep your existing OpenCode session running on your machine. Zedra notifies you when it needs
+    input and gives you the live terminal, files, Git state, and diffs from iOS or Android — so a
+    blocked agent never waits on you while you are away from the desk.
+  </p>
+
+  <div class="oc-cta">
+    <a class="oc-cta-primary" href="#connect">Connect OpenCode</a>
+    <a class="oc-cta-secondary" href="/docs/guides/run-opencode-from-phone/">Read the setup guide</a>
+  </div>
+
+  <Image
+    class="oc-shot"
+    src={manageAgentsImg}
+    alt="Zedra showing OpenCode and other agents on a phone: what is running and what needs you"
+    widths={[400, 680]}
+    sizes="(max-width: 680px) 100vw, 680px"
+  />
+
+  <h2>The workflow</h2>
+  <div class="oc-steps">
+    {
+      workflow.map((step, i) => (
+        <div class="oc-step">
+          <span class="oc-step-n">{String(i + 1).padStart(2, "0")}</span>
+          <div>
+            <h3>{step.title}</h3>
+            <p>{step.body}</p>
+          </div>
+        </div>
+      ))
+    }
+  </div>
+
+  <h2 id="connect">Connect OpenCode</h2>
+  <p>
+    Zedra has two parts: a desktop daemon on the machine where OpenCode runs, and the mobile app.
+    Set up once, then pair.
+  </p>
+  <div class="mk-steps">
+    <div class="mk-step">
+      <h3>Install Zedra on your machine</h3>
+      <pre class="mk-code">curl -fsSL zedra.dev/install.sh | sh</pre>
+      <p>On Windows: <code>irm https://zedra.dev/install.ps1 | iex</code></p>
+    </div>
+    <div class="mk-step">
+      <h3>Install the OpenCode integration</h3>
+      <pre class="mk-code"><span class="c"># Installs the OpenCode plugin for notifications and session tracking</span>
+zedra setup opencode</pre>
+    </div>
+    <div class="mk-step">
+      <h3>Start a workspace</h3>
+      <pre class="mk-code"><span class="c"># In your project directory; prints the pairing QR</span>
+zedra start --detach</pre>
+      <p>Or start from inside OpenCode: reload skills and run <code>/zedra-start</code>.</p>
+    </div>
+    <div class="mk-step">
+      <h3>Pair your phone</h3>
+      <p>
+        Install Zedra from the <a
+          href="https://apps.apple.com/app/zedra-code-from-anywhere/id6760534630"
+          target="_blank"
+          rel="noopener noreferrer">App Store</a
+        > or <a
+          href="https://play.google.com/store/apps/details?id=dev.zedra.app"
+          target="_blank"
+          rel="noopener noreferrer">Google Play</a
+        >, tap <strong>Scan QR</strong>, and scan the code the daemon prints. Pairing is once per
+        workspace. Full steps in the <a href="/docs/guides/run-opencode-from-phone/">OpenCode guide</a>.
+      </p>
+    </div>
+  </div>
+
+  <h2>Notifications built for OpenCode</h2>
+  <p>
+    <code>zedra setup opencode</code> installs an OpenCode plugin that watches OpenCode's own events
+    and forwards them to your phone:
+  </p>
+  <ul>
+    <li>
+      <strong>Approval:</strong> when OpenCode raises a permission request, you get a
+      <code>OpenCode requires approval</code> notification. Tap it to answer in the live session.
+    </li>
+    <li>
+      <strong>Completion:</strong> when a turn goes idle, you get a <code>OpenCode completed</code>
+      notification, so you know work is ready to review.
+    </li>
+    <li>
+      <strong>State:</strong> the session's status — running, waiting, or errored — is reflected in
+      Zedra's agent view so you can see what needs you at a glance.
+    </li>
+  </ul>
+
+  <Image
+    class="oc-shot"
+    src={remoteTerminalImg}
+    alt="A live OpenCode terminal session streamed to a phone, with an approval prompt on screen"
+    widths={[400, 680]}
+    sizes="(max-width: 680px) 100vw, 680px"
+  />
+
+  <h2>Open the exact live session</h2>
+  <p>
+    A notification is only useful if it takes you somewhere. Tapping one opens the running OpenCode
+    session on your machine — not a summary, the real thing:
+  </p>
+  <ul>
+    <li>An interactive terminal: read output, scroll history, and answer the prompt in place.</li>
+    <li>The file tree and a code editor for reading exactly what OpenCode touched.</li>
+    <li>A Git view with staged and unstaged diffs, ready before you approve or let a change land.</li>
+    <li>Markdown preview for the plans, specs, and reports OpenCode writes.</li>
+    <li>Resumable session history, so you can reopen recent OpenCode sessions from the phone.</li>
+  </ul>
+
+  <Image
+    class="oc-shot"
+    src={gitImg}
+    alt="Reviewing OpenCode's staged and unstaged Git changes on a phone before approving"
+    widths={[400, 680]}
+    sizes="(max-width: 680px) 100vw, 680px"
+  />
+
+  <h2>Local-first, and open</h2>
+  <p>
+    OpenCode is local-first and extensible, and Zedra stays out of the way of that. The integration
+    is a plain OpenCode plugin written to <code>~/.config/opencode/plugins/zedra-agent-hooks.js</code>
+    — inspectable, and removable with <code>zedra setup opencode</code> at any time. Your models,
+    providers, credentials, and repository never leave your machine.
+  </p>
+  <p>
+    The connection is a direct, end-to-end encrypted QUIC tunnel between your phone and your
+    machine, with an encrypted relay fallback when a network blocks the direct path. No VPN, no port
+    forwarding, no cloud workspace. Details in <a href="/docs/security/">security &amp; architecture</a>.
+  </p>
+
+  <div class="oc-cta">
+    <a class="oc-cta-primary" href="#connect">Connect OpenCode</a>
+    <a class="oc-cta-secondary" href="/docs/guides/run-opencode-from-phone/">Read the setup guide</a>
+  </div>
+
+  <h2>FAQ</h2>
+  <div class="mk-faq">
+    {
+      faq.map((item) => (
+        <details>
+          <summary>{item.q}</summary>
+          <p set:html={item.a.replace(/`([^`]+)`/g, "<code>$1</code>")} />
+        </details>
+      ))
+    }
+  </div>
+
+  <p>
+    Zedra is agent-neutral: the same workspace runs <a href="/claude-code">Claude Code</a>,
+    <a href="/codex">Codex</a>, Pi, Hermes, and any terminal-based agent. See
+    <a href="/coding-agent-notifications/">coding agent notifications</a> or
+    <a href="/mobile-coding-agents/">mobile coding agents</a> for the broader picture.
+  </p>
+</MarketingLayout>
+
+<style>
+  .oc-kicker {
+    margin: 8px 0 0 !important;
+    color: var(--green) !important;
+    font-size: 13px !important;
+  }
+
+  .oc-kicker::before {
+    content: "# ";
+  }
+
+  .oc-cta {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 12px;
+    margin: 4px 0;
+  }
+
+  .oc-cta-primary,
+  .oc-cta-secondary {
+    display: inline-flex;
+    align-items: center;
+    padding: 11px 20px;
+    border-radius: 8px;
+    font-size: 14px;
+    text-decoration: none !important;
+    transition:
+      border-color 0.18s,
+      background 0.18s;
+  }
+
+  .oc-cta-primary {
+    background: var(--green);
+    color: #06120c !important;
+    font-weight: 600;
+  }
+
+  .oc-cta-primary:hover {
+    background: #57e3a0;
+  }
+
+  .oc-cta-secondary {
+    border: 1px solid var(--border-strong);
+    color: var(--text) !important;
+  }
+
+  .oc-cta-secondary:hover {
+    border-color: var(--text);
+  }
+
+  .oc-shot {
+    width: 100%;
+    max-width: 520px;
+    height: auto;
+    margin: 8px auto;
+    border: 1px solid var(--border);
+    border-radius: 12px;
+    display: block;
+  }
+
+  .oc-steps {
+    display: grid;
+    gap: 2px;
+  }
+
+  .oc-step {
+    display: grid;
+    grid-template-columns: 44px 1fr;
+    gap: 16px;
+    padding: 16px 0;
+    border-top: 1px solid var(--border);
+  }
+
+  .oc-step:first-child {
+    border-top: none;
+  }
+
+  .oc-step-n {
+    color: var(--green);
+    font-size: 14px;
+  }
+
+  .oc-step h3 {
+    margin: 0 0 4px;
+    font-size: 16px;
+    color: var(--text);
+  }
+
+  .oc-step p {
+    margin: 0;
+    color: var(--muted);
+    font-size: 15px;
+    line-height: 1.7;
+  }
+</style>

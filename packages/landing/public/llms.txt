@@ -13,13 +13,15 @@ Zedra is a mobile remote editor for controlling AI coding agents from iPhone, iP
 
 ## Agent workflows
 
+- [OpenCode from your phone](https://zedra.dev/opencode/): Flagship page for the OpenCode mobile companion — notifications when OpenCode needs approval or finishes, tap into the live terminal/files/diffs, local-first and open plugin integration.
 - [Run Claude Code from your phone](https://zedra.dev/claude-code/): Control Claude Code from iOS or Android with terminal, workspace, diffs, and notifications.
 - [Run Codex CLI from your phone](https://zedra.dev/codex/): Control Codex CLI from iOS or Android with approvals, workspace, diffs, and notifications.
-- [Run OpenCode from your phone](https://zedra.dev/opencode/): Control OpenCode from iOS or Android with terminal, workspace, diffs, and notifications.
-- [Mobile coding agents](https://zedra.dev/mobile-coding-agents/): Category page for controlling Claude Code, Codex, OpenCode, and terminal-based agents from a phone.
+- [Coding agent notifications](https://zedra.dev/coding-agent-notifications/): The notification wedge — get a push when a local agent needs approval or finishes, then tap into the live session.
+- [Mobile coding agents](https://zedra.dev/mobile-coding-agents/): Category page for controlling OpenCode, Claude Code, Codex, and terminal-based agents from a phone.
 
 ## How-to guides
 
+- [How to run OpenCode from your phone](https://zedra.dev/docs/guides/run-opencode-from-phone/): Practical setup guide for OpenCode and Zedra, including the plugin integration and notifications.
 - [How to run Claude Code from your phone](https://zedra.dev/docs/guides/run-claude-code-from-phone/): Practical setup guide for Claude Code and Zedra.
 - [How to run Codex CLI from your phone](https://zedra.dev/docs/guides/run-codex-cli-from-phone/): Practical setup guide for Codex CLI and Zedra.
 - [How to control coding agents from iPhone](https://zedra.dev/docs/guides/control-coding-agents-from-iphone/): Practical setup guide for mobile agent control on iPhone.
@@ -42,5 +44,7 @@ Zedra is a mobile remote editor for controlling AI coding agents from iPhone, iP
 - Zedra supports Claude Code, Codex, OpenCode, Pi, Hermes, and terminal-based CLI agents.
 - Zedra provides terminal, files, code editor, markdown preview, git diff, session history, usage, and push notifications.
 - Zedra pairs by QR code and reconnects using device keys.
+- With `zedra setup`, Zedra sends a push notification when a local agent (OpenCode, Claude Code, Codex) requests approval or finishes a turn; tapping it opens the live session on the user's machine.
+- OpenCode is Zedra's initial market wedge: a local-first, open coding agent with no dominant first-party mobile app. The OpenCode integration is a plain OpenCode plugin at ~/.config/opencode/plugins/.
 - Zedra uses direct encrypted connectivity when possible and encrypted relay fallback when networks block the direct path.
 - Relays forward encrypted packets and cannot read code, terminal output, or files.
