@@ -137,7 +137,7 @@ fn current_username() -> String {
         .unwrap_or_else(|_| "unknown".to_string())
 }
 
-fn current_home_dir() -> Option<String> {
+pub(crate) fn current_home_dir() -> Option<String> {
     std::env::var("HOME")
         .ok()
         .or_else(|| std::env::var("USERPROFILE").ok())
@@ -2826,7 +2826,7 @@ async fn dispatch(
                     .await;
                 return Ok(());
             }
-            match uploads::store_upload(&state.workdir, &msg.data, &msg.extension) {
+            match uploads::store_upload(&msg.data, &msg.extension) {
                 Ok(path) => {
                     let _ = msg.tx.send(FsUploadResult { path, error: None }).await;
                 }

@@ -1,8 +1,10 @@
-/// Unified acquire-then-upload flow shared by iOS and Android: bridges
+/// Acquire-then-upload flow shared by iOS and Android: bridges
 /// `platform_bridge::acquire_image`'s callback into an async call, then uploads.
+/// The two phases are separate so the caller can show upload progress only once
+/// acquisition succeeds — never during the picker or after a cancel.
 use zedra_session::SessionHandle;
 
-use crate::platform_bridge::{self, ImageAcquireSource};
+use crate::platform_bridge::{self, ImageAcquireSource, PickedImage};
 
 #[derive(Debug)]
 pub enum ImageUploadError {
@@ -26,22 +28,25 @@ impl ImageUploadError {
     }
 }
 
-/// Acquires an image (native picker/clipboard → processed bytes) then
-/// uploads it to the host. Returns the workspace-relative path to paste.
-pub async fn acquire_and_upload(
-    source: ImageAcquireSource,
-    session: SessionHandle,
-) -> Result<String, ImageUploadError> {
+/// Acquires an image via the native picker/clipboard → processed bytes.
+/// `Cancelled` when the user dismisses the picker or the clipboard has no image.
+pub async fn acquire(source: ImageAcquireSource) -> Result<PickedImage, ImageUploadError> {
     let (tx, rx) = futures::channel::oneshot::channel();
     platform_bridge::acquire_image(source, move |result| {
         let _ = tx.send(result);
     });
-    let image = match rx.await {
-        Ok(Some(Ok(image))) => image,
-        Ok(Some(Err(msg))) => return Err(ImageUploadError::Acquire(msg)),
-        Ok(None) | Err(_) => return Err(ImageUploadError::Cancelled),
-    };
+    match rx.await {
+        Ok(Some(Ok(image))) => Ok(image),
+        Ok(Some(Err(msg))) => Err(ImageUploadError::Acquire(msg)),
+        Ok(None) | Err(_) => Err(ImageUploadError::Cancelled),
+    }
+}
 
+/// Uploads already-acquired image bytes to the host. Returns the path to paste.
+pub async fn upload(
+    image: PickedImage,
+    session: SessionHandle,
+) -> Result<String, ImageUploadError> {
     session
         .fs_upload(image.data, &image.extension)
         .await

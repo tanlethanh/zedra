@@ -31,17 +31,29 @@ private func fireResult(_ callbackID: UInt32, _ data: Data, _ ext: String) {
     }
 }
 
-private final class ImagePickerDelegate: NSObject, PHPickerViewControllerDelegate {
+private final class ImagePickerDelegate: NSObject, PHPickerViewControllerDelegate,
+    UIAdaptivePresentationControllerDelegate {
     let callbackID: UInt32
+    // The acquire callback must fire exactly once, or `image_upload_in_progress` sticks
+    // and no further uploads can start. Guards every dismissal path.
+    private var resolved = false
 
     init(callbackID: UInt32) {
         self.callbackID = callbackID
     }
 
+    // Returns true the first time only; subsequent calls are no-ops.
+    private func claim() -> Bool {
+        if resolved { return false }
+        resolved = true
+        pickerDelegates[callbackID] = nil
+        return true
+    }
+
     func picker(_ picker: PHPickerViewController, didFinishPicking results: [PHPickerResult]) {
         let callbackID = self.callbackID
         picker.dismiss(animated: true)
-        pickerDelegates[callbackID] = nil
+        guard claim() else { return }
 
         guard let provider = results.first?.itemProvider else {
             zedra_ios_image_acquire_cancel(callbackID)
@@ -60,10 +72,22 @@ private final class ImagePickerDelegate: NSObject, PHPickerViewControllerDelegat
             processImageData(data, callbackID: callbackID)
         }
     }
+
+    // Interactive (swipe) dismissal without a selection — resolve as a cancel.
+    func presentationControllerDidDismiss(_ presentationController: UIPresentationController) {
+        guard claim() else { return }
+        zedra_ios_image_acquire_cancel(callbackID)
+    }
 }
 
 private func acquireFromPhotoLibrary(_ callbackID: UInt32) {
     guard let presenter = NativePresentationBridge.topViewController() else {
+        zedra_ios_image_acquire_cancel(callbackID)
+        return
+    }
+    // A presenter already showing a modal can't present another — cancel so the
+    // in-progress guard resets instead of hanging forever.
+    if presenter.presentedViewController != nil {
         zedra_ios_image_acquire_cancel(callbackID)
         return
     }
@@ -76,6 +100,7 @@ private func acquireFromPhotoLibrary(_ callbackID: UInt32) {
     let delegate = ImagePickerDelegate(callbackID: callbackID)
     pickerDelegates[callbackID] = delegate
     picker.delegate = delegate
+    picker.presentationController?.delegate = delegate
     presenter.present(picker, animated: true)
 }
 
@@ -159,7 +184,7 @@ private func encodeJPEG(_ image: CGImage, quality: CGFloat) -> Data? {
 
 @_cdecl("ios_acquire_image")
 func ios_acquire_image(_ callbackID: UInt32, _ source: Int32) {
-    DispatchQueue.main.async {
+    NativePresentationBridge.onMain {
         if source == 1 {
             acquireFromClipboard(callbackID)
         } else {

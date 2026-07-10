@@ -405,6 +405,17 @@ enum NativePresentationBridge {
         return String(cString: pointer)
     }
 
+    /// Run `work` on the main thread, synchronously if already there. GPUI drives the
+    /// main thread via CADisplayLink, so a queued main-async block can be starved when
+    /// invoked from a native-menu action re-entering GPUI; running inline avoids the hop.
+    static func onMain(_ work: @escaping () -> Void) {
+        if Thread.isMainThread {
+            work()
+        } else {
+            DispatchQueue.main.async(execute: work)
+        }
+    }
+
     static func strings(count: Int32, labels: UnsafePointer<UnsafePointer<CChar>?>?) -> [String] {
         guard let labels, count > 0 else { return [] }
         return (0..<Int(count)).map { index in

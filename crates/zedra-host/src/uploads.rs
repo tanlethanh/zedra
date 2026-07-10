@@ -1,10 +1,13 @@
 // Storage and lifecycle for client-uploaded image files.
 //
-// Uploads land in `<workdir>/.zedra/uploads/`, a self-gitignored directory, under a
-// host-chosen filename (`<unix_secs>-<uuid_v4>.<ext>`). `resolve_path` still gates the
-// directory itself, since a pre-planted symlink there could otherwise escape the jail.
+// Uploads land in `~/.zedra/uploads/` on the host, under a host-chosen filename
+// (`<unix_secs>-<uuid_v4>.<ext>`), and the returned path is absolute. Home-level
+// (not project-scoped) keeps transient paste input out of every git repo and gives
+// one predictable place to find it, mirroring how coding agents cache pasted images
+// (`~/.claude/`, `~/.codex/`). `resolve_path` still gates the directory, since a
+// pre-planted symlink there could otherwise escape the jail.
 
-use crate::rpc_daemon::resolve_path;
+use crate::rpc_daemon::{current_home_dir, resolve_path};
 use anyhow::{Context, Result};
 use std::path::{Path, PathBuf};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
@@ -15,6 +18,13 @@ pub const UPLOADS_DIR: &str = ".zedra/uploads";
 pub const UPLOAD_GRACE: Duration = Duration::from_secs(7 * 24 * 60 * 60);
 const CLEANUP_INTERVAL: Duration = Duration::from_secs(6 * 60 * 60);
 const ALLOWED_EXTENSIONS: &[&str] = &["jpg", "jpeg", "png", "webp", "gif"];
+
+/// The host user's home directory, the base for `~/.zedra/uploads/`.
+fn uploads_base() -> Result<PathBuf> {
+    current_home_dir()
+        .map(PathBuf::from)
+        .context("could not determine home directory for uploads")
+}
 
 /// Lowercases and validates a client-supplied extension against an allowlist.
 /// Never trusts the client filename otherwise — only the extension is used,
@@ -28,19 +38,16 @@ pub fn sanitize_extension(ext: &str) -> Result<&'static str> {
         .with_context(|| format!("unsupported image extension: {ext:?}"))
 }
 
-/// Writes `data` into `<workdir>/.zedra/uploads/<unix_secs>-<uuid>.<ext>`,
-/// creating the directory and its self-ignoring `.gitignore` if needed.
-/// Returns the workspace-relative path as a string (forward-slash separated).
-pub fn store_upload(workdir: &Path, data: &[u8], extension: &str) -> Result<String> {
-    let ext = sanitize_extension(extension)?;
-    let dir = resolve_path(workdir, UPLOADS_DIR)?;
-    std::fs::create_dir_all(&dir).with_context(|| format!("failed to create {}", dir.display()))?;
+/// Writes `data` into `~/.zedra/uploads/<unix_secs>-<uuid>.<ext>`, creating the
+/// directory if needed. Returns the absolute path as a string.
+pub fn store_upload(data: &[u8], extension: &str) -> Result<String> {
+    store_upload_in(&uploads_base()?, data, extension)
+}
 
-    let gitignore = dir.join(".gitignore");
-    if !gitignore.exists() {
-        std::fs::write(&gitignore, "*\n")
-            .with_context(|| format!("failed to write {}", gitignore.display()))?;
-    }
+fn store_upload_in(base: &Path, data: &[u8], extension: &str) -> Result<String> {
+    let ext = sanitize_extension(extension)?;
+    let dir = resolve_path(base, UPLOADS_DIR)?;
+    std::fs::create_dir_all(&dir).with_context(|| format!("failed to create {}", dir.display()))?;
 
     let unix_secs = SystemTime::now()
         .duration_since(UNIX_EPOCH)
@@ -50,13 +57,17 @@ pub fn store_upload(workdir: &Path, data: &[u8], extension: &str) -> Result<Stri
     let path = dir.join(&filename);
     std::fs::write(&path, data).with_context(|| format!("failed to write {}", path.display()))?;
 
-    Ok(format!("{UPLOADS_DIR}/{filename}"))
+    Ok(path.to_string_lossy().into_owned())
 }
 
-/// Deletes uploaded files older than `grace`. Never deletes `.gitignore`.
-/// Returns the number of files removed. Missing directory is not an error.
-pub fn cleanup_uploads(workdir: &Path, grace: Duration) -> Result<usize> {
-    let dir = resolve_path(workdir, UPLOADS_DIR)?;
+/// Deletes uploaded files older than `grace`. Returns the number of files removed.
+/// Missing directory is not an error.
+pub fn cleanup_uploads(grace: Duration) -> Result<usize> {
+    cleanup_uploads_in(&uploads_base()?, grace)
+}
+
+fn cleanup_uploads_in(base: &Path, grace: Duration) -> Result<usize> {
+    let dir = resolve_path(base, UPLOADS_DIR)?;
     let entries = match std::fs::read_dir(&dir) {
         Ok(entries) => entries,
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(0),
@@ -68,9 +79,6 @@ pub fn cleanup_uploads(workdir: &Path, grace: Duration) -> Result<usize> {
     for entry in entries {
         let entry = entry?;
         let path = entry.path();
-        if path.file_name().and_then(|n| n.to_str()) == Some(".gitignore") {
-            continue;
-        }
         let Ok(meta) = entry.metadata() else { continue };
         let Ok(modified) = meta.modified() else {
             continue;
@@ -87,8 +95,8 @@ pub fn cleanup_uploads(workdir: &Path, grace: Duration) -> Result<usize> {
 
 /// Sweeps stale uploads once immediately, then on a fixed interval for the
 /// lifetime of the daemon. Failures are logged and never abort the loop.
-pub async fn run_cleanup_loop(workdir: PathBuf) {
-    match cleanup_uploads(&workdir, UPLOAD_GRACE) {
+pub async fn run_cleanup_loop() {
+    match cleanup_uploads(UPLOAD_GRACE) {
         Ok(0) => {}
         Ok(n) => tracing::info!("uploads: swept {n} stale file(s) on startup"),
         Err(e) => tracing::warn!("uploads: startup sweep failed: {e:#}"),
@@ -98,7 +106,7 @@ pub async fn run_cleanup_loop(workdir: PathBuf) {
     interval.tick().await; // skip immediate re-run — startup sweep covers it
     loop {
         interval.tick().await;
-        match cleanup_uploads(&workdir, UPLOAD_GRACE) {
+        match cleanup_uploads(UPLOAD_GRACE) {
             Ok(0) => {}
             Ok(n) => tracing::info!("uploads: swept {n} stale file(s)"),
             Err(e) => tracing::warn!("uploads: periodic sweep failed: {e:#}"),
@@ -125,14 +133,16 @@ mod tests {
     }
 
     #[test]
-    fn store_upload_creates_gitignore_and_returns_relative_path() {
-        let dir = tempfile::tempdir().unwrap();
-        let path = store_upload(dir.path(), b"fake-bytes", "jpg").unwrap();
+    fn store_upload_writes_file_and_returns_absolute_path() {
+        let base = tempfile::tempdir().unwrap();
+        let path = store_upload_in(base.path(), b"fake-bytes", "jpg").unwrap();
 
-        assert!(path.starts_with(".zedra/uploads/"));
+        assert!(Path::new(&path).is_absolute());
         assert!(path.ends_with(".jpg"));
+        let uploads = base.path().join(UPLOADS_DIR).canonicalize().unwrap();
+        assert!(Path::new(&path).starts_with(&uploads));
 
-        let filename = path.strip_prefix(".zedra/uploads/").unwrap();
+        let filename = Path::new(&path).file_name().unwrap().to_str().unwrap();
         let (secs, rest) = filename.split_once('-').expect("timestamp-uuid separator");
         assert!(secs.chars().all(|c| c.is_ascii_digit()));
         let uuid_part = rest.strip_suffix(".jpg").unwrap();
@@ -141,17 +151,13 @@ mod tests {
             "not a uuid: {uuid_part}"
         );
 
-        let gitignore = dir.path().join(".zedra/uploads/.gitignore");
-        assert_eq!(std::fs::read_to_string(&gitignore).unwrap(), "*\n");
-
-        let full_path = dir.path().join(&path);
-        assert_eq!(std::fs::read(full_path).unwrap(), b"fake-bytes");
+        assert_eq!(std::fs::read(&path).unwrap(), b"fake-bytes");
     }
 
     #[test]
     fn store_upload_rejects_unsupported_extension() {
-        let dir = tempfile::tempdir().unwrap();
-        assert!(store_upload(dir.path(), b"data", "exe").is_err());
+        let base = tempfile::tempdir().unwrap();
+        assert!(store_upload_in(base.path(), b"data", "exe").is_err());
     }
 
     #[test]
@@ -164,7 +170,7 @@ mod tests {
         #[cfg(windows)]
         std::os::windows::fs::symlink_dir(outside.path(), workdir.path().join(".zedra")).unwrap();
 
-        let result = store_upload(workdir.path(), b"data", "jpg");
+        let result = store_upload_in(workdir.path(), b"data", "jpg");
         assert!(result.is_err(), "expected jail escape to be rejected");
         assert!(
             std::fs::read_dir(outside.path()).unwrap().next().is_none(),
@@ -184,7 +190,7 @@ mod tests {
         std::os::windows::fs::symlink_dir(outside.path(), workdir.path().join(".zedra/uploads"))
             .unwrap();
 
-        let result = store_upload(workdir.path(), b"data", "jpg");
+        let result = store_upload_in(workdir.path(), b"data", "jpg");
         assert!(result.is_err(), "expected jail escape to be rejected");
         assert!(
             std::fs::read_dir(outside.path()).unwrap().next().is_none(),
@@ -205,7 +211,7 @@ mod tests {
         std::os::windows::fs::symlink_dir(outside.path(), workdir.path().join(".zedra/uploads"))
             .unwrap();
 
-        let result = cleanup_uploads(workdir.path(), Duration::from_secs(0));
+        let result = cleanup_uploads_in(workdir.path(), Duration::from_secs(0));
         assert!(result.is_err(), "expected jail escape to be rejected");
         assert!(
             outside.path().join("secret.jpg").exists(),
@@ -228,20 +234,15 @@ mod tests {
         let fresh = uploads_dir.join("2-fresh.jpg");
         std::fs::write(&fresh, b"new").unwrap();
 
-        let gitignore = uploads_dir.join(".gitignore");
-        std::fs::write(&gitignore, "*\n").unwrap();
-        set_file_mtime(&gitignore, old_time).unwrap();
-
-        let removed = cleanup_uploads(dir.path(), Duration::from_secs(7 * 86400)).unwrap();
+        let removed = cleanup_uploads_in(dir.path(), Duration::from_secs(7 * 86400)).unwrap();
         assert_eq!(removed, 1);
         assert!(!stale.exists());
         assert!(fresh.exists());
-        assert!(gitignore.exists());
     }
 
     #[test]
     fn cleanup_uploads_missing_dir_is_ok() {
         let dir = tempfile::tempdir().unwrap();
-        assert_eq!(cleanup_uploads(dir.path(), UPLOAD_GRACE).unwrap(), 0);
+        assert_eq!(cleanup_uploads_in(dir.path(), UPLOAD_GRACE).unwrap(), 0);
     }
 }

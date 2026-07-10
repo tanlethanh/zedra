@@ -61,6 +61,9 @@ pub struct WorkspaceTerminal {
     scroll_to_bottom_button_hide_pending: bool,
     scroll_to_bottom_button_hide_generation: u64,
     image_upload_in_progress: bool,
+    /// Non-input focus target. Moving focus here drops the terminal keyboard without
+    /// clearing focus entirely (which the terminal input would immediately re-grab).
+    container_focus: FocusHandle,
     _subscriptions: Vec<Subscription>,
 }
 
@@ -443,6 +446,7 @@ impl WorkspaceTerminal {
             scroll_to_bottom_button_hide_pending: false,
             scroll_to_bottom_button_hide_generation: 0,
             image_upload_in_progress: false,
+            container_focus: cx.focus_handle(),
             _subscriptions: subscriptions,
         };
         this.sync_terminal_theme(cx);
@@ -503,14 +507,30 @@ impl WorkspaceTerminal {
         self.image_upload_in_progress = true;
         cx.notify();
 
-        let progress_id = platform_bridge::allocate_native_progress_id();
-        platform_bridge::show_native_progress(progress_id, "Uploading image…");
+        // Drop the terminal keyboard before the picker appears by moving focus to a
+        // non-input element. `active_window()` is None on iOS, so use the window handles.
+        for window in cx.windows() {
+            let container_focus = self.container_focus.clone();
+            let _ = window.update(cx, move |_, window, cx| {
+                window.hide_soft_keyboard();
+                window.focus(&container_focus, cx);
+            });
+        }
 
         let session_handle = self.session_handle.clone();
         let terminal_view = self.terminal_view.clone();
         cx.spawn(async move |this, cx| {
-            let result = image_upload::acquire_and_upload(source, session_handle).await;
-            platform_bridge::hide_native_progress(progress_id);
+            // Show the progress HUD only for the upload phase — never during the
+            // picker or after a cancel.
+            let result = async {
+                let image = image_upload::acquire(source).await?;
+                let progress_id = platform_bridge::allocate_native_progress_id();
+                platform_bridge::show_native_progress(progress_id, "Uploading image…");
+                let uploaded = image_upload::upload(image, session_handle).await;
+                platform_bridge::hide_native_progress(progress_id);
+                uploaded
+            }
+            .await;
             let _ = this.update(cx, |this, cx| {
                 this.image_upload_in_progress = false;
                 match result {
@@ -619,6 +639,7 @@ impl Render for WorkspaceTerminal {
 
         div()
             .id(("workspace-terminal-surface", cx.entity_id()))
+            .track_focus(&self.container_focus)
             .relative()
             .size_full()
             // Alt-screen TUIs (vim, OpenCode) need the container to shrink so reconcile fires

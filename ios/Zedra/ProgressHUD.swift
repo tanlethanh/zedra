@@ -81,7 +81,8 @@ enum ProgressHUD {
             stack.trailingAnchor.constraint(equalTo: effectView.contentView.trailingAnchor, constant: -16),
             label.widthAnchor.constraint(lessThanOrEqualToConstant: 240),
             effectView.centerXAnchor.constraint(equalTo: window.centerXAnchor),
-            effectView.topAnchor.constraint(equalTo: window.safeAreaLayoutGuide.topAnchor, constant: 12),
+            effectView.bottomAnchor.constraint(
+                equalTo: window.safeAreaLayoutGuide.bottomAnchor, constant: -16),
             effectView.leadingAnchor.constraint(greaterThanOrEqualTo: window.leadingAnchor, constant: 16),
             effectView.trailingAnchor.constraint(lessThanOrEqualTo: window.trailingAnchor, constant: -16),
         ])
@@ -109,14 +110,10 @@ enum ProgressHUD {
 @_cdecl("ios_present_native_progress")
 func ios_present_native_progress(_ id: UInt32, _ message: UnsafePointer<CChar>?) {
     let text = NativePresentationBridge.string(message) ?? ""
-    DispatchQueue.main.async {
-        ProgressHUD.show(id: id, message: text)
-    }
+    NativePresentationBridge.onMain { ProgressHUD.show(id: id, message: text) }
 }
 
 @_cdecl("ios_dismiss_native_progress")
 func ios_dismiss_native_progress(_ id: UInt32) {
-    DispatchQueue.main.async {
-        ProgressHUD.dismiss(id: id)
-    }
+    NativePresentationBridge.onMain { ProgressHUD.dismiss(id: id) }
 }
