@@ -144,8 +144,14 @@ impl MakiActor {
             if limit.is_some_and(|n| files.len() >= n) {
                 continue;
             }
-            if let Some(file) = Self::read_session_file(&path, mtime)? {
-                files.push(file);
+            match Self::read_session_file(&path, mtime) {
+                Ok(Some(file)) => files.push(file),
+                Ok(None) => {}
+                Err(error) => tracing::warn!(
+                    path = %path.display(),
+                    error = %error,
+                    "maki: skipping unreadable session transcript",
+                ),
             }
         }
         Ok((files, total))
