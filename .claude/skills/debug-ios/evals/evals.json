@@ -1,0 +1,23 @@
+{
+  "skill_name": "debug-ios",
+  "evals": [
+    {
+      "id": 1,
+      "prompt": "hey the workspace card for 'zedra-acp' just spins forever on 'Connecting...' even though the host is definitely up and reachable via ssh - can you dig into why the phone side isn't completing the handshake",
+      "expected_output": "A Phase 0-3 run: verifies device/devtool/log daemon first, forms a hypothesis grounded in reading the actual connect/handshake code path, drives the workspace card via devtool (tap or the 'open' action) rather than asking the human to reproduce it, captures timestamped logs around the connect attempt, and reports a root cause with re-observed evidence or explicitly stops to ask when it can't reproduce/verify — not a guess-and-ship fix.",
+      "files": []
+    },
+    {
+      "id": 2,
+      "prompt": "when I background the app for like 30 seconds then come back, the terminal in my active workspace shows a blank screen until I manually pull to refresh or resize - reproduce this on my connected iphone and find the root cause",
+      "expected_output": "Verifies a physical device is connected and the log daemon actually captures fresh, timestamped output (not a stale/frozen capture) before looping. Plans action steps that include the background/foreground transition specifically (noting devtool's gesture limits if that transition itself can't be synthesized) and states expected log signals for the resize/refresh path. Adds properly-prefixed debug logs only where existing signal is insufficient, and flags in the summary if any were left in.",
+      "files": []
+    },
+    {
+      "id": 3,
+      "prompt": "can you check what's happening on my iphone right now, the app feels stuck on some kind of loading state and I don't wanna keep guessing",
+      "expected_output": "Triggers the skill even though the user never said 'debug' or named it explicitly (tests the description's triggering phrasing). Runs Phase 0 verify, uses devtool `list`/`elements` plus the log daemon to observe actual current state rather than guessing, and reports concretely what state it found before proposing next steps — output hygiene rules apply (no raw JSON/log dumps pasted into the response, findings stated with short supporting quotes only).",
+      "files": []
+    }
+  ]
+}

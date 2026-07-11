@@ -38,11 +38,15 @@ ZEDRA_SKIP_RUST_XCODE_BUILD=1 xcodebuild build \
 ### Logs
 
 ```bash
-./scripts/log-ios.sh                     # stream all logs via USB
-./scripts/log-ios.sh --filter zedra      # filtered
-./scripts/log-ios.sh --select-device     # choose device
-./scripts/log-ios.sh --simulator         # stream from a booted simulator
+./scripts/ios-log.sh tail                     # stream all logs via USB
+./scripts/ios-log.sh tail --filter zedra      # filtered
+./scripts/ios-log.sh tail --select-device     # choose device
+./scripts/ios-log.sh tail --simulator         # stream from a booted simulator
 ```
+
+For background capture queryable by time range (not just live tail), see
+`./scripts/ios-log.sh daemon start|status|stop`, `./scripts/ios-log.sh query`,
+and `./scripts/ios-log.sh wait`.
 
 For physical devices, the log script only shows USB-paired devices visible to
 `libimobiledevice`. Use `--select-device` after switching devices.
@@ -96,7 +100,7 @@ scripts/
   build-ios.sh        # Rust → ZedraFFI.xcframework
   xcode-build-rust.sh # Xcode target wrapper around build-ios.sh
   run-ios.sh          # Full pipeline: build + install + launch
-  log-ios.sh          # Stream device logs
+  ios-log.sh          # Stream/query/wait-for-pattern device logs (tail|daemon|query|wait)
 
 crates/zedra/src/ios/bridge.rs  # Rust side of iOS FFI
 crates/zedra/src/ios_stub.c     # Weak C stubs for Rust → Swift symbols

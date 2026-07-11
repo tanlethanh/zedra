@@ -18,6 +18,7 @@ PREVIEW=false
 DEBUG_TELEMETRY=false
 DEBUG_LOGS=false
 NO_TELEMETRY=false
+DEVTOOL=false
 # By default build both targets so the xcframework works on sim and device.
 # Pass --sim or --device to only build one (faster incremental builds).
 BUILD_SIM=true
@@ -43,6 +44,10 @@ for arg in "$@"; do
             DEBUG_FEATURES=true
             DEBUG_LOGS=true
             ;;
+        --devtool)
+            FEATURES="$FEATURES,devtool"
+            DEVTOOL=true
+            ;;
         --release)
             PROFILE="--release"
             PROFILE_DIR="release"
@@ -57,8 +62,8 @@ for arg in "$@"; do
     esac
 done
 
-if [ "$RELEASE" = true ] && [ "$DEBUG_FEATURES" = true ]; then
-    echo "ERROR: iOS release builds cannot enable --debug or --debug-telemetry." >&2
+if [ "$RELEASE" = true ] && { [ "$DEBUG_FEATURES" = true ] || [ "$DEVTOOL" = true ]; }; then
+    echo "ERROR: iOS release builds cannot enable --debug, --debug-telemetry, or --devtool." >&2
     exit 1
 fi
 
@@ -71,6 +76,7 @@ fi
 [ "$DEBUG_TELEMETRY" = true ] && echo "Debug telemetry enabled (events logged to console)"
 [ "$DEBUG_LOGS" = true ] && echo "Debug logs enabled (verbose iroh/quinn output)"
 [ "$NO_TELEMETRY" = true ] && echo "Mobile telemetry compiled out"
+[ "$DEVTOOL" = true ] && echo "Devtool enabled: in-app HTTP server on 127.0.0.1:9777"
 [ "$RELEASE" = true ] && echo "Release mode enabled"
 
 # Use the deployment target passed in from run-ios.sh (which detects the

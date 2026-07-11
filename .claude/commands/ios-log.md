@@ -3,7 +3,7 @@ Stream and analyze logs from a USB-connected iOS device running Zedra.
 ## Run the script
 
 ```bash
-./scripts/ios-log.sh [--filter <pattern>] [--select-device]
+./scripts/ios-log.sh tail [--filter <pattern>] [--select-device]
 ```
 
 Always uses `idevicesyslog` over USB — no sudo required.
@@ -11,8 +11,11 @@ Always uses `idevicesyslog` over USB — no sudo required.
 - `--filter <pattern>` — extra grep pattern on top of the default Zedra filter
 - `--select-device` — ignore saved device pref and re-prompt
 
-**Device preference** is session-scoped (`/tmp/zedra-ios-device-$PPID`, shared with `/ios-dev`).
-The script handles selection automatically — read the pref file, prompt if missing, save choice.
+**Device preference** is one global target per repo checkout (`/tmp/zedra-ios-device`,
+shared with `/ios-dev`, `devtool.sh`, `ios-log.sh daemon`). The script handles selection
+automatically — read the pref file, prompt if missing, save choice.
+
+For background capture queryable by time range, see `./scripts/ios-log.sh daemon`/`query`/`wait`.
 
 ## Log format
 

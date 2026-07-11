@@ -34,7 +34,7 @@ curl -fsSL https://raw.githubusercontent.com/tanlethanh/zedra/main/scripts/insta
 
 **First install on Windows:**
 ```powershell
-powershell -c "irm https://raw.githubusercontent.com/tanlethanh/zedra/main/scripts/install.ps1 | iex"
+irm https://raw.githubusercontent.com/tanlethanh/zedra/main/scripts/install.ps1 | iex
 ```
 
 **Specific version:**

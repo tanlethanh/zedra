@@ -16,7 +16,7 @@ no-telemetry = []
 debug-telemetry = []
 # Set log level to Debug (default is Info). Enables verbose iroh/quinn logs and tracing subscriber.
 debug-logs = ["tracing-subscriber"]
-devtool = ["gpui_android/devtool"]
+devtool = ["gpui_android/devtool", "gpui_ios/devtool"]
 
 [dependencies]
 gpui = { path = "../../vendor/zed/crates/gpui", default-features = false }
@@ -77,6 +77,7 @@ ndk-context = "0.1"
 
 [target.'cfg(target_os = "ios")'.dependencies]
 gpui_ios = { path = "../../vendor/zed/crates/gpui_ios", features = ["font-kit"] }
+metal = "0.33"
 
 [build-dependencies]
 cbindgen = "0.29"
