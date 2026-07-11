@@ -128,6 +128,13 @@ unsafe extern "C" {
     fn ios_dismiss_custom_sheet();
     /// Open a URL in the system browser via UIApplication.
     fn ios_open_url(url: *const std::ffi::c_char);
+    /// Present a native in-app WKWebView. `config_json` is the serialized
+    /// `webview::WebviewConfig`; `callback_id` keys the Rust handlers.
+    fn ios_open_webview(callback_id: u32, config_json: *const std::ffi::c_char);
+    /// Dismiss the currently presented webview.
+    fn ios_close_webview();
+    /// Evaluate JavaScript in the currently presented webview.
+    fn ios_eval_webview_js(js: *const std::ffi::c_char);
     /// Trigger a UIKit haptic feedback generator.
     /// kind encoding matches HapticFeedback::to_i32().
     fn ios_trigger_haptic(kind: i32);
@@ -281,6 +288,25 @@ impl PlatformBridge for IosBridge {
         use std::ffi::CString;
         if let Ok(c_url) = CString::new(url) {
             unsafe { ios_open_url(c_url.as_ptr()) };
+        }
+    }
+
+    fn open_webview(&self, callback_id: u32, _url: &str, config_json: &str) {
+        use std::ffi::CString;
+        let Ok(c_config) = CString::new(config_json) else {
+            return;
+        };
+        unsafe { ios_open_webview(callback_id, c_config.as_ptr()) };
+    }
+
+    fn close_webview(&self) {
+        unsafe { ios_close_webview() };
+    }
+
+    fn eval_webview_js(&self, js: &str) {
+        use std::ffi::CString;
+        if let Ok(c_js) = CString::new(js) {
+            unsafe { ios_eval_webview_js(c_js.as_ptr()) };
         }
     }
 
@@ -631,6 +657,41 @@ pub extern "C" fn zedra_ios_text_input_result(callback_id: u32, value: *const st
 #[unsafe(no_mangle)]
 pub extern "C" fn zedra_ios_text_input_dismiss(callback_id: u32) {
     platform_bridge::dispatch_text_input_dismiss(callback_id);
+}
+
+/// Deliver a message the webview page posted through its JS bridge.
+#[unsafe(no_mangle)]
+pub extern "C" fn zedra_ios_webview_message(callback_id: u32, message: *const std::ffi::c_char) {
+    if message.is_null() {
+        return;
+    }
+    let message = unsafe { std::ffi::CStr::from_ptr(message) }
+        .to_str()
+        .unwrap_or("")
+        .to_string();
+    crate::webview::dispatch_message(callback_id, message);
+}
+
+/// Ask Rust whether a webview navigation should proceed. Returns `true` to
+/// allow. Called synchronously on the UI thread.
+#[unsafe(no_mangle)]
+pub extern "C" fn zedra_ios_webview_navigate(
+    callback_id: u32,
+    url: *const std::ffi::c_char,
+) -> bool {
+    if url.is_null() {
+        return true;
+    }
+    let url = unsafe { std::ffi::CStr::from_ptr(url) }
+        .to_str()
+        .unwrap_or("");
+    crate::webview::dispatch_navigate(callback_id, url)
+}
+
+/// Called when the webview is dismissed.
+#[unsafe(no_mangle)]
+pub extern "C" fn zedra_ios_webview_dismiss(callback_id: u32) {
+    crate::webview::dispatch_dismiss(callback_id);
 }
 
 /// Called from the native app delegate when the app enters the background.

@@ -1,6 +1,8 @@
 import Foundation
+import Network
 import ObjectiveC.runtime
 import UIKit
+import WebKit
 import ZedraFFI
 
 @_silgen_name("gpui_ios_request_frame_forced")
@@ -2104,6 +2106,674 @@ final class CustomSheetViewController: UIViewController, UIGestureRecognizerDele
         sheet.preferredCornerRadius = configuration.preferredCornerRadius
     }
 
+}
+
+/// Decoded form of the Rust `webview::WebviewConfig` JSON.
+private struct NativeWebViewConfig: Decodable {
+    let url: String
+    var title: String = ""
+    var messageHandlerName: String?
+    var interceptNavigation: Bool = false
+    var socksProxy: String?
+}
+
+/// Forwards `window.webkit.messageHandlers.<name>` posts to Rust. Holds only the
+/// callback id (a value), so it adds no retain cycle through the config.
+private final class NativeWebViewMessageHandler: NSObject, WKScriptMessageHandler {
+    private let callbackID: UInt32
+
+    init(callbackID: UInt32) {
+        self.callbackID = callbackID
+    }
+
+    func userContentController(
+        _ userContentController: WKUserContentController,
+        didReceive message: WKScriptMessage
+    ) {
+        let body: String
+        if let string = message.body as? String {
+            body = string
+        } else if let data = try? JSONSerialization.data(withJSONObject: message.body),
+                  let json = String(data: data, encoding: .utf8) {
+            body = json
+        } else {
+            body = String(describing: message.body)
+        }
+        body.withCString { zedra_ios_webview_message(callbackID, $0) }
+    }
+}
+
+private final class NativeWebViewController: UIViewController, WKNavigationDelegate, UITextFieldDelegate {
+    let callbackID: UInt32
+    private let config: NativeWebViewConfig
+    private let initialURL: URL
+    let webView: WKWebView
+    private let progressView = UIProgressView(progressViewStyle: .bar)
+    private let topBar = UIView()
+    private let lockIcon = UIImageView()
+    private let urlField = UITextField()
+    private let backButton = UIButton(type: .system)
+    private let forwardButton = UIButton(type: .system)
+    private let shareButton = UIButton(type: .system)
+    private let doneButton = UIButton(type: .system)
+    private let reloadButton = UIButton(type: .system)
+    private var urlFieldLeadingIdle: NSLayoutConstraint!
+    private var urlFieldLeadingEditing: NSLayoutConstraint!
+    private var urlFieldTrailingIdle: NSLayoutConstraint!
+    private var urlFieldTrailingEditing: NSLayoutConstraint!
+    private var progressObservation: NSKeyValueObservation?
+    private var didReportDismiss = false
+    private var faviconTask: URLSessionDataTask?
+    private var faviconHost: String?
+    // The URL we asked the webview to load, and (when non-nil) the URL whose
+    // failed load is currently showing the inline error page. Retry reloads
+    // this real URL instead of the error HTML.
+    private var currentTarget: URL
+    private var showingErrorFor: URL?
+    var onDismiss: (() -> Void)?
+
+    // Sentinel scheme the error page's "Try Again" button navigates to; caught
+    // in decidePolicyFor to reload the failed URL rather than a network target.
+    private static let retryScheme = "x-zedra-retry"
+
+    init(callbackID: UInt32, config: NativeWebViewConfig, url: URL) {
+        self.callbackID = callbackID
+        self.config = config
+        initialURL = url
+        currentTarget = url
+
+        let configuration = WKWebViewConfiguration()
+        // Non-persistent store: each open starts a clean, private session.
+        let dataStore = WKWebsiteDataStore.nonPersistent()
+        configuration.websiteDataStore = dataStore
+        // Route the webview through the in-app SOCKS proxy (the web tunnel). The
+        // page loads the literal localhost URL; proxyConfigurations carries its
+        // localhost:* traffic to the proxy. iOS 17+.
+        if #available(iOS 17.0, *), let proxy = config.socksProxy, !proxy.isEmpty {
+            let parts = proxy.split(separator: ":")
+            if parts.count == 2,
+               let ip = IPv4Address(String(parts[0])),
+               let portNum = UInt16(parts[1]),
+               let port = NWEndpoint.Port(rawValue: portNum) {
+                let endpoint = NWEndpoint.hostPort(host: .ipv4(ip), port: port)
+                dataStore.proxyConfigurations = [ProxyConfiguration(socksv5Proxy: endpoint)]
+            }
+        }
+        if let name = config.messageHandlerName, !name.isEmpty {
+            configuration.userContentController.add(
+                NativeWebViewMessageHandler(callbackID: callbackID),
+                name: name
+            )
+        }
+
+        webView = WKWebView(frame: .zero, configuration: configuration)
+        super.init(nibName: nil, bundle: nil)
+    }
+
+    @available(*, unavailable)
+    required init?(coder: NSCoder) {
+        fatalError("init(coder:) has not been implemented")
+    }
+
+    override func viewDidLoad() {
+        super.viewDidLoad()
+        overrideUserInterfaceStyle = NativePresentationTheme.interfaceStyle
+        view.backgroundColor = NativePresentationTheme.backgroundColor
+
+        // Safari-style chrome lives in a custom top bar, not the nav bar.
+        navigationController?.setNavigationBarHidden(true, animated: false)
+
+        webView.navigationDelegate = self
+        webView.allowsBackForwardNavigationGestures = true
+        webView.backgroundColor = NativePresentationTheme.backgroundColor
+        webView.scrollView.backgroundColor = NativePresentationTheme.backgroundColor
+        webView.translatesAutoresizingMaskIntoConstraints = false
+        progressView.translatesAutoresizingMaskIntoConstraints = false
+        progressView.progressTintColor = NativePresentationTheme.accentGreen
+        progressView.trackTintColor = .clear
+
+        view.addSubview(webView)
+        setupTopBar()
+        view.addSubview(progressView)
+
+        NSLayoutConstraint.activate([
+            webView.leadingAnchor.constraint(equalTo: view.leadingAnchor),
+            webView.trailingAnchor.constraint(equalTo: view.trailingAnchor),
+            webView.topAnchor.constraint(equalTo: topBar.bottomAnchor),
+            webView.bottomAnchor.constraint(equalTo: view.bottomAnchor),
+
+            // Progress sits on the seam between the top bar and the page.
+            progressView.leadingAnchor.constraint(equalTo: view.leadingAnchor),
+            progressView.trailingAnchor.constraint(equalTo: view.trailingAnchor),
+            progressView.topAnchor.constraint(equalTo: topBar.bottomAnchor),
+        ])
+
+        let dismissKeyboardGesture = UITapGestureRecognizer(target: self, action: #selector(webViewAreaTapped))
+        dismissKeyboardGesture.cancelsTouchesInView = false
+        webView.addGestureRecognizer(dismissKeyboardGesture)
+
+        updateChrome()
+        showFaviconPlaceholder()
+        progressObservation = webView.observe(\.estimatedProgress, options: [.new]) {
+            [weak self] webView, _ in
+            self?.progressView.progress = Float(webView.estimatedProgress)
+            self?.progressView.isHidden = webView.estimatedProgress >= 1.0
+        }
+        loadURL(initialURL)
+    }
+
+    /// Load a real URL, tracking it as the current target and clearing any
+    /// error state. All network navigations route through here so retry has a
+    /// URL to reload.
+    private func loadURL(_ url: URL) {
+        currentTarget = url
+        showingErrorFor = nil
+        webView.load(URLRequest(url: url))
+    }
+
+    /// Build the top bar as a single row: back, forward, a flexible capsule
+    /// address field (favicon + URL + reload), share, and close.
+    private func setupTopBar() {
+        topBar.translatesAutoresizingMaskIntoConstraints = false
+        topBar.backgroundColor = NativePresentationTheme.backgroundColor
+        view.addSubview(topBar)
+
+        let hairline = UIView()
+        hairline.translatesAutoresizingMaskIntoConstraints = false
+        hairline.backgroundColor = NativePresentationTheme.borderColor
+        topBar.addSubview(hairline)
+
+        // Address capsule (expands to fill the row between the buttons).
+        let addressPill = UIView()
+        addressPill.translatesAutoresizingMaskIntoConstraints = false
+        addressPill.backgroundColor = NativePresentationTheme.surfaceColor
+        addressPill.layer.cornerRadius = 18
+        addressPill.layer.cornerCurve = .continuous
+        addressPill.setContentHuggingPriority(.defaultLow, for: .horizontal)
+        addressPill.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
+
+        lockIcon.translatesAutoresizingMaskIntoConstraints = false
+        lockIcon.tintColor = NativePresentationTheme.secondaryTextColor
+        // .center for the placeholder symbol so it renders at its natural point size instead of
+        // stretching to fill the icon box (unlike a UIButton, UIImageView.scaleAspectFit scales up).
+        // Favicon bitmaps switch to .scaleAspectFit in fetchFavicon so oversized images shrink to fit.
+        lockIcon.contentMode = .center
+        lockIcon.preferredSymbolConfiguration = UIImage.SymbolConfiguration(pointSize: 17, weight: .regular)
+        addressPill.addSubview(lockIcon)
+
+        urlField.translatesAutoresizingMaskIntoConstraints = false
+        urlField.font = .systemFont(ofSize: 15, weight: .regular)
+        urlField.textColor = NativePresentationTheme.primaryTextColor
+        urlField.textAlignment = .center
+        urlField.adjustsFontSizeToFitWidth = false
+        urlField.autocapitalizationType = .none
+        urlField.autocorrectionType = .no
+        urlField.spellCheckingType = .no
+        urlField.keyboardType = .URL
+        urlField.returnKeyType = .go
+        urlField.clearButtonMode = .whileEditing
+        urlField.delegate = self
+        urlField.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
+        addressPill.addSubview(urlField)
+
+        configureBarButton(reloadButton, systemName: "arrow.clockwise", pointSize: 15, action: #selector(reloadTapped))
+        addressPill.addSubview(reloadButton)
+
+        configureBarButton(backButton, systemName: "chevron.backward", pointSize: 20, action: #selector(backTapped))
+        configureBarButton(forwardButton, systemName: "chevron.forward", pointSize: 20, action: #selector(forwardTapped))
+        configureBarButton(shareButton, systemName: "square.and.arrow.up", pointSize: 15, action: #selector(shareTapped))
+        configureBarButton(doneButton, systemName: "xmark", pointSize: 17, action: #selector(closeTapped))
+        for button in [backButton, forwardButton, shareButton, doneButton] {
+            button.widthAnchor.constraint(equalToConstant: 30).isActive = true
+            // Uniform height (matching the address pill) keeps every glyph on the same vertical center.
+            button.heightAnchor.constraint(equalToConstant: 36).isActive = true
+            button.setContentHuggingPriority(.required, for: .horizontal)
+        }
+
+        let row = UIStackView(arrangedSubviews: [backButton, forwardButton, addressPill, shareButton, doneButton])
+        row.translatesAutoresizingMaskIntoConstraints = false
+        row.axis = .horizontal
+        row.alignment = .center
+        row.spacing = 8
+        topBar.addSubview(row)
+
+        NSLayoutConstraint.activate([
+            topBar.leadingAnchor.constraint(equalTo: view.leadingAnchor),
+            topBar.trailingAnchor.constraint(equalTo: view.trailingAnchor),
+            topBar.topAnchor.constraint(equalTo: view.topAnchor),
+
+            hairline.leadingAnchor.constraint(equalTo: topBar.leadingAnchor),
+            hairline.trailingAnchor.constraint(equalTo: topBar.trailingAnchor),
+            hairline.bottomAnchor.constraint(equalTo: topBar.bottomAnchor),
+            hairline.heightAnchor.constraint(equalToConstant: 0.5),
+
+            row.topAnchor.constraint(equalTo: topBar.safeAreaLayoutGuide.topAnchor, constant: 8),
+            row.leadingAnchor.constraint(equalTo: topBar.leadingAnchor, constant: 12),
+            row.trailingAnchor.constraint(equalTo: topBar.trailingAnchor, constant: -12),
+            row.bottomAnchor.constraint(equalTo: topBar.bottomAnchor, constant: -8),
+
+            addressPill.heightAnchor.constraint(equalToConstant: 36),
+
+            // Favicon/lock icon renders at the same visual size as the reload glyph.
+            lockIcon.leadingAnchor.constraint(equalTo: addressPill.leadingAnchor, constant: 8),
+            lockIcon.centerYAnchor.constraint(equalTo: addressPill.centerYAnchor),
+            lockIcon.widthAnchor.constraint(equalToConstant: 20),
+            lockIcon.heightAnchor.constraint(equalToConstant: 20),
+
+            reloadButton.trailingAnchor.constraint(equalTo: addressPill.trailingAnchor, constant: -3),
+            reloadButton.centerYAnchor.constraint(equalTo: addressPill.centerYAnchor),
+            reloadButton.widthAnchor.constraint(equalToConstant: 30),
+            reloadButton.heightAnchor.constraint(equalTo: addressPill.heightAnchor),
+
+            urlField.centerYAnchor.constraint(equalTo: addressPill.centerYAnchor),
+        ])
+
+        // Idle: field sits between the favicon and reload button. Editing: field expands to
+        // fill the pill (favicon/reload hide) once back/forward/share also hide in the row.
+        urlFieldLeadingIdle = urlField.leadingAnchor.constraint(equalTo: lockIcon.trailingAnchor, constant: 2)
+        urlFieldTrailingIdle = urlField.trailingAnchor.constraint(equalTo: reloadButton.leadingAnchor, constant: -2)
+        urlFieldLeadingEditing = urlField.leadingAnchor.constraint(equalTo: addressPill.leadingAnchor, constant: 12)
+        urlFieldTrailingEditing = urlField.trailingAnchor.constraint(equalTo: addressPill.trailingAnchor, constant: -8)
+        NSLayoutConstraint.activate([urlFieldLeadingIdle, urlFieldTrailingIdle])
+    }
+
+    private func configureBarButton(
+        _ button: UIButton,
+        systemName: String,
+        pointSize: CGFloat,
+        action: Selector
+    ) {
+        button.translatesAutoresizingMaskIntoConstraints = false
+        button.setImage(UIImage(systemName: systemName), for: .normal)
+        button.tintColor = NativePresentationTheme.primaryTextColor
+        button.setPreferredSymbolConfiguration(
+            UIImage.SymbolConfiguration(pointSize: pointSize, weight: .regular),
+            forImageIn: .normal
+        )
+        button.addTarget(self, action: action, for: .touchUpInside)
+    }
+
+    /// Notify Rust exactly once that this webview is gone.
+    func reportDismiss() {
+        guard !didReportDismiss else { return }
+        didReportDismiss = true
+        zedra_ios_webview_dismiss(callbackID)
+        onDismiss?()
+    }
+
+    func webView(_ webView: WKWebView, didCommit navigation: WKNavigation!) {
+        updateChrome()
+        showFaviconPlaceholder()
+    }
+
+    func webView(_ webView: WKWebView, didFinish navigation: WKNavigation!) {
+        updateChrome()
+        loadFavicon()
+    }
+
+    // A blocked/failed load (ATS rejecting cleartext, or the tunnel's host-side
+    // connect refusing because no server is listening) used to render a blank
+    // white page. Now it shows an inline error page with a retry.
+    func webView(_ webView: WKWebView, didFailProvisionalNavigation navigation: WKNavigation!, withError error: Error) {
+        let nsError = error as NSError
+        NSLog(
+            "[debug:webview] didFailProvisionalNavigation url=%@ domain=%@ code=%d description=%@",
+            webView.url?.absoluteString ?? initialURL.absoluteString,
+            nsError.domain,
+            nsError.code,
+            nsError.localizedDescription
+        )
+        showErrorPage(for: nsError)
+    }
+
+    func webView(_ webView: WKWebView, didFail navigation: WKNavigation!, withError error: Error) {
+        let nsError = error as NSError
+        NSLog(
+            "[debug:webview] didFail url=%@ domain=%@ code=%d description=%@",
+            webView.url?.absoluteString ?? initialURL.absoluteString,
+            nsError.domain,
+            nsError.code,
+            nsError.localizedDescription
+        )
+        showErrorPage(for: nsError)
+    }
+
+    /// Replace the blank page with an inline error page for the failed target.
+    /// Skips user- or policy-initiated cancellations (navigating away, our own
+    /// retry-sentinel cancel), which surface here as spurious "failures".
+    private func showErrorPage(for error: NSError) {
+        guard !Self.isCancellation(error) else { return }
+        let target = currentTarget
+        showingErrorFor = target
+        // baseURL = target keeps the address bar showing the real host.
+        webView.loadHTMLString(Self.errorPageHTML(for: target, error: error), baseURL: target)
+    }
+
+    private static func isCancellation(_ error: NSError) -> Bool {
+        if error.domain == NSURLErrorDomain, error.code == NSURLErrorCancelled { return true }
+        // WebKitErrorDomain 102 = frame load interrupted (our decidePolicyFor .cancel).
+        if error.domain == "WebKitErrorDomain", error.code == 102 { return true }
+        return false
+    }
+
+    func webView(
+        _ webView: WKWebView,
+        decidePolicyFor navigationAction: WKNavigationAction,
+        decisionHandler: @escaping (WKNavigationActionPolicy) -> Void
+    ) {
+        // Error-page "Try Again": cancel the sentinel nav and reload the real URL.
+        if navigationAction.request.url?.scheme == Self.retryScheme {
+            decisionHandler(.cancel)
+            if let target = showingErrorFor { loadURL(target) }
+            return
+        }
+        guard config.interceptNavigation, let url = navigationAction.request.url else {
+            decisionHandler(.allow)
+            return
+        }
+        let allow = url.absoluteString.withCString { zedra_ios_webview_navigate(callbackID, $0) }
+        decisionHandler(allow ? .allow : .cancel)
+    }
+
+    /// Refresh the address field and navigation controls to match the webview.
+    /// The field shows the host like Safari when idle; back/forward dim when unavailable.
+    private func updateChrome() {
+        let url = webView.url ?? initialURL
+        if !urlField.isFirstResponder {
+            urlField.text = url.host ?? url.absoluteString
+        }
+
+        backButton.isEnabled = webView.canGoBack
+        backButton.alpha = webView.canGoBack ? 1.0 : 0.35
+        forwardButton.isEnabled = webView.canGoForward
+        forwardButton.alpha = webView.canGoForward ? 1.0 : 0.35
+    }
+
+    /// Reset the address icon to a lock/globe placeholder while a new page loads.
+    private func showFaviconPlaceholder() {
+        faviconTask?.cancel()
+        faviconTask = nil
+        lockIcon.contentMode = .center
+        let url = webView.url ?? initialURL
+        let isSecure = url.scheme?.lowercased() == "https"
+        lockIcon.image = UIImage(systemName: isSecure ? "lock.fill" : "globe")
+    }
+
+    /// Look up the page's declared favicon via JS, then fetch and render it in
+    /// place of the lock/globe placeholder. Falls back silently on failure.
+    private static let faviconLookupScript = """
+    (function() {
+        var rels = ['icon', 'shortcut icon', 'apple-touch-icon', 'apple-touch-icon-precomposed'];
+        var links = document.querySelectorAll('link[rel]');
+        for (var i = 0; i < links.length; i++) {
+            var rel = (links[i].getAttribute('rel') || '').toLowerCase();
+            if (rels.indexOf(rel) !== -1 && links[i].href) {
+                return links[i].href;
+            }
+        }
+        return new URL('/favicon.ico', document.baseURI).href;
+    })();
+    """
+
+    private func loadFavicon() {
+        let pageURL = webView.url ?? initialURL
+        webView.evaluateJavaScript(Self.faviconLookupScript) { [weak self] result, _ in
+            guard let self, let href = result as? String, let iconURL = URL(string: href) else { return }
+            self.fetchFavicon(from: iconURL, for: pageURL)
+        }
+    }
+
+    private func fetchFavicon(from iconURL: URL, for pageURL: URL) {
+        faviconTask?.cancel()
+        let task = URLSession.shared.dataTask(with: iconURL) { [weak self] data, _, _ in
+            guard let self, let data, let image = UIImage(data: data) else { return }
+            DispatchQueue.main.async {
+                // Drop stale results from a since-superseded navigation.
+                guard self.webView.url == pageURL else { return }
+                self.lockIcon.contentMode = .scaleAspectFit
+                self.lockIcon.image = image
+            }
+        }
+        faviconTask = task
+        task.resume()
+    }
+
+    @objc private func backTapped() {
+        if webView.canGoBack {
+            webView.goBack()
+        }
+    }
+
+    @objc private func forwardTapped() {
+        if webView.canGoForward {
+            webView.goForward()
+        }
+    }
+
+    @objc private func shareTapped() {
+        let url = webView.url ?? initialURL
+        let activityController = UIActivityViewController(activityItems: [url], applicationActivities: nil)
+        if let popover = activityController.popoverPresentationController {
+            popover.sourceView = shareButton
+            popover.sourceRect = shareButton.bounds
+        }
+        present(activityController, animated: true)
+    }
+
+    @objc private func closeTapped() {
+        dismiss(animated: true) { [weak self] in
+            self?.reportDismiss()
+        }
+    }
+
+    @objc private func reloadTapped() {
+        // Reload of a loadHTMLString error page would just re-show the error, so
+        // retry the real URL when one failed.
+        if let target = showingErrorFor {
+            loadURL(target)
+        } else {
+            webView.reload()
+        }
+    }
+
+    @objc private func webViewAreaTapped() {
+        if urlField.isFirstResponder {
+            urlField.resignFirstResponder()
+        }
+    }
+
+    // MARK: - UITextFieldDelegate
+
+    func textFieldDidBeginEditing(_ textField: UITextField) {
+        textField.text = (webView.url ?? initialURL).absoluteString
+        textField.textAlignment = .left
+        DispatchQueue.main.async { textField.selectAll(nil) }
+        setEditingChromeHidden(true)
+    }
+
+    func textFieldDidEndEditing(_ textField: UITextField) {
+        textField.textAlignment = .center
+        setEditingChromeHidden(false)
+        updateChrome()
+    }
+
+    /// Safari-style edit mode: forward/share collapse out of the row (their arranged-subview
+    /// space is reclaimed by the stack; back stays put), and the favicon/reload hide so the
+    /// field can fill the pill.
+    private func setEditingChromeHidden(_ hidden: Bool) {
+        forwardButton.isHidden = hidden
+        shareButton.isHidden = hidden
+        lockIcon.isHidden = hidden
+        reloadButton.isHidden = hidden
+        urlFieldLeadingIdle.isActive = !hidden
+        urlFieldTrailingIdle.isActive = !hidden
+        urlFieldLeadingEditing.isActive = hidden
+        urlFieldTrailingEditing.isActive = hidden
+        UIView.animate(withDuration: 0.2) { self.view.layoutIfNeeded() }
+    }
+
+    func textFieldShouldReturn(_ textField: UITextField) -> Bool {
+        let typed = textField.text
+        textField.resignFirstResponder()
+        navigateToTypedURL(typed)
+        return true
+    }
+
+    private func navigateToTypedURL(_ text: String?) {
+        guard let raw = text?.trimmingCharacters(in: .whitespacesAndNewlines), !raw.isEmpty,
+              let url = Self.resolveTypedURL(raw)
+        else {
+            updateChrome()
+            return
+        }
+        loadURL(url)
+    }
+
+    private static func resolveTypedURL(_ raw: String) -> URL? {
+        if let url = URL(string: raw), url.scheme != nil {
+            return url
+        }
+        return URL(string: "https://\(raw)")
+    }
+
+    /// Inline error page shown when a load fails. Colors follow the app theme
+    /// via `prefers-color-scheme` (the controller overrides the webview's trait).
+    private static func errorPageHTML(for url: URL, error: NSError) -> String {
+        let displayHost: String
+        if let name = url.host {
+            displayHost = url.port.map { "\(name):\($0)" } ?? name
+        } else {
+            displayHost = url.absoluteString
+        }
+        let host = escapeHTML(displayHost)
+        let detail = escapeHTML(error.localizedDescription)
+        return """
+        <!doctype html><html><head>
+        <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1">
+        <style>
+          :root { color-scheme: light dark; }
+          html, body { height: 100%; margin: 0; }
+          body { display: flex; align-items: center; justify-content: center;
+            font-family: -apple-system, system-ui, sans-serif;
+            background: #f5f5f5; color: #1a1a1a; -webkit-text-size-adjust: 100%; }
+          .box { text-align: center; padding: 24px; max-width: 320px; }
+          svg { width: 46px; height: 46px; opacity: .5; margin-bottom: 18px; }
+          h1 { font-size: 18px; font-weight: 600; margin: 0 0 10px; }
+          .host { font-family: ui-monospace, Menlo, monospace; font-size: 13px;
+            color: #8a8a8a; word-break: break-all; margin: 0 0 4px; }
+          p { font-size: 14px; line-height: 1.45; margin: 0; color: #8a8a8a; }
+          button { margin-top: 24px; font-size: 15px; font-weight: 500;
+            padding: 10px 22px; border: none; border-radius: 10px;
+            background: #1a7f37; color: #fff; -webkit-appearance: none; }
+          button:active { opacity: .7; }
+          @media (prefers-color-scheme: dark) {
+            body { background: #0e0c0c; color: #fff; }
+            .host, p { color: #808080; }
+            button { background: #98c379; color: #0e0c0c; }
+          }
+        </style></head><body>
+          <div class="box">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"
+              stroke-linecap="round" stroke-linejoin="round">
+              <circle cx="12" cy="12" r="9"></circle>
+              <path d="M3 12h18M12 3c2.5 2.7 2.5 15.3 0 18M12 3c-2.5 2.7-2.5 15.3 0 18"></path>
+              <path d="M4 4l16 16"></path>
+            </svg>
+            <h1>Can\u{2019}t reach this page</h1>
+            <p class="host">\(host)</p>
+            <p>\(detail)</p>
+            <button onclick="location.href='\(retryScheme):'">Try Again</button>
+          </div>
+        </body></html>
+        """
+    }
+
+    private static func escapeHTML(_ text: String) -> String {
+        text.replacingOccurrences(of: "&", with: "&amp;")
+            .replacingOccurrences(of: "<", with: "&lt;")
+            .replacingOccurrences(of: ">", with: "&gt;")
+            .replacingOccurrences(of: "\"", with: "&quot;")
+            .replacingOccurrences(of: "'", with: "&#39;")
+    }
+
+}
+
+private enum NativeWebViewPresenter {
+    private static var presentedController: UINavigationController?
+    private static weak var activeController: NativeWebViewController?
+
+    static func open(callbackID: UInt32, configJSON: String?) {
+        guard let configJSON,
+              let data = configJSON.data(using: .utf8),
+              let config = try? JSONDecoder().decode(NativeWebViewConfig.self, from: data),
+              let url = URL(string: config.url)
+        else { return }
+        DispatchQueue.main.async {
+            let present = {
+                let controller = NativeWebViewController(callbackID: callbackID, config: config, url: url)
+                let nav = UINavigationController(rootViewController: controller)
+                nav.modalPresentationStyle = .fullScreen
+                nav.overrideUserInterfaceStyle = NativePresentationTheme.interfaceStyle
+                controller.onDismiss = {
+                    if presentedController === nav {
+                        presentedController = nil
+                        activeController = nil
+                    }
+                }
+                presentedController = nav
+                activeController = controller
+                NativePresentationBridge.topViewController()?.present(nav, animated: true)
+            }
+            // Present only after any existing webview finishes dismissing — dismiss
+            // and present in the same runloop makes UIKit silently drop the new one.
+            if let existing = presentedController {
+                activeController?.reportDismiss()
+                existing.dismiss(animated: false, completion: present)
+            } else {
+                present()
+            }
+        }
+    }
+
+    static func close() {
+        DispatchQueue.main.async {
+            guard let nav = presentedController else { return }
+            let controller = activeController
+            nav.dismiss(animated: true) {
+                controller?.reportDismiss()
+            }
+            presentedController = nil
+            activeController = nil
+        }
+    }
+
+    static func evalJS(_ js: String?) {
+        guard let js else { return }
+        DispatchQueue.main.async {
+            activeController?.webView.evaluateJavaScript(js, completionHandler: nil)
+        }
+    }
+}
+
+@_cdecl("ios_open_webview")
+func ios_open_webview(
+    _ callbackID: UInt32,
+    _ configJSON: UnsafePointer<CChar>?
+) {
+    NativeWebViewPresenter.open(
+        callbackID: callbackID,
+        configJSON: NativePresentationBridge.string(configJSON)
+    )
+}
+
+@_cdecl("ios_close_webview")
+func ios_close_webview() {
+    NativeWebViewPresenter.close()
+}
+
+@_cdecl("ios_eval_webview_js")
+func ios_eval_webview_js(_ js: UnsafePointer<CChar>?) {
+    NativeWebViewPresenter.evalJS(NativePresentationBridge.string(js))
 }
 
 @_cdecl("ios_present_alert")

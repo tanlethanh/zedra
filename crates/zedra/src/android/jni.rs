@@ -438,6 +438,62 @@ pub extern "system" fn Java_dev_zedra_app_MainActivity_nativeTextInputDismiss(
 }
 
 #[unsafe(no_mangle)]
+pub extern "system" fn Java_dev_zedra_app_MainActivity_nativeWebViewMessage(
+    mut env: JNIEnv,
+    _class: JClass,
+    callback_id: jint,
+    message: jni::objects::JString,
+) {
+    if callback_id <= 0 {
+        return;
+    }
+    let message: String = match env.get_string(&message) {
+        Ok(value) => value.into(),
+        Err(error) => {
+            tracing::error!(?error, "jni: failed to read webview message");
+            return;
+        }
+    };
+    crate::webview::dispatch_message(callback_id as u32, message);
+}
+
+#[unsafe(no_mangle)]
+pub extern "system" fn Java_dev_zedra_app_MainActivity_nativeWebViewNavigate(
+    mut env: JNIEnv,
+    _class: JClass,
+    callback_id: jint,
+    url: jni::objects::JString,
+) -> jni::sys::jboolean {
+    if callback_id <= 0 {
+        return jni::sys::JNI_TRUE;
+    }
+    let url: String = match env.get_string(&url) {
+        Ok(value) => value.into(),
+        Err(error) => {
+            tracing::error!(?error, "jni: failed to read webview navigate url");
+            return jni::sys::JNI_TRUE;
+        }
+    };
+    if crate::webview::dispatch_navigate(callback_id as u32, &url) {
+        jni::sys::JNI_TRUE
+    } else {
+        jni::sys::JNI_FALSE
+    }
+}
+
+#[unsafe(no_mangle)]
+pub extern "system" fn Java_dev_zedra_app_MainActivity_nativeWebViewDismiss(
+    _env: JNIEnv,
+    _class: JClass,
+    callback_id: jint,
+) {
+    if callback_id <= 0 {
+        return;
+    }
+    crate::webview::dispatch_dismiss(callback_id as u32);
+}
+
+#[unsafe(no_mangle)]
 pub extern "system" fn Java_dev_zedra_app_MainActivity_nativeFloatingButtonPressed(
     _env: JNIEnv,
     _class: JClass,
@@ -676,6 +732,62 @@ pub fn open_url(url: &str) {
                 &[(&j_url).into()],
             ) {
                 tracing::error!("jni: openUrl failed: {:?}", e);
+            }
+        });
+    });
+}
+
+pub fn open_webview(callback_id: u32, config_json: &str) {
+    let config_owned = config_json.to_string();
+    jni_call("open_webview", move || {
+        with_main_activity_class("open_webview", |env, class| {
+            let j_config = match env.new_string(&config_owned) {
+                Ok(s) => s,
+                Err(e) => {
+                    tracing::error!("jni: new_string webview config failed: {:?}", e);
+                    return;
+                }
+            };
+            if let Err(e) = env.call_static_method(
+                class,
+                "openWebView",
+                "(ILjava/lang/String;)V",
+                &[(callback_id as jint).into(), (&j_config).into()],
+            ) {
+                tracing::error!("jni: openWebView failed: {:?}", e);
+            }
+        });
+    });
+}
+
+pub fn close_webview() {
+    jni_call("close_webview", move || {
+        with_main_activity_class("close_webview", |env, class| {
+            if let Err(e) = env.call_static_method(class, "closeWebView", "()V", &[]) {
+                tracing::error!("jni: closeWebView failed: {:?}", e);
+            }
+        });
+    });
+}
+
+pub fn eval_webview_js(js: &str) {
+    let js_owned = js.to_string();
+    jni_call("eval_webview_js", move || {
+        with_main_activity_class("eval_webview_js", |env, class| {
+            let j_js = match env.new_string(&js_owned) {
+                Ok(s) => s,
+                Err(e) => {
+                    tracing::error!("jni: new_string webview js failed: {:?}", e);
+                    return;
+                }
+            };
+            if let Err(e) = env.call_static_method(
+                class,
+                "evalWebView",
+                "(Ljava/lang/String;)V",
+                &[(&j_js).into()],
+            ) {
+                tracing::error!("jni: evalWebView failed: {:?}", e);
             }
         });
     });

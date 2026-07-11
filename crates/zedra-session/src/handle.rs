@@ -9,7 +9,7 @@ use std::{
 use anyhow::Result;
 use irpc::{
     Channels, RpcMessage, Service, WithChannels,
-    channel::{none::NoReceiver, oneshot},
+    channel::{mpsc, none::NoReceiver, oneshot},
 };
 use zedra_rpc::proto::*;
 
@@ -85,9 +85,9 @@ impl SessionHandle {
         *self.0.runtime.lock().unwrap() = Some(runtime);
     }
 
-    /// Runtime for terminal pump tasks. Errors if the handle was built outside
-    /// `Session::new` (e.g. a bare test handle) and never given a runtime.
-    fn runtime(&self) -> Result<tokio::runtime::Handle> {
+    /// The session's Tokio runtime handle (from `Session::new`). Errors for a
+    /// bare test handle that was never given one.
+    pub fn runtime(&self) -> Result<tokio::runtime::Handle> {
         self.0
             .runtime
             .lock()
@@ -493,6 +493,19 @@ impl SessionHandle {
                 Err(e)
             }
         }
+    }
+
+    pub async fn web_connect(
+        &self,
+        req: WebConnectReq,
+    ) -> Result<(
+        mpsc::Sender<WebTunnelInput>,
+        mpsc::Receiver<WebTunnelOutput>,
+    )> {
+        self.client()?
+            .bidi_streaming::<WebConnectReq, WebTunnelInput, WebTunnelOutput>(req, 64, 64)
+            .await
+            .map_err(map_rpc_error)
     }
 
     fn downgrade_observer_rpc(&self, err: &str) -> bool {

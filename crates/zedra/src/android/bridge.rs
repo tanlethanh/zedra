@@ -80,6 +80,18 @@ impl PlatformBridge for AndroidBridge {
         jni::open_url(url);
     }
 
+    fn open_webview(&self, callback_id: u32, _url: &str, config_json: &str) {
+        jni::open_webview(callback_id, config_json);
+    }
+
+    fn close_webview(&self) {
+        jni::close_webview();
+    }
+
+    fn eval_webview_js(&self, js: &str) {
+        jni::eval_webview_js(js);
+    }
+
     fn present_alert(&self, id: u32, title: &str, message: &str, buttons: &[AlertButton]) {
         jni::show_alert(id, title, message, buttons);
     }

@@ -1,0 +1,10 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Cleartext HTTP is allowed only for the web-tunnel loopback hosts; everything else stays HTTPS-only. -->
+<network-security-config>
+    <domain-config cleartextTrafficPermitted="true">
+        <domain includeSubdomains="true">localhost</domain>
+        <domain includeSubdomains="false">127.0.0.1</domain>
+        <!-- Alias-mode tunnel serves the host under <label>.zedra.test over cleartext. -->
+        <domain includeSubdomains="true">zedra.test</domain>
+    </domain-config>
+</network-security-config>

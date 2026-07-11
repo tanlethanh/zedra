@@ -162,6 +162,22 @@ extern void ios_dismiss_custom_sheet(void);
 extern void ios_open_url(const char *url);
 
 /**
+ * Present a native in-app WKWebView. `config_json` is the serialized
+ * `webview::WebviewConfig`; `callback_id` keys the Rust handlers.
+ */
+extern void ios_open_webview(uint32_t callback_id, const char *config_json);
+
+/**
+ * Dismiss the currently presented webview.
+ */
+extern void ios_close_webview(void);
+
+/**
+ * Evaluate JavaScript in the currently presented webview.
+ */
+extern void ios_eval_webview_js(const char *js);
+
+/**
  * Trigger a UIKit haptic feedback generator.
  * kind encoding matches HapticFeedback::to_i32().
  */
@@ -281,6 +297,22 @@ void zedra_ios_text_input_result(uint32_t callback_id, const char *value);
  * Called when a text-input dialog is cancelled or dismissed.
  */
 void zedra_ios_text_input_dismiss(uint32_t callback_id);
+
+/**
+ * Deliver a message the webview page posted through its JS bridge.
+ */
+void zedra_ios_webview_message(uint32_t callback_id, const char *message);
+
+/**
+ * Ask Rust whether a webview navigation should proceed. Returns `true` to
+ * allow. Called synchronously on the UI thread.
+ */
+bool zedra_ios_webview_navigate(uint32_t callback_id, const char *url);
+
+/**
+ * Called when the webview is dismissed.
+ */
+void zedra_ios_webview_dismiss(uint32_t callback_id);
 
 /**
  * Called from the native app delegate when the app enters the background.

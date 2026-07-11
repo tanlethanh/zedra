@@ -252,6 +252,7 @@ static ALERT_CALLBACKS: OnceLock<Mutex<HashMap<u32, Box<dyn FnOnce(Option<usize>
 static NEXT_SELECTION_ID: AtomicU32 = AtomicU32::new(1);
 static SELECTION_CALLBACKS: OnceLock<Mutex<HashMap<u32, Box<dyn FnOnce(Option<usize>) + Send>>>> =
     OnceLock::new();
+
 static NEXT_TEXT_INPUT_ID: AtomicU32 = AtomicU32::new(1);
 static TEXT_INPUT_CALLBACKS: OnceLock<Mutex<HashMap<u32, Box<dyn FnOnce(Option<String>) + Send>>>> =
     OnceLock::new();
@@ -935,6 +936,17 @@ pub trait PlatformBridge: Send + Sync + 'static {
     fn dismiss_custom_sheet(&self) {}
     /// Open a URL in the system browser.
     fn open_url(&self, _url: &str) {}
+    /// Present a native in-app webview. `config_json` is the serialized
+    /// [`crate::webview::WebviewConfig`]; `callback_id` keys the Rust handlers
+    /// the native layer calls back into. Platforms without a webview fall back
+    /// to the system browser. See [`crate::webview`].
+    fn open_webview(&self, _callback_id: u32, url: &str, _config_json: &str) {
+        self.open_url(url);
+    }
+    /// Dismiss the currently presented webview, if any.
+    fn close_webview(&self) {}
+    /// Evaluate JavaScript in the currently presented webview.
+    fn eval_webview_js(&self, _js: &str) {}
     /// Trigger a haptic feedback pattern. No-op on platforms without haptic hardware.
     fn trigger_haptic(&self, _feedback: HapticFeedback) {}
     /// Play a short UI sound effect. No-op on platforms without audio or when silent.

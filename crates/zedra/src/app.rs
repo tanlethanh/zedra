@@ -168,6 +168,39 @@ impl ZedraApp {
                     ws.navigate_workspace_deferred(endpoint_addr, terminal_id, cx);
                 });
             }
+            #[cfg(debug_assertions)]
+            DeeplinkAction::DebugTunnel {
+                url,
+                force_alias,
+                collide,
+                reset,
+            } => {
+                if reset {
+                    crate::web_tunnel::debug_reset();
+                }
+                if let Some(port) = collide {
+                    crate::web_tunnel::debug_collide(port);
+                }
+                let session = self
+                    .workspaces
+                    .read(cx)
+                    .active()
+                    .cloned()
+                    .map(|w| w.read(cx).session_handle().clone());
+                match session {
+                    Some(session) => {
+                        if force_alias {
+                            crate::web_tunnel::debug_force_alias(&session);
+                        }
+                        if let Some(url) = url {
+                            crate::web_tunnel::open_url(session, &url);
+                        }
+                    }
+                    None => {
+                        tracing::warn!("[debug:web-tunnel] devtool: no active workspace session");
+                    }
+                }
+            }
         }
     }
 
