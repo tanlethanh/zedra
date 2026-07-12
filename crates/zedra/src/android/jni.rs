@@ -33,6 +33,12 @@ use crate::platform_bridge::{
 // ============================================================================
 
 static JVM: Mutex<Option<Arc<JavaVM>>> = Mutex::new(None);
+// MainActivity class cached on the main thread at bootstrap: native (tokio) threads
+// attach with the bootstrap classloader, which can't resolve app classes via
+// `find_class`, so Rust→Java calls off the main thread (e.g. the web tunnel opening a
+// webview from its runtime) would fail with ClassNotFoundException without this.
+static MAIN_ACTIVITY_CLASS: Mutex<Option<GlobalRef>> = Mutex::new(None);
+const MAIN_ACTIVITY_CLASS_NAME: &str = "dev/zedra/app/MainActivity";
 static INIT: Once = Once::new();
 static FILES_DIR: Mutex<Option<String>> = Mutex::new(None);
 static APP_VERSION: Mutex<Option<String>> = Mutex::new(None);
@@ -238,6 +244,21 @@ pub extern "system" fn Java_dev_zedra_app_MainActivity_bootstrap(
         }
     } else {
         tracing::error!("jni: bootstrap failed to obtain JavaVM");
+    }
+
+    // Cache MainActivity's class here (main thread, app classloader) so off-thread
+    // Rust→Java calls can resolve it. Derived from the activity object to stay correct
+    // whether `bootstrap` is a static or instance native method.
+    match env.get_object_class(&activity) {
+        Ok(class) => match env.new_global_ref(&class) {
+            Ok(global) => {
+                if let Ok(mut guard) = MAIN_ACTIVITY_CLASS.lock() {
+                    *guard = Some(global);
+                }
+            }
+            Err(error) => tracing::error!(?error, "jni: cache MainActivity global ref failed"),
+        },
+        Err(error) => tracing::error!(?error, "jni: get MainActivity class failed"),
     }
 
     if let Ok(jni::objects::JValueGen::Object(file_obj)) =
@@ -627,6 +648,14 @@ pub(crate) fn jni_call(name: &'static str, f: impl FnOnce() + std::panic::Unwind
     }
 }
 
+/// The MainActivity class cached at bootstrap, if present.
+fn cached_main_activity_class() -> Option<GlobalRef> {
+    MAIN_ACTIVITY_CLASS
+        .lock()
+        .ok()
+        .and_then(|guard| guard.clone())
+}
+
 pub(crate) fn with_class(
     name: &'static str,
     class_name: &'static str,
@@ -657,16 +686,23 @@ pub(crate) fn with_class(
         },
     };
 
-    let class = match env.find_class(class_name) {
-        Ok(class) => class,
-        Err(error) => {
-            tracing::error!(name, class_name, ?error, "Failed to find JNI class");
-            if env.exception_check().unwrap_or(false) {
-                env.exception_describe().ok();
-                env.exception_clear().ok();
+    let cached = (class_name == MAIN_ACTIVITY_CLASS_NAME)
+        .then(cached_main_activity_class)
+        .flatten();
+    let class: JClass = match &cached {
+        // SAFETY: the cached global ref keeps the class alive for this call.
+        Some(global) => unsafe { JClass::from_raw(global.as_obj().as_raw()) },
+        None => match env.find_class(class_name) {
+            Ok(class) => class,
+            Err(error) => {
+                tracing::error!(name, class_name, ?error, "Failed to find JNI class");
+                if env.exception_check().unwrap_or(false) {
+                    env.exception_describe().ok();
+                    env.exception_clear().ok();
+                }
+                return;
             }
-            return;
-        }
+        },
     };
 
     f(&mut env, &class);
@@ -1241,16 +1277,21 @@ fn with_main_activity<R>(
         },
     };
 
-    let class = match env.find_class("dev/zedra/app/MainActivity") {
-        Ok(c) => c,
-        Err(e) => {
-            tracing::error!(name, "jni: find MainActivity failed: {:?}", e);
-            if env.exception_check().unwrap_or(false) {
-                env.exception_describe().ok();
-                env.exception_clear().ok();
+    let cached = cached_main_activity_class();
+    let class: JClass = match &cached {
+        // SAFETY: the cached global ref keeps the class alive for this call.
+        Some(global) => unsafe { JClass::from_raw(global.as_obj().as_raw()) },
+        None => match env.find_class(MAIN_ACTIVITY_CLASS_NAME) {
+            Ok(c) => c,
+            Err(e) => {
+                tracing::error!(name, "jni: find MainActivity failed: {:?}", e);
+                if env.exception_check().unwrap_or(false) {
+                    env.exception_describe().ok();
+                    env.exception_clear().ok();
+                }
+                return None;
             }
-            return None;
-        }
+        },
     };
 
     match f(&mut env, &class) {
@@ -1738,7 +1779,3 @@ pub fn set_native_theme(is_dark: bool) {
         });
     });
 }
-
-// Suppress unused-import warning for GlobalRef, kept for potential future use.
-#[allow(dead_code)]
-fn _gref_marker(_: GlobalRef) {}

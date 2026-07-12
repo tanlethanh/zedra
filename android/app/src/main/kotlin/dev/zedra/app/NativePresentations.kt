@@ -53,8 +53,8 @@ object NativePresentations {
     private var webViewProxyActive: Boolean = false
     private var webViewUrlField: EditText? = null
     private var webViewFaviconIcon: ImageView? = null
-    private var webViewBackButton: TextView? = null
-    private var webViewForwardButton: TextView? = null
+    private var webViewBackButton: ImageButton? = null
+    private var webViewForwardButton: ImageButton? = null
     private var nativeTheme = NativeTheme.dark()
 
     private data class NativeTheme(
@@ -678,47 +678,41 @@ object NativePresentations {
         title: String,
         url: String,
     ): View {
-        fun controlButton(glyph: String, size: Float, onClick: () -> Unit) = TextView(activity).apply {
-            text = glyph
-            textSize = size
-            setTextColor(nativeTheme.textPrimary)
-            gravity = Gravity.CENTER
-            setPadding(dp(8f), dp(8f), dp(8f), dp(8f))
-            isClickable = true
-            setSelectableItemBackground(this)
-            setOnClickListener { onClick() }
-        }
-        // Padding shrinks the visible glyph within the fixed 36dp-tall slot below, so system
-        // icon drawables read at the same visual weight as the text glyphs (e.g. close's "✕").
-        fun controlImageButton(resId: Int, padding: Float, onClick: () -> Unit) = ImageButton(activity).apply {
-            setImageResource(resId)
+        // App vector icons (matching the iOS SF-Symbol top bar) tinted to the text color.
+        // FIT_CENTER + vertical padding renders the glyph at `glyphDp` inside the 36dp-tall
+        // slot, so mixed sizes share one vertical center; horizontal padding stays small so
+        // narrow (pill) slots don't shrink the glyph. iOS point sizes: back/forward 20,
+        // reload/share 15, close 17.
+        fun iconControl(slug: String, glyphDp: Float, onClick: () -> Unit) = ImageButton(activity).apply {
+            setImageResource(iconRes(slug))
             imageTintList = ColorStateList.valueOf(nativeTheme.textPrimary)
             background = null
-            scaleType = ImageView.ScaleType.CENTER_INSIDE
-            setPadding(dp(padding), dp(padding), dp(padding), dp(padding))
+            scaleType = ImageView.ScaleType.FIT_CENTER
+            val vPad = ((36f - glyphDp) / 2f).coerceAtLeast(0f)
+            setPadding(dp(6f), dp(vPad), dp(6f), dp(vPad))
             isClickable = true
             setSelectableItemBackground(this)
             setOnClickListener { onClick() }
         }
 
-        val backButton = controlButton("‹", 22f) {
+        val backButton = iconControl("chevron-left", 20f) {
             if (webView.canGoBack()) webView.goBack()
         }.apply { isEnabled = false; alpha = 0.35f }
-        val forwardButton = controlButton("›", 22f) {
+        val forwardButton = iconControl("chevron-right", 20f) {
             if (webView.canGoForward()) webView.goForward()
         }.apply { isEnabled = false; alpha = 0.35f }
-        val shareButton = controlImageButton(android.R.drawable.ic_menu_share, padding = 9f) {
+        val shareButton = iconControl("share", 15f) {
             shareCurrentWebViewUrl(activity, webView)
         }
-        val closeButton = controlButton("✕", 17f) { closeWebViewNow() }
+        val closeButton = iconControl("x", 17f) { closeWebViewNow() }
 
         // URL capsule: favicon + editable URL + reload, sized to match the reload button.
         val faviconIcon = ImageView(activity).apply {
             scaleType = ImageView.ScaleType.FIT_CENTER
             visibility = View.GONE
         }
-        val reloadButton = controlButton("↻", 16f) { webView.reload() }
-        val clearButton = controlImageButton(android.R.drawable.ic_menu_close_clear_cancel, padding = 9f) {
+        val reloadButton = iconControl("refresh-ccw", 15f) { webView.reload() }
+        val clearButton = iconControl("x", 15f) {
             webViewUrlField?.setText("")
         }.apply { visibility = View.GONE }
 
@@ -757,15 +751,16 @@ object NativePresentations {
                     field.gravity = Gravity.CENTER
                     val uri = android.net.Uri.parse(webView.url ?: "")
                     field.setText(uri.host ?: webView.url)
+                    // Losing focus (tapping the page or another control) must dismiss the
+                    // keyboard; the focus listener is the only common blur path.
+                    hideKeyboard(field)
                 }
             }
             setOnEditorActionListener { view, actionId, _ ->
                 if (actionId == android.view.inputmethod.EditorInfo.IME_ACTION_GO) {
                     navigateWebViewTo(webView, (view as EditText).text?.toString())
                     view.clearFocus()
-                    val imm = activity.getSystemService(android.content.Context.INPUT_METHOD_SERVICE)
-                        as android.view.inputmethod.InputMethodManager
-                    imm.hideSoftInputFromWindow(view.windowToken, 0)
+                    hideKeyboard(view)
                     true
                 } else {
                     false
@@ -779,9 +774,9 @@ object NativePresentations {
                 cornerRadius = dp(18f).toFloat()
                 setColor(nativeTheme.card)
             }
-            // Sized to match the reload glyph's visual weight, not the reload button's tap box.
-            addView(faviconIcon, LinearLayout.LayoutParams(dp(22f), dp(22f)).apply {
-                marginStart = dp(9f)
+            // Favicon box matches iOS (20dp, leading 8) so it reads at the reload glyph's weight.
+            addView(faviconIcon, LinearLayout.LayoutParams(dp(20f), dp(20f)).apply {
+                marginStart = dp(8f)
             })
             addView(urlField, LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.MATCH_PARENT, 1f))
             addView(reloadButton, LinearLayout.LayoutParams(dp(30f), ViewGroup.LayoutParams.MATCH_PARENT).apply {
@@ -1077,10 +1072,19 @@ object NativePresentations {
         }
     }
 
+    private fun hideKeyboard(view: View?) {
+        val token = view?.windowToken ?: return
+        (activity?.getSystemService(android.content.Context.INPUT_METHOD_SERVICE)
+            as? android.view.inputmethod.InputMethodManager)
+            ?.hideSoftInputFromWindow(token, 0)
+    }
+
     private fun closeWebViewNow() {
         clearWebViewProxy()
         val root = rootView
         val overlay = webViewOverlay
+        // Dismiss the keyboard if the URL field had focus, so it doesn't linger over the app.
+        hideKeyboard(overlay ?: root)
         val webView = activeWebView
         val callbackId = activeWebViewCallbackId
         webViewOverlay = null
