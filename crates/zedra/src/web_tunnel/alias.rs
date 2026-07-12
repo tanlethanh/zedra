@@ -83,16 +83,28 @@ fn reply(status: u8) -> [u8; 10] {
 
 async fn handle_socks(mut stream: TcpStream) -> Result<(), String> {
     let mut greeting = [0u8; 2];
-    stream.read_exact(&mut greeting).await.map_err(|e| e.to_string())?;
+    stream
+        .read_exact(&mut greeting)
+        .await
+        .map_err(|e| e.to_string())?;
     if greeting[0] != 0x05 {
         return Err("not a SOCKS5 client".to_string());
     }
     let mut methods = vec![0u8; greeting[1] as usize];
-    stream.read_exact(&mut methods).await.map_err(|e| e.to_string())?;
-    stream.write_all(&[0x05, 0x00]).await.map_err(|e| e.to_string())?;
+    stream
+        .read_exact(&mut methods)
+        .await
+        .map_err(|e| e.to_string())?;
+    stream
+        .write_all(&[0x05, 0x00])
+        .await
+        .map_err(|e| e.to_string())?;
 
     let mut request = [0u8; 4];
-    stream.read_exact(&mut request).await.map_err(|e| e.to_string())?;
+    stream
+        .read_exact(&mut request)
+        .await
+        .map_err(|e| e.to_string())?;
     if request[1] != 0x01 {
         stream.write_all(&reply(0x07)).await.ok();
         return Err("only SOCKS CONNECT is supported".to_string());
@@ -105,9 +117,15 @@ async fn handle_socks(mut stream: TcpStream) -> Result<(), String> {
         }
         0x03 => {
             let mut len = [0u8; 1];
-            stream.read_exact(&mut len).await.map_err(|e| e.to_string())?;
+            stream
+                .read_exact(&mut len)
+                .await
+                .map_err(|e| e.to_string())?;
             let mut domain = vec![0u8; len[0] as usize];
-            stream.read_exact(&mut domain).await.map_err(|e| e.to_string())?;
+            stream
+                .read_exact(&mut domain)
+                .await
+                .map_err(|e| e.to_string())?;
             String::from_utf8_lossy(&domain).into_owned()
         }
         0x04 => {
@@ -121,7 +139,10 @@ async fn handle_socks(mut stream: TcpStream) -> Result<(), String> {
         }
     };
     let mut port_bytes = [0u8; 2];
-    stream.read_exact(&mut port_bytes).await.map_err(|e| e.to_string())?;
+    stream
+        .read_exact(&mut port_bytes)
+        .await
+        .map_err(|e| e.to_string())?;
     let port = u16::from_be_bytes(port_bytes);
 
     match endpoint_for_host(&host) {
@@ -152,7 +173,10 @@ async fn forward_via_session(
             return Err(error);
         }
     };
-    stream.write_all(&reply(0x00)).await.map_err(|e| e.to_string())?;
+    stream
+        .write_all(&reply(0x00))
+        .await
+        .map_err(|e| e.to_string())?;
     bridge::pump(stream, tx, rx, initial, |_| {}).await;
     Ok(())
 }
@@ -167,7 +191,10 @@ async fn forward_direct(mut stream: TcpStream, host: String, port: u16) -> Resul
             return Err(format!("direct dial {host}:{port} failed: {error}"));
         }
     };
-    stream.write_all(&reply(0x00)).await.map_err(|e| e.to_string())?;
+    stream
+        .write_all(&reply(0x00))
+        .await
+        .map_err(|e| e.to_string())?;
     tokio::io::copy_bidirectional(&mut stream, &mut upstream)
         .await
         .map(|_| ())

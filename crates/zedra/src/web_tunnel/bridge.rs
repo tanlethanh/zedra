@@ -7,7 +7,9 @@
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::TcpStream;
 use tokio::net::tcp::OwnedWriteHalf;
-use zedra_rpc::proto::{WEB_TUNNEL_MAX_CHUNK_BYTES, WebConnectReq, WebTunnelInput, WebTunnelOutput};
+use zedra_rpc::proto::{
+    WEB_TUNNEL_MAX_CHUNK_BYTES, WebConnectReq, WebTunnelInput, WebTunnelOutput,
+};
 use zedra_session::SessionHandle;
 
 type Tx = irpc::channel::mpsc::Sender<WebTunnelInput>;

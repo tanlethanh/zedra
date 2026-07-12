@@ -19,6 +19,7 @@ const PRIVACY_POLICY_URL: &str = "https://zedra.dev/privacy";
 #[derive(Clone, Debug)]
 pub enum SettingsEvent {
     NavigateHome,
+    OpenWebTunnel,
     DropletToggled(bool),
 }
 
@@ -796,6 +797,17 @@ impl Render for SettingsView {
                                         )
                                         .on_press(cx.listener(|this, _event, _window, _cx| {
                                             this.show_test_webview();
+                                        })),
+                                    )
+                                    .child(
+                                        action_row(
+                                            cx,
+                                            "settings-web-tunnel",
+                                            "Web tunnel",
+                                            "Manage localhost listeners bound on this device",
+                                        )
+                                        .on_press(cx.listener(|_this, _event, _window, cx| {
+                                            cx.emit(SettingsEvent::OpenWebTunnel);
                                         })),
                                     )
                                     .child(

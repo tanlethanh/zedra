@@ -752,6 +752,16 @@ Devtool actions — `zedra://devtool/tunnel?…`: `url=<url>` open via the real 
 5. **Non-loopback** — `zedra://devtool/tunnel?url=https://example.com`. Expected: opens in the system browser (not tunneled).
 6. **Simulator note** — the simulator shares the Mac's loopback, so exact-port `:5173` collides with `run.sh` and lands on the prompt (case 2) on its own; use a real device for the exact-port happy path (case 1).
 
+### Listener manager (devtool)
+
+The **Web tunnel** manager (Settings → Developer → Web tunnel) lists and stops exact-port listeners. Debug builds only.
+
+1. After case 1 binds a listener, open **Settings → Developer → Web tunnel**.
+2. Expected: one `:<port>  <workspace name>` row per bound listener (e.g. `:5173`, plus any companion ports like `:5174`/`:5175` from the sniffer), each with a red **Stop** button. With none bound, an empty "No web tunnel listeners are bound" state.
+3. Tap **Stop** on a row. Expected: a native confirmation alert ("Stop web tunnel listener" / "Free port :&lt;port&gt; for &lt;host&gt;?…") with a destructive **Stop** and **Cancel**. **Cancel** leaves the row untouched. **Stop** removes the row and frees the device port (a fresh open of that port re-binds it, or offers the alias if another app now holds it). Log: `exact-port stopped 127.0.0.1:<port>`.
+4. Tap refresh (↻). Expected: the list re-reads live listeners.
+5. Tap back (‹). Expected: returns to Settings (not Home); the system back gesture does the same.
+
 ### Top bar (both platforms)
 
 1. Open any webview (the tunnel or **Settings → Developer → Webview**).

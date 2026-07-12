@@ -14,6 +14,7 @@ use crate::settings_view::{SettingsEvent, SettingsView};
 use crate::telemetry::view_telemetry::{self, ViewDescriptor};
 use crate::ui::{DrawerHost, DrawerSide};
 use crate::vfx::{self, overlay::DropletOverlay};
+use crate::web_tunnel_manager::WebTunnelManager;
 use crate::workspace_action::ShowConnecting;
 use crate::workspaces::{Workspaces, WorkspacesEvent};
 
@@ -21,13 +22,15 @@ use crate::workspaces::{Workspaces, WorkspacesEvent};
 enum AppScreen {
     Home,
     Settings,
+    WebTunnel,
     Workspace,
 }
 
 fn app_view_descriptor(screen: AppScreen) -> Option<ViewDescriptor> {
     match screen {
         AppScreen::Home => Some(view_telemetry::HOME),
-        AppScreen::Settings => Some(view_telemetry::SETTINGS),
+        // Web tunnel is a Settings subscreen; report it as Settings.
+        AppScreen::Settings | AppScreen::WebTunnel => Some(view_telemetry::SETTINGS),
         AppScreen::Workspace => None,
     }
 }
@@ -42,10 +45,46 @@ pub struct ZedraApp {
     screen: AppScreen,
     home_view: Entity<HomeView>,
     settings_view: Entity<SettingsView>,
+    web_tunnel_manager: Entity<WebTunnelManager>,
     workspaces: Entity<Workspaces>,
     quick_action_drawer: Entity<DrawerHost>,
     droplet_overlay: Entity<DropletOverlay>,
     _subscriptions: Vec<Subscription>,
+}
+
+/// Debug-only web-tunnel driver shared by the `zedra://devtool/tunnel` deeplink and the
+/// `web-tunnel` devtool action, so both reproduce tunnel cases from the same code path.
+#[cfg(debug_assertions)]
+fn run_debug_tunnel(
+    workspaces: &Entity<Workspaces>,
+    url: Option<String>,
+    force_alias: bool,
+    collide: Option<u16>,
+    reset: bool,
+    cx: &mut App,
+) {
+    if reset {
+        crate::web_tunnel::debug_reset();
+    }
+    if let Some(port) = collide {
+        crate::web_tunnel::debug_collide(port);
+    }
+    let session = workspaces
+        .read(cx)
+        .active()
+        .cloned()
+        .map(|w| w.read(cx).session_handle().clone());
+    match session {
+        Some(session) => {
+            if force_alias {
+                crate::web_tunnel::debug_force_alias(&session);
+            }
+            if let Some(url) = url {
+                crate::web_tunnel::open_url(session, &url);
+            }
+        }
+        None => tracing::warn!("[debug:web-tunnel] devtool: no active workspace session"),
+    }
 }
 
 impl ZedraApp {
@@ -63,6 +102,59 @@ impl ZedraApp {
         // --- Workspaces ---
         let workspaces = cx.new(|cx| Workspaces::new(delta_state.clone(), cx));
 
+        // --- Debug: drive the web tunnel from the devtool (`devtool.sh call web-tunnel ...`) ---
+        // `register_devtool_action` only exists when gpui's devtool module is compiled, which
+        // for zedra means the `devtool` feature on an iOS/Android target (platform crates are
+        // target-gated, so a host build never has the method).
+        #[cfg(all(
+            debug_assertions,
+            feature = "devtool",
+            any(target_os = "ios", target_os = "android")
+        ))]
+        {
+            let workspaces = workspaces.downgrade();
+            cx.register_devtool_action("web-tunnel", move |params, _window, cx| {
+                let Some(workspaces) = workspaces.upgrade() else {
+                    return serde_json::json!({"ok": false, "error": "workspaces dropped"});
+                };
+                let url = params
+                    .get("url")
+                    .and_then(|v| v.as_str())
+                    .map(str::to_string);
+                let force_alias = params.get("mode").and_then(|v| v.as_str()) == Some("alias");
+                let collide = params
+                    .get("collide")
+                    .and_then(|v| v.as_u64())
+                    .map(|p| p as u16);
+                let reset = params
+                    .get("reset")
+                    .and_then(|v| v.as_bool())
+                    .unwrap_or(false);
+                run_debug_tunnel(&workspaces, url, force_alias, collide, reset, cx);
+                serde_json::json!({"ok": true})
+            });
+
+            // Jump straight to a screen (`devtool.sh call nav-screen '{"screen":"web-tunnel"}'`)
+            // to reach ones buried behind scrolling/native sheets. Deferred so it never
+            // re-enters an update that may be in flight when the call is processed.
+            let app = cx.weak_entity();
+            cx.register_devtool_action("nav-screen", move |params, _window, cx| {
+                let screen = match params.get("screen").and_then(|v| v.as_str()) {
+                    Some("home") => AppScreen::Home,
+                    Some("settings") => AppScreen::Settings,
+                    Some("web-tunnel") => AppScreen::WebTunnel,
+                    other => {
+                        return serde_json::json!({"ok": false, "error": format!("unknown screen {other:?}")});
+                    }
+                };
+                let app = app.clone();
+                cx.defer(move |cx| {
+                    let _ = app.update(cx, |app, cx| app.set_screen(screen, cx));
+                });
+                serde_json::json!({"ok": true})
+            });
+        }
+
         // --- Home view ---
         let home_view = cx.new(|cx| HomeView::new(workspaces.clone(), cx));
         let sub = cx.subscribe(&home_view, Self::on_home_event);
@@ -72,6 +164,8 @@ impl ZedraApp {
             cx.new(|cx| SettingsView::new(theme_state.clone(), delta_state.clone(), cx));
         let sub = cx.subscribe_in(&settings_view, window, Self::on_settings_event);
         subscriptions.push(sub);
+
+        let web_tunnel_manager = cx.new(|cx| WebTunnelManager::new(workspaces.clone(), cx));
 
         let sub = cx.subscribe(&theme_state, Self::on_theme_changed);
         subscriptions.push(sub);
@@ -118,6 +212,7 @@ impl ZedraApp {
             screen: AppScreen::Home,
             home_view,
             settings_view,
+            web_tunnel_manager,
             workspaces,
             quick_action_drawer,
             droplet_overlay,
@@ -183,33 +278,7 @@ impl ZedraApp {
                 force_alias,
                 collide,
                 reset,
-            } => {
-                if reset {
-                    crate::web_tunnel::debug_reset();
-                }
-                if let Some(port) = collide {
-                    crate::web_tunnel::debug_collide(port);
-                }
-                let session = self
-                    .workspaces
-                    .read(cx)
-                    .active()
-                    .cloned()
-                    .map(|w| w.read(cx).session_handle().clone());
-                match session {
-                    Some(session) => {
-                        if force_alias {
-                            crate::web_tunnel::debug_force_alias(&session);
-                        }
-                        if let Some(url) = url {
-                            crate::web_tunnel::open_url(session, &url);
-                        }
-                    }
-                    None => {
-                        tracing::warn!("[debug:web-tunnel] devtool: no active workspace session");
-                    }
-                }
-            }
+            } => run_debug_tunnel(&self.workspaces, url, force_alias, collide, reset, cx),
         }
     }
 
@@ -234,6 +303,9 @@ impl ZedraApp {
         match event {
             SettingsEvent::NavigateHome => {
                 self.set_screen(AppScreen::Home, cx);
+            }
+            SettingsEvent::OpenWebTunnel => {
+                self.set_screen(AppScreen::WebTunnel, cx);
             }
             SettingsEvent::DropletToggled(enabled) => {
                 let enabled = *enabled;
@@ -431,6 +503,10 @@ impl ZedraApp {
                 self.set_screen(AppScreen::Home, cx);
                 true
             }
+            AppScreen::WebTunnel => {
+                self.set_screen(AppScreen::Settings, cx);
+                true
+            }
             AppScreen::Workspace => self.workspaces.update(cx, |workspaces, cx| {
                 workspaces.handle_system_back(window, cx)
             }),
@@ -458,6 +534,7 @@ impl ZedraApp {
         let screen_view: AnyView = match self.screen {
             AppScreen::Home => self.home_view.clone().into(),
             AppScreen::Settings => self.settings_view.clone().into(),
+            AppScreen::WebTunnel => self.web_tunnel_manager.clone().into(),
             AppScreen::Workspace => self
                 .workspaces
                 .read(cx)

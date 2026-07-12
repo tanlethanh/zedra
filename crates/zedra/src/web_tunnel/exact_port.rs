@@ -15,20 +15,62 @@ use tokio::net::{TcpListener, TcpStream};
 
 use super::bridge;
 
-// TODO(web_tunnel_manager, deferred): listeners live for the process lifetime and
-// can't be released. A settings view (`web_tunnel_manager.rs`) should list bound
-// ports (port -> owning host) with a stop action to free a port when it conflicts
-// with another app. Needs a handle to drop the listener + accept task and clear
-// the owner here.
+// `owner` reserves a port for a host before the fallible bind (race guard) and is
+// the ownership source of truth. `bound` tracks the live accept task per port so
+// the manager (`web_tunnel_manager.rs`) can stop a listener: aborting the task
+// drops its `TcpListener`, which frees the device port for another app.
+struct Bound {
+    endpoint_id: PublicKey,
+    task: tokio::task::JoinHandle<()>,
+}
+
 struct State {
     owner: Mutex<HashMap<u16, PublicKey>>,
+    bound: Mutex<HashMap<u16, Bound>>,
 }
 
 fn state() -> &'static State {
     static STATE: OnceLock<State> = OnceLock::new();
     STATE.get_or_init(|| State {
         owner: Mutex::new(HashMap::new()),
+        bound: Mutex::new(HashMap::new()),
     })
+}
+
+/// A live exact-port listener, for the manager view to display and stop.
+pub(crate) struct ListenerInfo {
+    pub(crate) port: u16,
+    pub(crate) endpoint_id: PublicKey,
+}
+
+/// Live listeners sorted by device port.
+pub(crate) fn list_listeners() -> Vec<ListenerInfo> {
+    let mut listeners: Vec<ListenerInfo> = state()
+        .bound
+        .lock()
+        .unwrap()
+        .iter()
+        .map(|(&port, bound)| ListenerInfo {
+            port,
+            endpoint_id: bound.endpoint_id,
+        })
+        .collect();
+    listeners.sort_by_key(|listener| listener.port);
+    listeners
+}
+
+/// Stop the listener on `port`, freeing the device port. Aborting the accept task
+/// drops its `TcpListener`. Returns whether a listener was present.
+pub(crate) fn stop(port: u16) -> bool {
+    state().owner.lock().unwrap().remove(&port);
+    match state().bound.lock().unwrap().remove(&port) {
+        Some(bound) => {
+            bound.task.abort();
+            tracing::info!("[debug:web-tunnel] exact-port stopped 127.0.0.1:{port}");
+            true
+        }
+        None => false,
+    }
 }
 
 /// Serve `port` for `endpoint_id` on the device loopback. `Err(())` means the
@@ -50,7 +92,12 @@ pub(super) async fn ensure(endpoint_id: PublicKey, port: u16) -> Result<(), ()> 
     match TcpListener::bind((Ipv4Addr::LOCALHOST, port)).await {
         Ok(listener) => {
             tracing::info!("[debug:web-tunnel] exact-port bound 127.0.0.1:{port}");
-            spawn_accept_loop(listener, endpoint_id);
+            let task = spawn_accept_loop(listener, endpoint_id);
+            state()
+                .bound
+                .lock()
+                .unwrap()
+                .insert(port, Bound { endpoint_id, task });
             Ok(())
         }
         Err(_) => {
@@ -60,7 +107,7 @@ pub(super) async fn ensure(endpoint_id: PublicKey, port: u16) -> Result<(), ()> 
     }
 }
 
-fn spawn_accept_loop(listener: TcpListener, endpoint_id: PublicKey) {
+fn spawn_accept_loop(listener: TcpListener, endpoint_id: PublicKey) -> tokio::task::JoinHandle<()> {
     tokio::spawn(async move {
         loop {
             let (stream, _) = match listener.accept().await {
@@ -72,7 +119,7 @@ fn spawn_accept_loop(listener: TcpListener, endpoint_id: PublicKey) {
             };
             tokio::spawn(handle_connection(stream, endpoint_id));
         }
-    });
+    })
 }
 
 // The accepted socket's local port is the listener's port — i.e. the host port
@@ -158,7 +205,10 @@ fn find_localhost_ports(data: &[u8]) -> Vec<u16> {
     let mut ports = Vec::new();
     let mut start = 0;
     while start + NEEDLE.len() <= data.len() {
-        let Some(offset) = data[start..].windows(NEEDLE.len()).position(|w| w == NEEDLE) else {
+        let Some(offset) = data[start..]
+            .windows(NEEDLE.len())
+            .position(|w| w == NEEDLE)
+        else {
             break;
         };
         let digits_start = start + offset + NEEDLE.len();

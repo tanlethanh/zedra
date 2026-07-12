@@ -8,7 +8,8 @@ use crate::fonts;
 use crate::platform_bridge::{self, HapticFeedback};
 use crate::theme;
 use crate::ui::{
-    chevron_back_button, subscreen_padded_body, subscreen_page, subscreen_refresh_button,
+    chevron_back_button, subscreen_empty_text, subscreen_padded_body, subscreen_page,
+    subscreen_refresh_button,
 };
 use crate::workspace_action;
 
@@ -129,13 +130,13 @@ impl Render for AgentManage {
 
         let body: AnyElement = match agent_state {
             LoadState::Loading => {
-                subscreen_padded_body(empty_text("Loading…", cx)).into_any_element()
+                subscreen_padded_body(subscreen_empty_text("Loading…", cx)).into_any_element()
             }
             LoadState::Error(message) => {
-                subscreen_padded_body(empty_text(message, cx)).into_any_element()
+                subscreen_padded_body(subscreen_empty_text(message, cx)).into_any_element()
             }
             LoadState::Ready if agents.is_empty() => {
-                subscreen_padded_body(empty_text("No managed agents detected", cx))
+                subscreen_padded_body(subscreen_empty_text("No managed agents detected", cx))
                     .into_any_element()
             }
             LoadState::Ready => render_list_body(&agents, cx).into_any_element(),
@@ -232,15 +233,4 @@ fn render_list_body(agents: &[AgentSummary], cx: &mut Context<AgentManage>) -> i
         );
     }
     subscreen_padded_body(list)
-}
-
-fn empty_text(text: impl Into<SharedString>, cx: &App) -> Div {
-    div()
-        .w_full()
-        .min_w_0()
-        .py(px(theme::SPACING_LG))
-        .text_size(px(theme::FONT_BODY))
-        .text_color(rgb(theme::text_muted(cx)))
-        .whitespace_normal()
-        .child(text.into())
 }

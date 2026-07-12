@@ -81,11 +81,19 @@ Neither is strictly better; they trade origin honesty for multi-host reach.
 Use exact-port for origin-sensitive apps (sign-in, cookies, strict CORS); use
 the alias when a port can't be bound or you need concurrent same-port hosts.
 
+## Managing listeners
+
+Exact-port listeners otherwise live for the app's process lifetime. The
+**Web tunnel** manager (`crates/zedra/src/web_tunnel_manager.rs`, reached from
+Settings → Developer → Web tunnel) lists the bound listeners as `:<port> →
+<owning workspace>` with a **Stop** action per row. Stopping aborts that
+listener's accept task, which drops its `TcpListener` and frees the device port
+for another app; the owning host's next tunnel open re-binds (or offers the
+alias if the port is now taken). `web_tunnel::active_listeners()` /
+`stop_listener(port)` back the view.
+
 ## Backlog
 
-- **Listener manager** (deferred): exact-port listeners live for the app's
-  process lifetime and can't be stopped. Add a settings view
-  (`crates/zedra/src/web_tunnel_manager.rs`) that lists active listeners
-  (port → owning host) with a **Stop** action to release a port when it conflicts
-  with another app, and optionally switch a host to alias mode. Needs
-  `exact_port` to hold a per-listener shutdown handle and clear its owner.
+- **Switch a host to alias from the manager**: the manager only stops listeners
+  today. Add a per-row action to opt a host into the alias adapter directly,
+  without waiting for a bind conflict to surface the prompt.

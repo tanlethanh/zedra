@@ -52,6 +52,18 @@ fn subscreen_content_column(content: impl IntoElement) -> Div {
         .child(content)
 }
 
+/// Muted, full-width empty/loading/error message for a subscreen body.
+pub fn subscreen_empty_text(text: impl Into<SharedString>, cx: &App) -> Div {
+    div()
+        .w_full()
+        .min_w_0()
+        .py(px(theme::SPACING_LG))
+        .text_size(px(theme::FONT_BODY))
+        .text_color(rgb(theme::text_muted(cx)))
+        .whitespace_normal()
+        .child(text.into())
+}
+
 /// Horizontal padding wrapper for subscreen scroll content.
 pub fn subscreen_padded_body(body: impl IntoElement) -> impl IntoElement {
     div()

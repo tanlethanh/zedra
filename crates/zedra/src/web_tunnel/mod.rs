@@ -27,6 +27,12 @@ use zedra_session::SessionHandle;
 
 use crate::platform_bridge::{self, NativeNotificationKind, NativeNotificationOptions};
 
+/// Live exact-port listeners + a stop control, for the manager view
+/// (`web_tunnel_manager.rs`) to free a device port that conflicts with another app.
+pub(crate) use exact_port::{
+    ListenerInfo, list_listeners as active_listeners, stop as stop_listener,
+};
+
 /// External write-up of the two modes and their origin tradeoffs.
 const MODES_DOC_URL: &str = "https://zedra.dev/docs/web-tunnel-modes";
 
@@ -52,7 +58,12 @@ fn registry() -> &'static Registry {
 /// adapters route through this so listeners/aliases survive reconnects (the
 /// session handle changes on reconnect; the endpoint id stays).
 fn session_for(endpoint_id: &PublicKey) -> Option<SessionHandle> {
-    registry().sessions.lock().unwrap().get(endpoint_id).cloned()
+    registry()
+        .sessions
+        .lock()
+        .unwrap()
+        .get(endpoint_id)
+        .cloned()
 }
 
 /// Open `url` the best way: host-local http(s) URLs load in the in-app webview
@@ -61,14 +72,17 @@ fn session_for(endpoint_id: &PublicKey) -> Option<SessionHandle> {
 /// link" seam for the tunnel.
 pub fn open_url(session_handle: SessionHandle, url: &str) {
     let Ok(port) = parse_loopback_target(url) else {
+        tracing::info!("[debug:web-tunnel] {url} not host-local -> system browser");
         platform_bridge::bridge().open_url(url);
         return;
     };
     let (Some(endpoint_id), Ok(runtime)) = (session_handle.endpoint_id(), session_handle.runtime())
     else {
+        tracing::info!("[debug:web-tunnel] no session endpoint -> system browser: {url}");
         platform_bridge::bridge().open_url(url);
         return;
     };
+    tracing::info!("[debug:web-tunnel] open {url} (loopback :{port}) via {endpoint_id}");
     registry()
         .sessions
         .lock()
@@ -191,7 +205,11 @@ pub(crate) fn debug_reset() {
 #[cfg(debug_assertions)]
 pub(crate) fn debug_force_alias(session: &SessionHandle) {
     if let Some(id) = session.endpoint_id() {
-        registry().prefs.lock().unwrap().insert(id, AdapterKind::Alias);
+        registry()
+            .prefs
+            .lock()
+            .unwrap()
+            .insert(id, AdapterKind::Alias);
     }
 }
 
