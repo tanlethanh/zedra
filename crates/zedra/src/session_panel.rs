@@ -162,6 +162,27 @@ impl Render for SessionPanel {
         // --- Phase timing section ---
         info = info.child(render_timing(cx, &snap));
 
+        // --- Send clipboard button ---
+        let send_pressed_bg = theme::row_pressed_bg(cx);
+        let send_clipboard_button = div()
+            .id("session-send-clipboard-btn")
+            .mt(px(8.0))
+            .px(px(12.0))
+            .py(px(8.0))
+            .rounded(px(6.0))
+            .border_1()
+            .border_color(rgb(theme::border_default(cx)))
+            .text_color(rgb(theme::text_secondary(cx)))
+            .text_size(px(theme::FONT_BODY))
+            .cursor_pointer()
+            // Touch-down feedback: the button previously gave no pressed state.
+            .hover(|s| s.bg(send_pressed_bg))
+            .active(|s| s.bg(send_pressed_bg))
+            .on_press(cx.listener(|_this, _event, window, cx| {
+                window.dispatch_action(workspace_action::SendClipboard.boxed_clone(), cx);
+            }))
+            .child(div().flex().justify_center().child("Send clipboard"));
+
         // --- Disconnect button ---
         let disconnect_button = div()
             .id("session-disconnect-btn")
@@ -179,7 +200,9 @@ impl Render for SessionPanel {
             }))
             .child(div().flex().justify_center().child("Disconnect"));
 
-        info.child(disconnect_button).child(div().h(px(16.0)))
+        info.child(send_clipboard_button)
+            .child(disconnect_button)
+            .child(div().h(px(16.0)))
     }
 }
 

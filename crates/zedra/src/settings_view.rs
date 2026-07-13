@@ -77,6 +77,7 @@ pub struct SettingsView {
     delta_busy: bool,
     telemetry_enabled: bool,
     droplet_enabled: bool,
+    clipboard_sync_enabled: bool,
     _delta_observe: Subscription,
 }
 
@@ -102,6 +103,7 @@ impl SettingsView {
             delta_busy: false,
             telemetry_enabled: settings::read_telemetry_enabled(),
             droplet_enabled: settings::read_droplet_enabled(),
+            clipboard_sync_enabled: settings::read_clipboard_sync_enabled(),
             _delta_observe: observe,
         }
     }
@@ -430,6 +432,18 @@ impl SettingsView {
         cx.notify();
     }
 
+    fn set_clipboard_sync_enabled(&mut self, enabled: bool, cx: &mut Context<Self>) {
+        if self.clipboard_sync_enabled == enabled {
+            return;
+        }
+        platform_bridge::trigger_haptic(HapticFeedback::SelectionChanged);
+        self.clipboard_sync_enabled = enabled;
+        // No live event needed: the host-event handler reads the persisted flag
+        // synchronously each time a clipboard change arrives.
+        settings::set_clipboard_sync_enabled(enabled);
+        cx.notify();
+    }
+
     fn open_telemetry_docs(&self) {
         platform_bridge::trigger_haptic(HapticFeedback::ImpactLight);
         platform_bridge::bridge().open_url(TELEMETRY_DOCS_URL);
@@ -540,6 +554,7 @@ impl Render for SettingsView {
         let preference = self.theme_state.read(cx).preference();
         let telemetry_enabled = self.telemetry_enabled;
         let droplet_enabled = self.droplet_enabled;
+        let clipboard_sync_enabled = self.clipboard_sync_enabled;
 
         div()
             .id("settings-view")
@@ -668,6 +683,16 @@ impl Render for SettingsView {
                                 ))
                             })
                             .child(section_header(cx, "Privacy"))
+                            .child(clipboard_sync_toggle(
+                                cx,
+                                clipboard_sync_enabled,
+                                cx.listener(|this, _event, _window, cx| {
+                                    this.set_clipboard_sync_enabled(true, cx);
+                                }),
+                                cx.listener(|this, _event, _window, cx| {
+                                    this.set_clipboard_sync_enabled(false, cx);
+                                }),
+                            ))
                             .child(telemetry_toggle(
                                 cx,
                                 telemetry_enabled,
@@ -943,6 +968,30 @@ fn droplet_toggle(
         "settings-droplet-toggle",
         "Water droplet",
         "A playful droplet to flick around",
+        theme::text_secondary(cx),
+        control,
+    )
+}
+
+fn clipboard_sync_toggle(
+    cx: &App,
+    enabled: bool,
+    on_enable: impl Fn(&PressEvent, &mut Window, &mut App) + 'static,
+    on_disable: impl Fn(&PressEvent, &mut Window, &mut App) + 'static,
+) -> impl IntoElement {
+    let control = segmented_toggle(
+        cx,
+        "settings-clipboard-sync-on",
+        "settings-clipboard-sync-off",
+        enabled,
+        on_enable,
+        on_disable,
+    );
+    toggle_row(
+        cx,
+        "settings-clipboard-sync-toggle",
+        "Clipboard sync",
+        "Copy on the host, paste here. Overwrites this device's clipboard.",
         theme::text_secondary(cx),
         control,
     )

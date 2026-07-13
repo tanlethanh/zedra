@@ -412,6 +412,24 @@ impl SessionHandle {
         Ok(())
     }
 
+    /// Push local clipboard content to the host (client->host, manual).
+    pub async fn clipboard_set(&self, content: ClipboardContent) -> Result<()> {
+        let result: ClipboardSetResult = self.call(ClipboardSetReq { content }).await?;
+        if let Some(e) = result.error {
+            return Err(anyhow::anyhow!(e));
+        }
+        Ok(())
+    }
+
+    /// Read the host's current system clipboard, e.g. to seed on connect.
+    pub async fn clipboard_get(&self) -> Result<Option<ClipboardContent>> {
+        let result: ClipboardGetResult = self.call(ClipboardGetReq {}).await?;
+        if let Some(e) = result.error {
+            return Err(anyhow::anyhow!(e));
+        }
+        Ok(result.content)
+    }
+
     pub async fn fs_stat(&self, path: &str) -> Result<FsStatResult> {
         let result = self
             .call(FsStatReq {

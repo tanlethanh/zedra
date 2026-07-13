@@ -439,6 +439,11 @@ impl Session {
                     "HostEvent: terminal agent changed"
                 );
             }
+            HostEvent::ClipboardChanged(_) => {
+                // The app-side subscriber applies it to the device pasteboard
+                // when clipboard sync is enabled and the app is foreground.
+                info!("HostEvent: clipboard changed");
+            }
         }
 
         let _ = host_event_tx.send(event);

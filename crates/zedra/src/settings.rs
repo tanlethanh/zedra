@@ -20,6 +20,11 @@ struct AppSettings {
     /// Water droplet effect. `None`/absent = enabled (default-on).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     droplet_enabled: Option<bool>,
+    /// Sync the host system clipboard to this device. `None`/absent = disabled
+    /// (default-off): auto-applying the host clipboard overwrites the device
+    /// pasteboard, so the user opts in.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    clipboard_sync_enabled: Option<bool>,
 }
 
 pub enum ThemeStateEvent {
@@ -192,6 +197,25 @@ pub fn set_droplet_enabled(enabled: bool) {
     settings.droplet_enabled = Some(enabled);
     if let Err(err) = write_settings(&settings) {
         warn!(err = %err, "settings: failed to save droplet preference");
+    }
+}
+
+/// Whether host->device clipboard sync is enabled. Default off.
+pub fn read_clipboard_sync_enabled() -> bool {
+    match read_settings() {
+        Ok(settings) => settings.clipboard_sync_enabled.unwrap_or(false),
+        Err(err) => {
+            info!(err = %err, "[debug:settings] using default clipboard-sync preference");
+            false
+        }
+    }
+}
+
+pub fn set_clipboard_sync_enabled(enabled: bool) {
+    let mut settings = read_settings().unwrap_or_default();
+    settings.clipboard_sync_enabled = Some(enabled);
+    if let Err(err) = write_settings(&settings) {
+        warn!(err = %err, "settings: failed to save clipboard-sync preference");
     }
 }
 

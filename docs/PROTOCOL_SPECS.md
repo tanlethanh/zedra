@@ -233,7 +233,7 @@ Result types that carry `error: Option<String>`:
 `FsListResult`, `FsSearchResult`, `FsReadResult`, `FsStatResult`, `SessionSwitchResult`, `TermCreateResult`,
 `GitStatusResult`, `GitDiffResult`, `GitLogResult`, `GitCommitResult`, `GitStageResult`,
 `GitUnstageResult`, `GitBranchesResult`, `AgentListResult`, `AgentSessionsResult`,
-`AgentResumeResult`, `LspDiagnosticsResult`.
+`AgentResumeResult`, `LspDiagnosticsResult`, `ClipboardSetResult`, `ClipboardGetResult`.
 
 Types that use non-string status fields or enum variants instead:
 `FsWriteResult` (`ok: bool`), `GitCheckoutResult` (`ok: bool`), `FsWatchResult`/`FsUnwatchResult` (enum),
@@ -413,6 +413,19 @@ CLI `--version` probes are slow and cached separately from the synchronous agent
 4. **Background completion:** host pushes `HostEvent::AgentInfoChanged { info }` once per managed agent to every session with an active `Subscribe` stream. `info` is the full cached `AgentSummary` for that agent (including versions and live bindings for that session).
 5. **Client update:** replace the cached row for `info.kind` (do not treat the event as a partial patch).
 
+## 5.8 Clipboard
+
+- `ClipboardSet(ClipboardSetReq) -> ClipboardSetResult`, client pushes its device clipboard; host writes it to the host system clipboard. Manual, user-initiated (iOS forbids background pasteboard reads).
+- `ClipboardGet(ClipboardGetReq) -> ClipboardGetResult`, client reads the host's current system clipboard (e.g. to seed on connect).
+- Host-to-client changes arrive as `HostEvent::ClipboardChanged` (see §6), not a poll.
+
+Conventions:
+
+- `ClipboardContent` is `Text(String)` in v1. The `Image { format, bytes }` variant is reserved on the wire but neither produced nor consumed until v1.1.
+- Payloads over `CLIPBOARD_MAX_BYTES` (2 MiB) are dropped by the host and rejected by the client before crossing the tunnel.
+- The host runs one clipboard watcher and broadcasts a change to every subscribed session. A `ClipboardSet` records the written value's hash so it is not echoed back as a `ClipboardChanged`.
+- If the host has no reachable system clipboard (headless, no display server), the watcher does not start and `ClipboardGet`/`ClipboardSet` return `error`.
+
 ---
 
 ## 6) Host Events
@@ -424,6 +437,7 @@ Current host event variants:
 - `FsChanged { path }`
 - `AgentInfoChanged { info }`
 - `TerminalAgentChanged { terminal_id, agent_slug }`
+- `ClipboardChanged(ClipboardPayload)`
 
 Client rules:
 
@@ -431,7 +445,8 @@ Client rules:
 - `GitChanged`: invalidate cached git state and refresh when appropriate.
 - `FsChanged { path }`: invalidate cached file tree for the watched path and reload affected expanded nodes.
 - `AgentInfoChanged`: replace cached `AgentSummary` for `info.slug`. One event per managed agent per version refresh. Requires an active `Subscribe` stream.
-- `TerminalAgentChanged`: update the terminal's agent identity to `agent_slug` (`None` clears it). Emitted when the host-resolved foreground agent for a terminal changes (command start/end). Authoritative — clients render it instead of re-detecting locally. Requires an active `Subscribe` stream.
+- `TerminalAgentChanged`: update the terminal's agent identity to `agent_slug` (`None` clears it). Emitted when the host-resolved foreground agent for a terminal changes (command start/end). Authoritative, clients render it instead of re-detecting locally. Requires an active `Subscribe` stream.
+- `ClipboardChanged`: the host system clipboard changed. When clipboard sync is enabled and the app is foreground, write `content` to the device pasteboard. Requires an active `Subscribe` stream. v4-only: filtered out for v3 clients.
 
 ---
 
@@ -602,6 +617,10 @@ Any protocol-layer change must include all applicable steps:
 ---
 
 ## 11) Protocol Changelog
+
+### 2026-07-06
+
+- Added clipboard sync (host <-> client). Appended `ClipboardSet`/`ClipboardGet` request variants to `ZedraProto`, appended `HostEvent::ClipboardChanged`, and added `ClipboardContent`/`ClipboardPayload`/req+result structs plus `CLIPBOARD_MAX_BYTES`. Appended at each enum's tail; `zedra/rpc/4` is not bumped, following the rolling-v4 / frozen-v3 model used for the 2026-07-05 `FsSearch` change (host and client ship together; `proto_v3.rs` is the cross-version boundary). This is not a general decode-compat guarantee: a v4 client built before `ClipboardChanged` cannot decode it on its Subscribe stream, so a host should not out-run its paired clients. `proto_v3.rs` filters `ClipboardChanged` out for v3 clients; the v4-only request variants need no v3 lift. Text only in v1; the `ClipboardContent::Image` variant ships reserved for v1.1. See `docs/CLIPBOARD_SYNC.md`.
 
 ### 2026-07-05
 

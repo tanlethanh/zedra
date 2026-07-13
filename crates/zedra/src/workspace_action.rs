@@ -59,6 +59,11 @@ pub struct GitCommit {
 #[action(namespace = workspace, no_json)]
 pub struct CloseDrawer;
 
+/// Send the device clipboard to the host system clipboard (manual push).
+#[derive(Clone, PartialEq, Action)]
+#[action(namespace = workspace, no_json)]
+pub struct SendClipboard;
+
 #[derive(Clone, PartialEq, Action)]
 #[action(namespace = workspace, no_json)]
 pub struct ShowConnecting;

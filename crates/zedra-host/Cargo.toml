@@ -75,6 +75,9 @@ tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 hostname = "0.4"
 sysinfo = "0.31.4"
 
+# System clipboard (text only for v1; enable default features for v1.1 images).
+arboard = { version = "3", default-features = false }
+
 # Error handling
 anyhow.workspace = true
 

@@ -1196,6 +1196,10 @@ async fn main() -> Result<()> {
             //     DNS re-registration when the endpoint address updates.
             net_monitor::spawn_net_monitor(&endpoint);
 
+            // 1c. Start the system clipboard watcher (host->client auto-sync).
+            //     Disables itself if the host has no reachable clipboard.
+            zedra_host::clipboard::spawn(registry.clone(), state.clipboard.clone());
+
             // 2. Generate startup QR code
             // Note: The QR encodes only endpoint_id (pubkey) — no IPs. The client
             // resolves addresses at connect time via pkarr. STUN runs in the

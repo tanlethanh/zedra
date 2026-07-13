@@ -3,6 +3,7 @@
 pub mod agent;
 pub mod api;
 pub mod client;
+pub mod clipboard;
 pub mod delta;
 pub mod docs_tree;
 pub mod fs;
