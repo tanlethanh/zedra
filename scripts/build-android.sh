@@ -65,12 +65,9 @@ if [ "$NO_TELEMETRY" = true ] && [[ "$FEATURES" == *"debug-telemetry"* ]]; then
     exit 1
 fi
 
-# devtool's hitbox-registration path (element.rs's inspector_id computation) is
-# widened for `feature = "devtool"` but not `debug_assertions` alone, to avoid
-# paying its per-element lookup cost in every debug build. That means a
-# release build (debug_assertions off) with --devtool would compile but skip
-# the supporting `any(feature = "inspector", debug_assertions)`-gated registry
-# plumbing it needs — require --debug explicitly instead of chasing that gap.
+# devtool widens element.rs's inspector_id path for `feature = "devtool"`, but the
+# registry plumbing it needs is `any(feature = "inspector", debug_assertions)`-gated —
+# a release build with --devtool compiles yet silently skips it, so require --debug.
 if [ "$DEVTOOL" = true ] && [ "$PROFILE" = "--release" ]; then
     echo "Error: --devtool requires --debug (devtool is not supported in release profile)." >&2
     exit 1

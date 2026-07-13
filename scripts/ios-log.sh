@@ -738,7 +738,7 @@ case "$sub" in
     query)  cmd_query "$@" ;;
     wait)   cmd_wait "$@" ;;
     ""|-h|--help)
-        sed -n '2,60p' "$0" | sed 's/^# \{0,1\}//'
+        sed -n '2,58p' "$0" | sed 's/^# \{0,1\}//'
         ;;
     *)
         echo "Error: unknown subcommand '$sub'. Expected tail, daemon, query, or wait." >&2
