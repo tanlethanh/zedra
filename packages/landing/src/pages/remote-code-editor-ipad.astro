@@ -1,0 +1,91 @@
+---
+import MarketingLayout from "../layouts/MarketingLayout.astro";
+
+const title = "Remote Code Editor for iPhone, iPad, and Android: Zedra";
+const description =
+  "Use Zedra as a remote code editor for iPhone, iPad, and Android: terminal, files, code review, git diffs, and coding agents.";
+
+const faq = [
+  {
+    q: "What is the best remote code editor for iPad?",
+    a: "If you want to edit code that already lives on your own Mac, Linux box, or workstation, Zedra gives iPad a remote workspace with terminal, files, code editor, git diff, markdown preview, and coding-agent control.",
+  },
+  {
+    q: "Can I code from an iPhone with Zedra?",
+    a: "Yes. Zedra is built for iPhone and iPad. It is strongest for steering real work already running on your machine: answering terminal prompts, reviewing diffs, reading code, and keeping agents moving.",
+  },
+  {
+    q: "Is Zedra an SSH client?",
+    a: "No. Zedra includes a real terminal, but it also streams workspace state: file tree, editor, git diff, markdown, sessions, usage, and notifications.",
+  },
+  {
+    q: "Does my source code move to Zedra's cloud?",
+    a: "No. Your code stays on your machine. Zedra connects directly when possible and uses an encrypted relay only when networks block the direct path.",
+  },
+];
+
+const faqSchema = {
+  "@context": "https://schema.org",
+  "@type": "FAQPage",
+  mainEntity: faq.map((item) => ({
+    "@type": "Question",
+    name: item.q,
+    acceptedAnswer: { "@type": "Answer", text: item.a },
+  })),
+};
+---
+
+<MarketingLayout title={title} description={description} path="/remote-code-editor-ipad" jsonLd={[faqSchema]}>
+  <h1>Remote code editor for iPhone, iPad, and Android</h1>
+  <p>
+    Zedra turns your phone or tablet into a native remote workspace for the development machine
+    where your repo, terminal, and agents already live. It supports iOS and Android, and is built
+    for quick fixes, code review, prompt approvals, and keeping long-running agent work moving
+    when you leave your desk.
+  </p>
+
+  <h2>What Zedra gives you</h2>
+  <ul>
+    <li><strong>Remote terminal:</strong> run shells, CLIs, tests, and coding agents on your machine.</li>
+    <li><strong>Code editor:</strong> read changed files with syntax highlighting and mobile selection.</li>
+    <li><strong>File browser:</strong> navigate the repo tree and jump to files agents mention.</li>
+    <li><strong>Git diff:</strong> review staged and unstaged changes before anything lands.</li>
+    <li><strong>Markdown preview:</strong> read plans, docs, specs, and agent reports comfortably.</li>
+    <li><strong>Notifications:</strong> know when an agent finishes or needs approval.</li>
+  </ul>
+
+  <h2>Where it fits</h2>
+  <p>
+    Zedra is not trying to replace your desktop editor. It gives iPhone and iPad a purpose-built
+    control surface for your real development environment: the terminal, repo, and agents running
+    on your own machine.
+  </p>
+
+  <h2>Get started</h2>
+  <pre class="mk-code">curl -fsSL zedra.dev/install.sh | sh
+zedra setup
+zedra start --detach</pre>
+  <p>
+    Then install the mobile app and scan the QR code. See the full
+    <a href="/docs/installation/">installation guide</a> for iOS, Android, macOS, Linux, and
+    Windows.
+  </p>
+
+  <h2>FAQ</h2>
+  <div class="mk-faq">
+    {
+      faq.map((item) => (
+        <details>
+          <summary>{item.q}</summary>
+          <p>{item.a}</p>
+        </details>
+      ))
+    }
+  </div>
+
+  <p>
+    Also see <a href="/mobile-coding-agents/">mobile coding agents</a>,
+    <a href="/claude-code/">Claude Code on your phone</a>, and
+    <a href="/compare/blink-shell/">Zedra vs Blink Shell</a>.
+  </p>
+</MarketingLayout>

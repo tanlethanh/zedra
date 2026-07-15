@@ -11,8 +11,9 @@ Flags can be combined: `./scripts/run-ios.sh device --preview --debug`
 
 ## Device selection
 
-The device preference is one global target per repo checkout — not scoped to a
-session or shell. Earlier this used `$PPID`, but a child script sees its
+The device preference is one machine-global target — the fixed path below is
+shared by every checkout and worktree, not scoped to a session, shell, or
+checkout. Earlier this used `$PPID`, but a child script sees its
 invoker's PID, not the invoker's own `$PPID`, so that scoping was fragile
 across separate tool calls and let `devtool.sh`/`ios-log.sh daemon` silently
 diverge on which device they thought was current. Shared by `run-ios.sh`,
