@@ -6,6 +6,7 @@ FEATURES="--features android-platform"
 PROFILE="--release"
 TARGETS=""
 NO_TELEMETRY=false
+DEVTOOL=false
 OUTPUT_DIR="./android/app/libs"
 STAGING_DIR="$(mktemp -d "${TMPDIR:-/tmp}/zedra-android-libs.XXXXXX")"
 trap 'rm -rf "$STAGING_DIR"' EXIT
@@ -50,6 +51,7 @@ for arg in "$@"; do
             ;;
         --devtool)
             FEATURES="$FEATURES,devtool"
+            DEVTOOL=true
             echo "Devtool enabled: in-app HTTP server on 127.0.0.1:9777"
             ;;
         --target=*)
@@ -60,6 +62,14 @@ done
 
 if [ "$NO_TELEMETRY" = true ] && [[ "$FEATURES" == *"debug-telemetry"* ]]; then
     echo "Error: --no-telemetry cannot be combined with --debug-telemetry." >&2
+    exit 1
+fi
+
+# devtool widens element.rs's inspector_id path for `feature = "devtool"`, but the
+# registry plumbing it needs is `any(feature = "inspector", debug_assertions)`-gated —
+# a release build with --devtool compiles yet silently skips it, so require --debug.
+if [ "$DEVTOOL" = true ] && [ "$PROFILE" = "--release" ]; then
+    echo "Error: --devtool requires --debug (devtool is not supported in release profile)." >&2
     exit 1
 fi
 

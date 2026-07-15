@@ -612,7 +612,7 @@ scripts/android-perf-summary.py /tmp/zedra-android-logcat-androidperf.log --fram
 From iOS `IosPerf` logs:
 
 ```sh
-./scripts/log-ios.sh --filter IosPerf | tee /tmp/zedra-iosperf.log
+./scripts/ios-log.sh tail --filter IosPerf | tee /tmp/zedra-iosperf.log
 scripts/android-perf-summary.py --prefix IosPerf /tmp/zedra-iosperf.log --top 3
 ```
 
