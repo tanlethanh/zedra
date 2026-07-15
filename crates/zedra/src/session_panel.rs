@@ -1,18 +1,19 @@
 /// Session info panel for the workspace drawer.
 ///
 /// Displays host info, connection details, endpoints, and disconnect button.
+use futures::channel::oneshot;
 use gpui::*;
 
+use crate::platform_bridge::{self, AlertButton, HapticFeedback};
 use crate::transport_badge::{format_bytes, render_transport_badge, transport_badge};
-use crate::workspace_state::WorkspaceState;
-use crate::{theme, workspace_action};
+use crate::workspace_state::{TrackedTunnel, WorkspaceState};
+use crate::{fonts, theme, web_tunnel, workspace_action};
 use zedra_rpc::proto::{HostBatteryInfo, HostInfoSnapshot};
 use zedra_session::{SessionHandle, SessionState};
 
 pub struct SessionPanel {
     workspace_state: Entity<WorkspaceState>,
     session_state: Entity<SessionState>,
-    #[allow(dead_code)]
     session_handle: SessionHandle,
     _subscriptions: Vec<Subscription>,
 }
@@ -32,6 +33,46 @@ impl SessionPanel {
             session_handle,
             _subscriptions: vec![workspace_state_sub],
         }
+    }
+
+    /// Reopen a tracked tunnel and bump it to the front of the list.
+    fn open_tunnel(&self, tunnel: TrackedTunnel, cx: &mut Context<Self>) {
+        platform_bridge::trigger_haptic(HapticFeedback::ImpactLight);
+        self.workspace_state.update(cx, |state, cx| {
+            state.record_web_tunnel(&tunnel.url, &tunnel.title, cx);
+        });
+        web_tunnel::open_url(self.session_handle.clone(), &tunnel.url);
+    }
+
+    /// Long-press a tracked tunnel: open it or remove it from the list.
+    fn long_press_tunnel(&self, tunnel: TrackedTunnel, cx: &mut Context<Self>) {
+        platform_bridge::trigger_haptic(HapticFeedback::ImpactLight);
+        let (tx, rx) = oneshot::channel();
+        platform_bridge::show_selection(
+            &tunnel.title,
+            &tunnel.url,
+            vec![
+                AlertButton::default("Open"),
+                AlertButton::destructive("Remove"),
+            ],
+            move |choice| {
+                let _ = tx.send(choice);
+            },
+        );
+        cx.spawn(async move |this, cx| match rx.await {
+            Ok(Some(0)) => {
+                let _ = this.update(cx, |this, cx| this.open_tunnel(tunnel, cx));
+            }
+            Ok(Some(1)) => {
+                let _ = this.update(cx, |this, cx| {
+                    this.workspace_state.update(cx, |state, cx| {
+                        state.remove_web_tunnel(&tunnel.url, cx);
+                    });
+                });
+            }
+            _ => {}
+        })
+        .detach();
     }
 }
 
@@ -58,6 +99,7 @@ impl Render for SessionPanel {
 
         let snap = session_state.snapshot();
         let host_info = workspace_state.host_info.clone();
+        let web_tunnels = workspace_state.web_tunnels.clone();
 
         let mut info = div().px(px(theme::DRAWER_PADDING)).flex().flex_col();
 
@@ -162,6 +204,23 @@ impl Render for SessionPanel {
         // --- Phase timing section ---
         info = info.child(render_timing(cx, &snap));
 
+        // --- Web tunnels section ---
+        if !web_tunnels.is_empty() {
+            info = info.child(
+                div()
+                    .mt(px(8.0))
+                    .mb(px(2.0))
+                    .text_color(rgb(theme::text_muted(cx)))
+                    .text_size(px(theme::FONT_DETAIL))
+                    .child("Web tunnels"),
+            );
+            let mut list = div().flex().flex_col();
+            for (idx, tunnel) in web_tunnels.into_iter().enumerate() {
+                list = list.child(tunnel_row(idx, tunnel, cx));
+            }
+            info = info.child(list);
+        }
+
         // --- Disconnect button ---
         let disconnect_button = div()
             .id("session-disconnect-btn")
@@ -252,6 +311,45 @@ fn render_timing(cx: &App, snap: &zedra_session::ConnectSnapshot) -> Div {
     }
 
     muted_info_row(cx, "Timing", timing_parts.join(" \u{00b7} "))
+}
+
+fn tunnel_row(
+    idx: usize,
+    tunnel: TrackedTunnel,
+    cx: &mut Context<SessionPanel>,
+) -> impl IntoElement {
+    let on_open = tunnel.clone();
+    let on_long = tunnel.clone();
+    div()
+        .id(("session-web-tunnel", idx))
+        .min_h(px(44.0))
+        .py(px(theme::SPACING_SM))
+        .flex()
+        .flex_col()
+        .gap(px(1.0))
+        .cursor_pointer()
+        .hit_slop(px(4.0))
+        .on_press(cx.listener(move |this, _event, _window, cx| {
+            this.open_tunnel(on_open.clone(), cx);
+        }))
+        .on_long_press(cx.listener(move |this, _event, _window, cx| {
+            this.long_press_tunnel(on_long.clone(), cx);
+        }))
+        .child(
+            div()
+                .text_color(rgb(theme::text_primary(cx)))
+                .text_size(px(theme::FONT_BODY))
+                .font_family(fonts::MONO_FONT_FAMILY)
+                .child(tunnel.title.clone()),
+        )
+        .child(
+            div()
+                .min_w_0()
+                .overflow_hidden()
+                .text_color(rgb(theme::text_muted(cx)))
+                .text_size(px(theme::FONT_DETAIL))
+                .child(tunnel.url.clone()),
+        )
 }
 
 fn info_row(cx: &App, label: &'static str, value: String) -> Div {

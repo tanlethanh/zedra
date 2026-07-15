@@ -437,6 +437,7 @@ Current host event variants:
 - `FsChanged { path }`
 - `AgentInfoChanged { info }`
 - `TerminalAgentChanged { terminal_id, agent_slug }`
+- `WebViewRequested { url }`
 
 Client rules:
 
@@ -445,6 +446,7 @@ Client rules:
 - `FsChanged { path }`: invalidate cached file tree for the watched path and reload affected expanded nodes.
 - `AgentInfoChanged`: replace cached `AgentSummary` for `info.slug`. One event per managed agent per version refresh. Requires an active `Subscribe` stream.
 - `TerminalAgentChanged`: update the terminal's agent identity to `agent_slug` (`None` clears it). Emitted when the host-resolved foreground agent for a terminal changes (command start/end). Authoritative — clients render it instead of re-detecting locally. Requires an active `Subscribe` stream.
+- `WebViewRequested`: open `url` in the in-app webview, routing loopback targets through the web tunnel (non-loopback opens in the system browser). Emitted from `zedra open <target>` via the local REST API. Loopback targets are tracked per workspace for quick reopen. Appended at `zedra/rpc/4`; dropped for `v3` clients.
 
 ---
 

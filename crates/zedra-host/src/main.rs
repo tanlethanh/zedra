@@ -26,6 +26,7 @@ use zedra_rpc::ZedraPairingTicket;
 use zedra_telemetry::Event;
 
 mod terminal_cli;
+mod webview_cli;
 
 #[derive(Parser)]
 #[command(
@@ -182,6 +183,9 @@ enum Commands {
 
     /// Open or list terminals on the connected phone
     Terminal(terminal_cli::TerminalArgs),
+
+    /// Open a web app / URL in the connected phone's in-app webview
+    Open(webview_cli::OpenArgs),
 
     /// Set up Zedra for detected AI agents, or a specific one
     Setup {
@@ -1394,6 +1398,10 @@ async fn main() -> Result<()> {
 
         Commands::Terminal(args) => {
             terminal_cli::run(args).await?;
+        }
+
+        Commands::Open(args) => {
+            webview_cli::run(args).await?;
         }
 
         Commands::Agent { command } => {

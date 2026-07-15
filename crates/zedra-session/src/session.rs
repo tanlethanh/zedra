@@ -439,6 +439,9 @@ impl Session {
                     "HostEvent: terminal agent changed"
                 );
             }
+            HostEvent::WebViewRequested { url } => {
+                info!(url = %url, "HostEvent: webview requested");
+            }
         }
 
         let _ = host_event_tx.send(event);

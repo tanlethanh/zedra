@@ -250,6 +250,11 @@ impl WorkspaceTerminal {
                 }
                 TerminalEvent::OpenHyperlink(hyperlink) => match &hyperlink.target {
                     TerminalHyperlinkTarget::Url { url } => {
+                        if let Some(title) = crate::web_tunnel::loopback_title(url) {
+                            this.workspace_state.update(cx, |state, cx| {
+                                state.record_web_tunnel(url, &title, cx);
+                            });
+                        }
                         crate::web_tunnel::open_url(this.session_handle.clone(), url);
                     }
                     TerminalHyperlinkTarget::File { path, .. } => {

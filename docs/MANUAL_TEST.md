@@ -760,6 +760,19 @@ The **Web tunnel** manager (Settings → Developer → Web tunnel) lists and sto
 2. Expected: one `:<port>  <workspace name>` row per bound listener (e.g. `:5173`, plus any companion ports like `:5174`/`:5175` from the sniffer), each with a red **Stop** button. With none bound, an empty "No web tunnel listeners are bound" state.
 3. Tap **Stop** on a row. Expected: a native confirmation alert ("Stop web tunnel listener" / "Free port :&lt;port&gt; for &lt;host&gt;?…") with a destructive **Stop** and **Cancel**. **Cancel** leaves the row untouched. **Stop** removes the row and frees the device port (a fresh open of that port re-binds it, or offers the alias if another app now holds it). Log: `exact-port stopped 127.0.0.1:<port>`.
 4. Tap refresh (↻). Expected: the list re-reads live listeners.
+
+### CLI open + tracked tunnels
+
+Open a web app from the host CLI and reopen it later from the session panel.
+
+1. On the host, run `./examples/webview-tunnel/run.sh`, connect the phone to that workspace.
+2. Run `zedra open 5173` on the host (or `zedra open localhost:5173`, or a full URL). Expected: the phone opens a webview at `http://localhost:5173` and the page loads. The CLI prints `Opening http://localhost:5173 on the connected phone`.
+3. With no phone connected, run `zedra open 5173`. Expected: a non-zero exit with `no client subscribed to receive the request` (or `no session available`).
+4. Open the workspace drawer → session panel. Expected: a **Web tunnels** section listing `localhost:5173` (plus any URL opened from a terminal link). Rows are most-recent-first.
+5. Tap a tunnel row. Expected: it reopens in the webview and moves to the top of the list.
+6. Long-press a tunnel row. Expected: a native sheet with **Open** and destructive **Remove**. **Remove** deletes the row; **Open** reopens it.
+7. Fully quit and relaunch the app, reconnect the workspace. Expected: the **Web tunnels** list is still there (persisted) and no tunnel auto-opens.
+8. Open a non-loopback URL (`zedra open https://example.com`). Expected: it opens in the system browser and does **not** appear in the tracked list.
 5. Tap back (‹). Expected: returns to Settings (not Home); the system back gesture does the same.
 
 ### Top bar (both platforms)

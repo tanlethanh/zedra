@@ -93,6 +93,12 @@ pub fn open_url(session_handle: SessionHandle, url: &str) {
     runtime.spawn(async move { serve(endpoint_id, url, title, port).await });
 }
 
+/// `host:port` label for a trackable loopback target, or `None` when `url` is
+/// not a host-local http(s) target (those open in the system browser, untracked).
+pub fn loopback_title(url: &str) -> Option<String> {
+    parse_loopback_target(url).ok().map(|_| webview_title(url))
+}
+
 async fn serve(endpoint_id: PublicKey, url: String, title: String, port: u16) {
     if registry().prefs.lock().unwrap().get(&endpoint_id) == Some(&AdapterKind::Alias) {
         serve_alias(endpoint_id, &url, title).await;

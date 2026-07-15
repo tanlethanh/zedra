@@ -205,7 +205,7 @@ async fn api_get<T: DeserializeOwned>(workdir: &Path, path: &str) -> Result<T> {
     decode_response(response).await
 }
 
-async fn api_post<T: DeserializeOwned, B: Serialize>(
+pub(crate) async fn api_post<T: DeserializeOwned, B: Serialize>(
     workdir: &Path,
     path: &str,
     body: &B,
@@ -241,7 +241,7 @@ fn daemon_api(workdir: &Path) -> Result<(String, String)> {
     Ok((addr, token))
 }
 
-fn resolve_workdir(raw: &str) -> PathBuf {
+pub(crate) fn resolve_workdir(raw: &str) -> PathBuf {
     PathBuf::from(raw)
         .canonicalize()
         .unwrap_or_else(|_| PathBuf::from(raw))

@@ -135,6 +135,18 @@ impl WorkspaceNavigationStack {
     }
 }
 
+/// A web tunnel opened for this workspace, tracked so the user can reopen it
+/// from the session panel. Persisted across app restarts and reconnects.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct TrackedTunnel {
+    /// The URL to open (e.g. `http://localhost:5173`).
+    pub url: String,
+    /// Short label shown in the list (`host:port`).
+    pub title: String,
+    /// Unix seconds of the last open, for most-recent-first ordering.
+    pub last_opened_at: u64,
+}
+
 /// Shareable workspace state. Clone copies the Arc only. Read via methods (non-blocking).
 #[derive(Clone, Default, Serialize, Deserialize)]
 pub struct WorkspaceState {
@@ -150,6 +162,9 @@ pub struct WorkspaceState {
     // Workspace-relative docs tree directories hidden by the user.
     #[serde(default)]
     pub docs_tree_collapsed_dirs: Vec<String>,
+    // Web tunnels opened for this workspace, most-recent-first for quick reopen.
+    #[serde(default)]
+    pub web_tunnels: Vec<TrackedTunnel>,
     #[serde(default)]
     pub delta_host_pubkey: Option<[u8; 32]>,
     #[serde(default)]
@@ -200,6 +215,7 @@ impl PartialEq for WorkspaceState {
             && self.homedir == other.homedir
             && self.hostname == other.hostname
             && self.docs_tree_collapsed_dirs == other.docs_tree_collapsed_dirs
+            && self.web_tunnels == other.web_tunnels
             && self.delta_host_pubkey == other.delta_host_pubkey
             && self.delta_host_node_id == other.delta_host_node_id
             && self.created_at == other.created_at
@@ -452,6 +468,32 @@ impl WorkspaceState {
             }
         }
 
+        cx.emit(WorkspaceStateEvent::StateChanged);
+        cx.notify();
+    }
+
+    /// Track (or bump to the front) a web tunnel opened for this workspace.
+    pub fn record_web_tunnel(&mut self, url: &str, title: &str, cx: &mut Context<Self>) {
+        self.web_tunnels.retain(|t| t.url != url);
+        self.web_tunnels.insert(
+            0,
+            TrackedTunnel {
+                url: url.to_string(),
+                title: title.to_string(),
+                last_opened_at: Self::now_u64(),
+            },
+        );
+        cx.emit(WorkspaceStateEvent::StateChanged);
+        cx.notify();
+    }
+
+    /// Forget a tracked web tunnel (user removed it from the list).
+    pub fn remove_web_tunnel(&mut self, url: &str, cx: &mut Context<Self>) {
+        let before = self.web_tunnels.len();
+        self.web_tunnels.retain(|t| t.url != url);
+        if self.web_tunnels.len() == before {
+            return;
+        }
         cx.emit(WorkspaceStateEvent::StateChanged);
         cx.notify();
     }
@@ -864,6 +906,26 @@ mod tests {
             loaded[0].docs_tree_collapsed_dirs,
             vec!["crates/zedra", "vendor/zed/docs"]
         );
+    }
+
+    #[test]
+    fn upsert_persists_web_tunnels() {
+        let _guard = set_test_data_directory("upsert-persists-web-tunnels");
+
+        WorkspaceState::upsert(WorkspaceState {
+            endpoint_addr: "endpoint-a".into(),
+            web_tunnels: vec![TrackedTunnel {
+                url: "http://localhost:5173".into(),
+                title: "localhost:5173".into(),
+                last_opened_at: 42,
+            }],
+            ..Default::default()
+        })
+        .unwrap();
+
+        let loaded = WorkspaceState::load().unwrap();
+        assert_eq!(loaded[0].web_tunnels.len(), 1);
+        assert_eq!(loaded[0].web_tunnels[0].url, "http://localhost:5173");
     }
 
     #[test]

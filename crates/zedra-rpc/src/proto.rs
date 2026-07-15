@@ -886,6 +886,10 @@ pub enum HostEvent {
         terminal_id: String,
         agent_slug: Option<String>,
     },
+    /// Host asked the client to open a web tunnel / webview at `url` (from
+    /// `zedra open <target>`). The client resolves loopback targets through the
+    /// web tunnel and tracks them per workspace. Appended at `zedra/rpc/4`.
+    WebViewRequested { url: String },
 }
 
 // ---------------------------------------------------------------------------

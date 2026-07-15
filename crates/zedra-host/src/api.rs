@@ -10,6 +10,7 @@
 //   POST /api/qr                  — create and return a fresh one-time pairing QR
 //   POST /api/qr/static           — create and return a static pairing QR
 //   POST /api/terminal            — create a terminal in the active session
+//   POST /api/webview             — open a webview / web tunnel on the phone
 //   GET  /api/agents              — list supported managed agents
 //   GET  /api/agents/:kind/sessions
 //   POST /api/agents/:kind/resume — resume an agent session in a new terminal
@@ -261,6 +262,21 @@ struct CreateTerminalResp {
     session_id: String,
 }
 
+#[derive(Debug, Deserialize)]
+pub struct OpenWebviewReq {
+    /// URL to open in the phone's in-app webview (loopback targets tunnel
+    /// through the session; anything else opens in the system browser).
+    pub url: String,
+    /// Session to target. Omit to use the most recently active session.
+    pub session_id: Option<String>,
+}
+
+#[derive(Serialize)]
+struct OpenWebviewResp {
+    url: String,
+    session_id: String,
+}
+
 async fn create_terminal_handler(
     State(s): State<ApiState>,
     headers: HeaderMap,
@@ -342,6 +358,60 @@ async fn create_terminal_handler(
         )
             .into_response(),
     }
+}
+
+async fn open_webview_handler(
+    State(s): State<ApiState>,
+    headers: HeaderMap,
+    Json(req): Json<OpenWebviewReq>,
+) -> impl IntoResponse {
+    if !verify_token(&headers, &s.token) {
+        return unauthorized();
+    }
+
+    let url = req.url.trim();
+    if url.is_empty() {
+        return (
+            StatusCode::BAD_REQUEST,
+            Json(serde_json::json!({"error": "url is required"})),
+        )
+            .into_response();
+    }
+
+    let session = if let Some(id) = &req.session_id {
+        s.registry.get(id).await
+    } else {
+        s.registry.most_recent_session().await
+    };
+    let Some(session) = session else {
+        return (
+            StatusCode::SERVICE_UNAVAILABLE,
+            Json(serde_json::json!({"error": "no session available"})),
+        )
+            .into_response();
+    };
+
+    let delivered = session
+        .push_event(HostEvent::WebViewRequested {
+            url: url.to_string(),
+        })
+        .await;
+    if !delivered {
+        return (
+            StatusCode::SERVICE_UNAVAILABLE,
+            Json(serde_json::json!({"error": "no client subscribed to receive the request"})),
+        )
+            .into_response();
+    }
+
+    (
+        StatusCode::OK,
+        Json(serde_json::json!(OpenWebviewResp {
+            url: url.to_string(),
+            session_id: session.id.clone(),
+        })),
+    )
+        .into_response()
 }
 
 fn unauthorized() -> axum::response::Response {
@@ -580,6 +650,7 @@ pub async fn start(state: ApiState) -> anyhow::Result<std::net::SocketAddr> {
         .route("/api/qr", post(create_pairing_qr_handler))
         .route("/api/qr/static", post(create_static_pairing_qr_handler))
         .route("/api/terminal", post(create_terminal_handler))
+        .route("/api/webview", post(open_webview_handler))
         .route("/api/agents", get(list_agents_handler))
         .route(
             "/api/agents/:kind/sessions",

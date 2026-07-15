@@ -72,6 +72,31 @@ with a `socks5://` rule, cleared when the webview closes (process-global while
 set). The proxy crosses the webview seam as the `socksProxy` config field (see
 `docs/WEBVIEW.md`).
 
+## Opening a tunnel
+
+Two ways to open a host web app on the phone:
+
+- **From a terminal.** Tapping a `http://localhost:<port>` link printed in a
+  Zedra terminal routes through the tunnel (`workspace_terminal.rs`).
+- **From the host CLI.** `zedra open <target>` pushes a request to the connected
+  phone. `<target>` accepts a bare port (`8080`), `host:port`
+  (`localhost:5173`), or a full URL (`http://localhost:5173/app`); bare forms
+  normalize to `http://` loopback. This lets a dev script fire up a server on a
+  free port and then open it on the phone. The command hits the local REST API
+  (`POST /api/webview`), which emits `HostEvent::WebViewRequested { url }` to the
+  session with an active `Subscribe` stream; the app opens it through the same
+  seam. Requires a phone connected to that workspace's daemon.
+
+## Tracked tunnels
+
+Each loopback tunnel opened for a workspace — from a terminal link or `zedra
+open` — is recorded on `WorkspaceState.web_tunnels` (most-recent-first) and
+persisted with the workspace, so the list survives app restarts and reconnects.
+The session panel (drawer) shows a **Web tunnels** section: tap a row to reopen
+it, long-press for Open / Remove. Non-loopback URLs open in the system browser
+and are not tracked. Opening never happens automatically — the list is a
+quick-reopen shortcut, not an auto-reconnect.
+
 ## Security
 
 Keep the tunnel narrow:
