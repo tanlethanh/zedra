@@ -70,17 +70,20 @@ fn session_for(endpoint_id: &PublicKey) -> Option<SessionHandle> {
 /// (exact-port by default, alias on a per-host opt-in fallback); anything else
 /// (or an unparseable target) falls back to the system browser. Single "open a
 /// link" seam for the tunnel.
-pub fn open_url(session_handle: SessionHandle, url: &str) {
+/// Returns the `host:port` label for a trackable loopback target (so the caller
+/// can record it for quick reopen), or `None` when `url` opened in the system
+/// browser instead.
+pub fn open_url(session_handle: SessionHandle, url: &str) -> Option<String> {
     let Ok(port) = parse_loopback_target(url) else {
         tracing::info!("[debug:web-tunnel] {url} not host-local -> system browser");
         platform_bridge::bridge().open_url(url);
-        return;
+        return None;
     };
     let (Some(endpoint_id), Ok(runtime)) = (session_handle.endpoint_id(), session_handle.runtime())
     else {
         tracing::info!("[debug:web-tunnel] no session endpoint -> system browser: {url}");
         platform_bridge::bridge().open_url(url);
-        return;
+        return None;
     };
     tracing::info!("[debug:web-tunnel] open {url} (loopback :{port}) via {endpoint_id}");
     registry()
@@ -88,9 +91,27 @@ pub fn open_url(session_handle: SessionHandle, url: &str) {
         .lock()
         .unwrap()
         .insert(endpoint_id, session_handle);
-    let url = url.to_string();
-    let title = webview_title(&url);
-    runtime.spawn(async move { serve(endpoint_id, url, title, port).await });
+    let title = webview_title(url);
+    let spawn_url = url.to_string();
+    let spawn_title = title.clone();
+    runtime.spawn(async move { serve(endpoint_id, spawn_url, spawn_title, port).await });
+    Some(title)
+}
+
+/// Turn manual input into a URL: an explicit scheme passes through, a bare port
+/// or `host:port` becomes an `http://` loopback target. Empty input stays empty.
+pub fn normalize_target(input: &str) -> String {
+    let input = input.trim();
+    if input.is_empty() {
+        return String::new();
+    }
+    if input.contains("://") {
+        return input.to_string();
+    }
+    if input.parse::<u16>().is_ok() {
+        return format!("http://localhost:{input}");
+    }
+    format!("http://{input}")
 }
 
 /// `host:port` label for a trackable loopback target, or `None` when `url` is
@@ -222,4 +243,73 @@ pub(crate) fn debug_force_alias(session: &SessionHandle) {
 #[cfg(debug_assertions)]
 pub(crate) fn debug_collide(port: u16) {
     exact_port::debug_mark_foreign(port);
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{normalize_target, parse_loopback_target, webview_title};
+
+    #[test]
+    fn parse_loopback_accepts_localhost_and_loopback_ips() {
+        assert_eq!(parse_loopback_target("http://localhost:5173"), Ok(5173));
+        assert_eq!(parse_loopback_target("http://127.0.0.1:8080"), Ok(8080));
+        // The whole 127.0.0.0/8 block is loopback.
+        assert_eq!(parse_loopback_target("http://127.0.0.5:3000"), Ok(3000));
+        assert_eq!(parse_loopback_target("http://LOCALHOST:9000"), Ok(9000));
+    }
+
+    #[test]
+    fn parse_loopback_fills_default_port_by_scheme() {
+        assert_eq!(parse_loopback_target("http://localhost"), Ok(80));
+        assert_eq!(parse_loopback_target("https://localhost"), Ok(443));
+    }
+
+    #[test]
+    fn parse_loopback_rejects_non_loopback_and_other_schemes() {
+        assert_eq!(parse_loopback_target("http://example.com:8080"), Err(()));
+        assert_eq!(parse_loopback_target("http://192.168.1.5:8080"), Err(()));
+        assert_eq!(parse_loopback_target("http://10.0.0.1:80"), Err(()));
+        assert_eq!(parse_loopback_target("ftp://localhost:21"), Err(()));
+        assert_eq!(parse_loopback_target("ws://localhost:5173"), Err(()));
+        assert_eq!(parse_loopback_target("not a url"), Err(()));
+        // IPv6 loopback literals arrive bracketed from the URL parser, which
+        // IpAddr::parse rejects, so `[::1]` is treated as non-loopback today.
+        assert_eq!(parse_loopback_target("http://[::1]:9000"), Err(()));
+    }
+
+    #[test]
+    fn webview_title_formats_host_and_optional_port() {
+        assert_eq!(webview_title("http://localhost:5173"), "localhost:5173");
+        assert_eq!(webview_title("http://localhost"), "localhost");
+        assert_eq!(webview_title("https://localhost"), "localhost");
+        assert_eq!(webview_title("http://127.0.0.1:8080"), "127.0.0.1:8080");
+        // The URL parser strips a scheme-default port, so it is not shown.
+        assert_eq!(webview_title("https://localhost:443"), "localhost");
+        assert_eq!(webview_title("garbage"), "");
+    }
+
+    #[test]
+    fn normalize_target_maps_bare_targets_to_http_loopback() {
+        assert_eq!(normalize_target("5173"), "http://localhost:5173");
+        assert_eq!(normalize_target("  8080  "), "http://localhost:8080");
+        assert_eq!(normalize_target("localhost:5173"), "http://localhost:5173");
+        assert_eq!(normalize_target("127.0.0.1:3000"), "http://127.0.0.1:3000");
+        assert_eq!(normalize_target("example.com"), "http://example.com");
+    }
+
+    #[test]
+    fn normalize_target_passes_through_explicit_schemes_and_empty() {
+        assert_eq!(
+            normalize_target("http://localhost:5173/app"),
+            "http://localhost:5173/app"
+        );
+        assert_eq!(
+            normalize_target("https://localhost:8443"),
+            "https://localhost:8443"
+        );
+        assert_eq!(normalize_target(""), "");
+        assert_eq!(normalize_target("   "), "");
+        // A number too large for a port is treated as a hostname, not a port.
+        assert_eq!(normalize_target("70000"), "http://70000");
+    }
 }

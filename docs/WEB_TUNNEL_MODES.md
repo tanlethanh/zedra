@@ -37,11 +37,13 @@ Neither is strictly better; they trade origin honesty for multi-host reach.
 
 ## Alias (opt-in fallback)
 
-- Serves the host under a per-host alias `**<label>.zedra.test**` (`label` =
-  short prefix of the endpoint id) via an ephemeral in-app SOCKS5 proxy the
-  webview is pointed at with `proxyConfigurations`. The proxy decodes the label
-  back to the endpoint id and forwards over that host's `WebConnect`; external
-  (non-alias) hosts are dialed directly so links still work.
+- Serves the host under a per-host alias `**<word>.zedra.test**` (`word` = a
+  short label from a curated wordlist, assigned per host by `alias::mint_label`
+  — seeded from the endpoint id and linear-probed for uniqueness, so it is stable
+  across restarts) via an ephemeral in-app SOCKS5 proxy the webview is pointed at
+  with `proxyConfigurations`. The proxy decodes the label back to the endpoint id
+  via the registered `labels` map and forwards over that host's `WebConnect`;
+  external (non-alias) hosts are dialed directly so links still work.
 - Because the alias is non-loopback and per-host, it **routes on device** and
   **disambiguates concurrent hosts** on the same port — the two things exact-port
   can't do.

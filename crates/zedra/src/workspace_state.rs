@@ -147,6 +147,21 @@ pub struct TrackedTunnel {
     pub last_opened_at: u64,
 }
 
+/// Insert or update a tracked tunnel, preserving list position: an existing
+/// entry (matched by url) is updated in place, a new one is appended.
+fn upsert_web_tunnel(tunnels: &mut Vec<TrackedTunnel>, url: &str, title: &str, now: u64) {
+    if let Some(existing) = tunnels.iter_mut().find(|t| t.url == url) {
+        existing.title = title.to_string();
+        existing.last_opened_at = now;
+    } else {
+        tunnels.push(TrackedTunnel {
+            url: url.to_string(),
+            title: title.to_string(),
+            last_opened_at: now,
+        });
+    }
+}
+
 /// Shareable workspace state. Clone copies the Arc only. Read via methods (non-blocking).
 #[derive(Clone, Default, Serialize, Deserialize)]
 pub struct WorkspaceState {
@@ -162,7 +177,7 @@ pub struct WorkspaceState {
     // Workspace-relative docs tree directories hidden by the user.
     #[serde(default)]
     pub docs_tree_collapsed_dirs: Vec<String>,
-    // Web tunnels opened for this workspace, most-recent-first for quick reopen.
+    // Web tunnels opened for this workspace, in stable open order for quick reopen.
     #[serde(default)]
     pub web_tunnels: Vec<TrackedTunnel>,
     #[serde(default)]
@@ -472,17 +487,11 @@ impl WorkspaceState {
         cx.notify();
     }
 
-    /// Track (or bump to the front) a web tunnel opened for this workspace.
+    /// Track a web tunnel opened for this workspace. Position is stable: an
+    /// existing entry is updated in place, a new one appended — so reopening a
+    /// tunnel never reorders the list.
     pub fn record_web_tunnel(&mut self, url: &str, title: &str, cx: &mut Context<Self>) {
-        self.web_tunnels.retain(|t| t.url != url);
-        self.web_tunnels.insert(
-            0,
-            TrackedTunnel {
-                url: url.to_string(),
-                title: title.to_string(),
-                last_opened_at: Self::now_u64(),
-            },
-        );
+        upsert_web_tunnel(&mut self.web_tunnels, url, title, Self::now_u64());
         cx.emit(WorkspaceStateEvent::StateChanged);
         cx.notify();
     }
@@ -926,6 +935,40 @@ mod tests {
         let loaded = WorkspaceState::load().unwrap();
         assert_eq!(loaded[0].web_tunnels.len(), 1);
         assert_eq!(loaded[0].web_tunnels[0].url, "http://localhost:5173");
+    }
+
+    #[test]
+    fn upsert_web_tunnel_appends_new_in_open_order() {
+        let mut tunnels = Vec::new();
+        upsert_web_tunnel(&mut tunnels, "http://localhost:5173", "localhost:5173", 1);
+        upsert_web_tunnel(&mut tunnels, "http://localhost:8080", "localhost:8080", 2);
+        upsert_web_tunnel(&mut tunnels, "http://localhost:3000", "localhost:3000", 3);
+
+        let urls: Vec<&str> = tunnels.iter().map(|t| t.url.as_str()).collect();
+        assert_eq!(
+            urls,
+            [
+                "http://localhost:5173",
+                "http://localhost:8080",
+                "http://localhost:3000"
+            ]
+        );
+    }
+
+    #[test]
+    fn upsert_web_tunnel_reopen_updates_in_place_without_reordering() {
+        let mut tunnels = Vec::new();
+        upsert_web_tunnel(&mut tunnels, "http://localhost:5173", "old", 1);
+        upsert_web_tunnel(&mut tunnels, "http://localhost:8080", "localhost:8080", 2);
+
+        // Reopen the first entry: it keeps index 0, updates title + timestamp.
+        upsert_web_tunnel(&mut tunnels, "http://localhost:5173", "new", 9);
+
+        assert_eq!(tunnels.len(), 2);
+        assert_eq!(tunnels[0].url, "http://localhost:5173");
+        assert_eq!(tunnels[0].title, "new");
+        assert_eq!(tunnels[0].last_opened_at, 9);
+        assert_eq!(tunnels[1].url, "http://localhost:8080");
     }
 
     #[test]

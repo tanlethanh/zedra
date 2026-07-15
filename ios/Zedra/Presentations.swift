@@ -2225,6 +2225,10 @@ private final class NativeWebViewController: UIViewController, WKNavigationDeleg
 
         webView.navigationDelegate = self
         webView.allowsBackForwardNavigationGestures = true
+        // WKWebView is opaque by default and paints a white content backdrop
+        // until the page (or error HTML) renders — a white flash on first load,
+        // jarring in dark mode. Non-opaque lets the themed background show through.
+        webView.isOpaque = false
         webView.backgroundColor = NativePresentationTheme.backgroundColor
         webView.scrollView.backgroundColor = NativePresentationTheme.backgroundColor
         webView.translatesAutoresizingMaskIntoConstraints = false

@@ -897,12 +897,13 @@ impl Workspace {
                     Ok(HostEvent::WebViewRequested { url }) => {
                         let should_break = workspace
                             .update(cx, |ws, cx| {
-                                if let Some(title) = crate::web_tunnel::loopback_title(&url) {
+                                if let Some(title) =
+                                    crate::web_tunnel::open_url(ws.session_handle().clone(), &url)
+                                {
                                     ws.workspace_state.update(cx, |state, cx| {
                                         state.record_web_tunnel(&url, &title, cx);
                                     });
                                 }
-                                crate::web_tunnel::open_url(ws.session_handle().clone(), &url);
                             })
                             .is_err();
                         if should_break {

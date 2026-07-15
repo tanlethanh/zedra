@@ -5,7 +5,7 @@ use futures::channel::oneshot;
 use gpui::*;
 
 use crate::platform_bridge::{self, AlertButton, HapticFeedback};
-use crate::transport_badge::{format_bytes, render_transport_badge, transport_badge};
+use crate::transport_badge::{render_transport_badge, transport_badge};
 use crate::workspace_state::{TrackedTunnel, WorkspaceState};
 use crate::{fonts, theme, web_tunnel, workspace_action};
 use zedra_rpc::proto::{HostBatteryInfo, HostInfoSnapshot};
@@ -74,6 +74,35 @@ impl SessionPanel {
         })
         .detach();
     }
+
+    /// Prompt for an address and open it as a new webview, tracking it.
+    fn open_manual(&self, cx: &mut Context<Self>) {
+        platform_bridge::trigger_haptic(HapticFeedback::ImpactLight);
+        let (tx, rx) = oneshot::channel();
+        platform_bridge::show_text_input(
+            "Open webview",
+            "localhost:5173 or https://example.com",
+            "",
+            move |result| {
+                let _ = tx.send(result);
+            },
+        );
+        cx.spawn(async move |this, cx| {
+            let Ok(Some(input)) = rx.await else { return };
+            let url = web_tunnel::normalize_target(&input);
+            if url.is_empty() {
+                return;
+            }
+            let _ = this.update(cx, |this, cx| {
+                if let Some(title) = web_tunnel::open_url(this.session_handle.clone(), &url) {
+                    this.workspace_state.update(cx, |state, cx| {
+                        state.record_web_tunnel(&url, &title, cx);
+                    });
+                }
+            });
+        })
+        .detach();
+    }
 }
 
 impl Render for SessionPanel {
@@ -103,10 +132,25 @@ impl Render for SessionPanel {
 
         let mut info = div().px(px(theme::DRAWER_PADDING)).flex().flex_col();
 
-        if !snap.username.is_empty() && !snap.hostname.is_empty() {
-            let host = format!("{}@{}", snap.username, snap.hostname);
-            info = info.child(info_row(cx, "Host", host));
-        }
+        // Host row carries the disconnect button, right-aligned. The button must
+        // render even before SyncComplete populates host metadata — it is the only
+        // way to abort a connection that hangs during bind/auth/sync.
+        let host_label = if !snap.username.is_empty() && !snap.hostname.is_empty() {
+            info_row(cx, "Host", format!("{}@{}", snap.username, snap.hostname))
+        } else {
+            div()
+        };
+        info = info.child(
+            div()
+                .w_full()
+                .flex()
+                .flex_row()
+                .items_center()
+                .justify_between()
+                .gap(px(theme::SPACING_MD))
+                .child(host_label.flex_1().min_w_0())
+                .child(disconnect_button(cx)),
+        );
 
         if let Some(os) = snap.os_version.as_deref()
             && let Some(arch) = snap.arch.as_deref()
@@ -121,15 +165,6 @@ impl Render for SessionPanel {
 
         if !snap.strip_path.is_empty() {
             info = info.child(info_row(cx, "Directory", snap.strip_path.clone()));
-        }
-
-        if let Some(alpn) = snap.alpn.clone() {
-            info = info.child(info_row(cx, "Protocol", alpn));
-        }
-
-        if let Some(version) = snap.host_version.as_deref() {
-            let daemon_version = format!("v{}", version);
-            info = info.child(info_row(cx, "Daemon version", daemon_version));
         }
 
         // --- Connection badge ---
@@ -180,66 +215,43 @@ impl Render for SessionPanel {
                 ),
         );
 
-        // --- Transport details ---
-        if let Some(t) = &snap.transport {
-            let remote_addr_label = format!("{} ({})", t.remote_addr, t.num_paths);
-            info = info.child(info_row(cx, "Remote Address", remote_addr_label));
-
-            info = info.child(info_row(
-                cx,
-                "Data",
-                format!(
-                    "{} sent / {} recv",
-                    format_bytes(t.bytes_sent),
-                    format_bytes(t.bytes_recv),
-                ),
-            ));
-        }
-
-        // --- Session section ---
-        if let Some(sid) = &snap.session_id {
-            info = info.child(info_row(cx, "Session ID", sid.clone()));
-        }
-
-        // --- Phase timing section ---
-        info = info.child(render_timing(cx, &snap));
-
         // --- Web tunnels section ---
-        if !web_tunnels.is_empty() {
-            info = info.child(
-                div()
-                    .mt(px(8.0))
-                    .mb(px(2.0))
-                    .text_color(rgb(theme::text_muted(cx)))
-                    .text_size(px(theme::FONT_DETAIL))
-                    .child("Web tunnels"),
-            );
-            let mut list = div().flex().flex_col();
-            for (idx, tunnel) in web_tunnels.into_iter().enumerate() {
-                list = list.child(tunnel_row(idx, tunnel, cx));
-            }
-            info = info.child(list);
+        info = info.child(
+            div()
+                .mt(px(8.0))
+                .mb(px(2.0))
+                .text_color(rgb(theme::text_muted(cx)))
+                .text_size(px(theme::FONT_DETAIL))
+                .child("Web tunnels"),
+        );
+        let mut list = div().flex().flex_col();
+        for (idx, tunnel) in web_tunnels.into_iter().enumerate() {
+            list = list.child(tunnel_row(idx, tunnel, cx));
         }
+        info = info.child(list.child(open_webview_row(cx)));
 
-        // --- Disconnect button ---
-        let disconnect_button = div()
-            .id("session-disconnect-btn")
-            .mt(px(8.0))
-            .px(px(12.0))
-            .py(px(8.0))
-            .rounded(px(6.0))
-            .border_1()
-            .border_color(rgb(theme::accent_red(cx)))
-            .text_color(rgb(theme::accent_red(cx)))
-            .text_size(px(theme::FONT_BODY))
-            .cursor_pointer()
-            .on_press(cx.listener(|_this, _event, window, cx| {
-                window.dispatch_action(workspace_action::RequestDisconnect.boxed_clone(), cx);
-            }))
-            .child(div().flex().justify_center().child("Disconnect"));
-
-        info.child(disconnect_button).child(div().h(px(16.0)))
+        info.child(div().h(px(16.0)))
     }
+}
+
+/// Small icon button that tears down the session, aligned with the host row.
+fn disconnect_button(cx: &mut Context<SessionPanel>) -> impl IntoElement {
+    div()
+        .id("session-disconnect-btn")
+        .flex_shrink_0()
+        .p(px(6.0))
+        .rounded(px(6.0))
+        .cursor_pointer()
+        .hit_slop(px(8.0))
+        .on_press(cx.listener(|_this, _event, window, cx| {
+            window.dispatch_action(workspace_action::RequestDisconnect.boxed_clone(), cx);
+        }))
+        .child(
+            svg()
+                .path("icons/log-out.svg")
+                .size(px(theme::ICON_SM))
+                .text_color(rgb(theme::accent_red(cx))),
+        )
 }
 
 fn render_host_info(cx: &App, host_info: &HostInfoSnapshot) -> Div {
@@ -282,35 +294,32 @@ fn format_batteries(batteries: &[HostBatteryInfo]) -> Option<String> {
     }
 }
 
-/// Render phase timing summary row.
-fn render_timing(cx: &App, snap: &zedra_session::ConnectSnapshot) -> Div {
-    let mut timing_parts: Vec<String> = Vec::new();
-    if let Some(ms) = snap.binding_ms {
-        timing_parts.push(format!("Bind {ms}ms"));
-    }
-    if let Some(ms) = snap.hole_punch_ms {
-        timing_parts.push(format!("HolePunch {ms}ms"));
-    }
-    if let Some(ms) = snap.rpc_ms {
-        timing_parts.push(format!("RPC {ms}ms"));
-    }
-    if let Some(ms) = snap.register_ms {
-        timing_parts.push(format!("Reg {ms}ms"));
-    }
-    if let Some(ms) = snap.auth_ms {
-        timing_parts.push(format!("Auth {ms}ms"));
-    }
-    if let Some(ms) = snap.sync_ms {
-        timing_parts.push(format!("Info {ms}ms"));
-    }
-    if let Some(ms) = snap.resume_ms {
-        timing_parts.push(format!("Resume {ms}ms"));
-    }
-    if timing_parts.is_empty() {
-        return div();
-    }
-
-    muted_info_row(cx, "Timing", timing_parts.join(" \u{00b7} "))
+/// Row that prompts for an address and opens it as a new webview.
+fn open_webview_row(cx: &mut Context<SessionPanel>) -> impl IntoElement {
+    div()
+        .id("session-web-tunnel-add")
+        .w_full()
+        .py(px(theme::SPACING_XS))
+        .flex()
+        .flex_row()
+        .items_center()
+        .gap(px(theme::SPACING_SM))
+        .cursor_pointer()
+        .hit_slop(px(4.0))
+        .on_press(cx.listener(|this, _event, _window, cx| this.open_manual(cx)))
+        .child(
+            svg()
+                .path("icons/plus.svg")
+                .size(px(theme::ICON_SM))
+                .flex_shrink_0()
+                .text_color(rgb(theme::text_muted(cx))),
+        )
+        .child(
+            div()
+                .text_color(rgb(theme::text_muted(cx)))
+                .text_size(px(theme::FONT_BODY))
+                .child("Open webview"),
+        )
 }
 
 fn tunnel_row(
@@ -322,11 +331,14 @@ fn tunnel_row(
     let on_long = tunnel.clone();
     div()
         .id(("session-web-tunnel", idx))
-        .min_h(px(44.0))
-        .py(px(theme::SPACING_SM))
+        .w_full()
+        .min_w_0()
+        .py(px(theme::SPACING_XS))
         .flex()
-        .flex_col()
-        .gap(px(1.0))
+        .flex_row()
+        .items_center()
+        .justify_between()
+        .gap(px(theme::SPACING_MD))
         .cursor_pointer()
         .hit_slop(px(4.0))
         .on_press(cx.listener(move |this, _event, _window, cx| {
@@ -337,18 +349,34 @@ fn tunnel_row(
         }))
         .child(
             div()
-                .text_color(rgb(theme::text_primary(cx)))
-                .text_size(px(theme::FONT_BODY))
-                .font_family(fonts::MONO_FONT_FAMILY)
-                .child(tunnel.title.clone()),
+                .flex_1()
+                .min_w_0()
+                .flex()
+                .flex_col()
+                .gap(px(1.0))
+                .child(
+                    div()
+                        .text_color(rgb(theme::text_primary(cx)))
+                        .text_size(px(theme::FONT_BODY))
+                        .font_family(fonts::MONO_FONT_FAMILY)
+                        .child(tunnel.title.clone()),
+                )
+                .child(
+                    div()
+                        .min_w_0()
+                        .overflow_hidden()
+                        .text_color(rgb(theme::text_muted(cx)))
+                        .text_size(px(theme::FONT_DETAIL))
+                        .child(tunnel.url.clone()),
+                ),
         )
         .child(
-            div()
-                .min_w_0()
-                .overflow_hidden()
-                .text_color(rgb(theme::text_muted(cx)))
-                .text_size(px(theme::FONT_DETAIL))
-                .child(tunnel.url.clone()),
+            div().flex_shrink_0().pl(px(8.0)).child(
+                svg()
+                    .path("icons/chevron-right.svg")
+                    .size(px(theme::ICON_SM))
+                    .text_color(rgb(theme::text_muted(cx))),
+            ),
         )
 }
 
@@ -365,24 +393,6 @@ fn info_row(cx: &App, label: &'static str, value: String) -> Div {
             div()
                 .mt(px(1.0))
                 .text_color(rgb(theme::text_secondary(cx)))
-                .text_size(px(theme::FONT_BODY))
-                .child(value),
-        )
-}
-
-fn muted_info_row(cx: &App, label: &'static str, value: String) -> Div {
-    div()
-        .py(px(4.0))
-        .child(
-            div()
-                .text_color(rgb(theme::text_muted(cx)))
-                .text_size(px(theme::FONT_DETAIL))
-                .child(label),
-        )
-        .child(
-            div()
-                .mt(px(1.0))
-                .text_color(rgb(theme::text_muted(cx)))
                 .text_size(px(theme::FONT_BODY))
                 .child(value),
         )
