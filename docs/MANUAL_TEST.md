@@ -201,7 +201,7 @@ Use a `debug-telemetry` build so every event prints `[telemetry] >> <name>` to s
 (iOS: `./scripts/ios-log.sh`; Android: `./scripts/android-log.sh`).
 
 1. Fresh install (or clear app data), then launch. Expected: `[telemetry] >> app_open` appears
-   (default is opted-in), and `[debug:telemetry] applied persisted opt-out enabled=true`.
+   (default is opted-in), and `telemetry: applied persisted opt-out enabled=true`.
 2. Open Settings → Privacy and set "Share usage data" to **Off**. Expected: a selection haptic
    fires and the toggle moves to Off.
 3. Stay in the app and navigate to another screen. Expected: **no** `[telemetry] >>` lines.
@@ -209,7 +209,7 @@ Use a `debug-telemetry` build so every event prints `[telemetry] >> <name>` to s
    resume; events from the disabled interval are not backfilled.
 5. Set "Share usage data" back to **Off**, fully quit, and relaunch. Expected: **no**
    `[telemetry] >>` lines at all, including no
-   `app_open`, and `[debug:telemetry] applied persisted opt-out enabled=false`.
+   `app_open`, and `telemetry: applied persisted opt-out enabled=false`.
 6. Open Settings → Privacy and set "Share usage data" back to **On**, then relaunch.
    Expected: `[telemetry] >> app_open` resumes and events fire again.
 7. Tap Settings → Privacy → "Telemetry docs". Expected: the system browser opens
@@ -798,24 +798,24 @@ Open a web app from the host CLI and reopen it later from the session panel.
 Exercises the reusable `webview.rs` capabilities (config, JS messaging, eval, navigation interception, dismiss) independent of the tunnel. Use the debug-only **Settings → Developer → Webview** row, which opens a self-contained test page.
 
 1. Open Settings, scroll to the Developer section (debug builds only), tap **Webview**.
-2. Expected: a native webview opens titled "Webview Test" showing `ready`. In logs, `[debug:webview] message: page loaded` fires on load, and the status line updates to `got: page loaded` (proves web→Rust message and Rust→web `eval_js` round-trip).
+2. Expected: a native webview opens titled "Webview Test" showing `ready`. In logs, `webview: message: page loaded` fires on load, and the status line updates to `got: page loaded` (proves web→Rust message and Rust→web `eval_js` round-trip).
 3. Tap **Post message**.
-4. Expected: `[debug:webview] message: button tapped` logs and the status line shows `got: button tapped`.
+4. Expected: `webview: message: button tapped` logs and the status line shows `got: button tapped`.
 5. Tap **Try blocked navigation**.
-6. Expected: the navigation is blocked, the page stays put, and `[debug:webview] blocked navigation: https://example.com/blocked` logs (proves `on_navigate` interception).
+6. Expected: the navigation is blocked, the page stays put, and `webview: blocked navigation: https://example.com/blocked` logs (proves `on_navigate` interception).
 7. Close the webview (the ✕ close button, or system back on Android).
-8. Expected: `[debug:webview] dismissed` logs exactly once, including when a second open replaces a live webview.
+8. Expected: `webview: dismissed` logs exactly once, including when a second open replaces a live webview.
 
 ### Reading the logs (Android)
 
-App logs use logcat tag `zedra` with the `[debug:webview]` prefix:
+App logs use logcat tag `zedra` with the `webview: ` prefix:
 
 ```sh
 adb logcat -c                       # clear
 adb logcat -s zedra | grep webview  # stream
 ```
 
-In a debug build the webview also forwards page `console.*` output to logcat (`[debug:webview] console: …`) and enables Chrome remote inspection (`chrome://inspect`).
+In a debug build the webview also forwards page `console.*` output to logcat (`webview: console: …`) and enables Chrome remote inspection (`chrome://inspect`).
 
 ### Driving it from an agent (Android, debug)
 

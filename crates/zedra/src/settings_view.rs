@@ -502,7 +502,7 @@ post('page loaded');
             crate::webview::WebviewConfig::new(data_url)
                 .title("Webview Test")
                 .on_message(|message| {
-                    tracing::info!("[debug:webview] message: {message}");
+                    tracing::info!("webview: message: {message}");
                     // Echo back into the page to exercise Rust->web eval.
                     let escaped = message.replace('\\', "\\\\").replace('\'', "\\'");
                     crate::webview::eval_js(&format!("window.zedraSetStatus('got: {escaped}')"));
@@ -510,13 +510,13 @@ post('page loaded');
                 .on_navigate(|url| {
                     // Allow the initial data: load; block external https links.
                     if url.starts_with("https://") {
-                        tracing::info!("[debug:webview] blocked navigation: {url}");
+                        tracing::info!("webview: blocked navigation: {url}");
                         crate::webview::NavigationPolicy::Cancel
                     } else {
                         crate::webview::NavigationPolicy::Allow
                     }
                 })
-                .on_dismiss(|| tracing::info!("[debug:webview] dismissed")),
+                .on_dismiss(|| tracing::info!("webview: dismissed")),
         );
     }
 

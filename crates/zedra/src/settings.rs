@@ -73,7 +73,7 @@ impl ThemeState {
         match read_settings() {
             Ok(settings) => settings.theme_preference.unwrap_or_default(),
             Err(err) => {
-                info!(err = %err, "[debug:settings] using default theme preference");
+                info!(err = %err, "settings: using default theme preference");
                 ThemePreference::default()
             }
         }
@@ -157,7 +157,7 @@ pub fn read_telemetry_enabled() -> bool {
     match read_settings() {
         Ok(settings) => settings.telemetry_enabled.unwrap_or(true),
         Err(err) => {
-            info!(err = %err, "[debug:settings] using default telemetry preference");
+            info!(err = %err, "settings: using default telemetry preference");
             true
         }
     }
@@ -181,7 +181,7 @@ pub fn read_droplet_enabled() -> bool {
     match read_settings() {
         Ok(settings) => settings.droplet_enabled.unwrap_or(true),
         Err(err) => {
-            info!(err = %err, "[debug:settings] using default droplet preference");
+            info!(err = %err, "settings: using default droplet preference");
             true
         }
     }

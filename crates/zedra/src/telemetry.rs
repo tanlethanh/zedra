@@ -101,7 +101,7 @@ pub fn init() {
 pub fn apply_persisted_optout() {
     let enabled = crate::settings::read_telemetry_enabled();
     zedra_telemetry::set_enabled(enabled);
-    tracing::info!(enabled, "[debug:telemetry] applied persisted opt-out");
+    tracing::info!(enabled, "telemetry: applied persisted opt-out");
 }
 
 #[cfg(feature = "no-telemetry")]

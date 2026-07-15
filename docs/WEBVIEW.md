@@ -14,11 +14,11 @@ use zedra::webview::{self, WebviewConfig, NavigationPolicy};
 webview::open(
     WebviewConfig::new("https://example.com")
         .title("Example")
-        .on_message(|msg| tracing::info!("[debug:webview] page said: {msg}"))
+        .on_message(|msg| tracing::info!("webview: page said: {msg}"))
         .on_navigate(|url| {
             if url.starts_with("https://") { NavigationPolicy::Allow } else { NavigationPolicy::Cancel }
         })
-        .on_dismiss(|| tracing::info!("[debug:webview] closed")),
+        .on_dismiss(|| tracing::info!("webview: closed")),
 );
 ```
 
