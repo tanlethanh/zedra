@@ -59,6 +59,9 @@ IOS_PREF_FILE="/tmp/zedra-ios-device"
 IOS_IPROXY_PIDFILE="/tmp/zedra-ios-devtool-iproxy.pid"
 IOS_IPROXY_TARGET_FILE="/tmp/zedra-ios-devtool-iproxy.target"
 IOS_IPROXY_LOG="/tmp/zedra-ios-devtool-iproxy.log"
+# Which platform the last `bridge`/`bridge-ios` targeted — tells read_token
+# where the app's token can actually be found (logcat vs host file/capture).
+BRIDGE_TARGET_FILE="/tmp/zedra-devtool-bridge-target-$PORT"
 
 # Every endpoint except /ping requires this. Direct file read works for the
 # simulator (a real macOS process sharing the host filesystem); a physical
@@ -74,6 +77,15 @@ IOS_IPROXY_LOG="/tmp/zedra-ios-devtool-iproxy.log"
 # (this bit us: a simulator run's token file silently won over a device's
 # real one, producing a persistent 401 with no clue why).
 read_token() {
+    # Android: the app can't write host /tmp and no ios-log daemon exists —
+    # the token only surfaces in logcat, so pull it from there.
+    if [ "$(cat "$BRIDGE_TARGET_FILE" 2>/dev/null)" = "android" ]; then
+        local adb
+        adb="$(resolve_adb 2>/dev/null)" || { echo ""; return; }
+        "$adb" logcat -d 2>/dev/null \
+            | grep -o 'devtool: token: [0-9a-f]*' | tail -1 | awk '{print $NF}' || true
+        return
+    fi
     local target_is_device=0
     if [ -f "$IOS_PREF_FILE" ]; then
         local pref_type
@@ -142,12 +154,14 @@ stop_tracked_iproxy() {
 cmd_bridge() {
     local adb
     adb="$(resolve_adb)"
+    echo "android" > "$BRIDGE_TARGET_FILE"
     "$adb" forward "tcp:$PORT" "tcp:$PORT" >/dev/null
     echo "==> Forwarded localhost:$PORT -> device 127.0.0.1:$PORT"
     check_ping
 }
 
 cmd_bridge_ios() {
+    echo "ios" > "$BRIDGE_TARGET_FILE"
     local device_type="" device_id="" device_name=""
     if [ -f "$IOS_PREF_FILE" ]; then
         IFS='|' read -r device_type device_id device_name < "$IOS_PREF_FILE" || true

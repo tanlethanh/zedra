@@ -6,6 +6,7 @@
     "dev": "astro dev",
     "build": "astro build",
     "preview": "astro preview",
+    "seo:audit": "node scripts/seo-audit.mjs",
     "astro": "astro"
   },
   "dependencies": {
@@ -13,6 +14,7 @@
     "@astrojs/starlight": "0.37.0",
     "@astrojs/vercel": "^9.0.4",
     "astro": "^5.17.1",
-    "firebase": "^12.11.0"
+    "firebase": "^12.11.0",
+    "sharp": "^0.34.5"
   }
 }

@@ -1,11 +1,11 @@
 ---
 title: Why Zedra?
-description: Zedra is a remote control for the AI coding agents running on your own machine (Claude Code, Codex, or any CLI) over an end-to-end encrypted tunnel.
+description: Zedra is a real dev workspace on your phone for the AI coding agents running on your own machine (Claude Code, Codex, or any CLI) over an end-to-end encrypted tunnel.
 ---
 
-Zedra provides remote control for AI coding agents. Your agents run on your own machine, controlled from your phone.
+Zedra is a real dev workspace on your phone. Your agents run on your own machine; the phone gets the tools to do actual work with them.
 
-Developers want to run coding agents from their phone, and we need more than just a simple chat UI. Zedra provides a developer workspace designed for mobile, where you can browse files, read code and documents, review changes, run agents and customize your own workflow.
+Steering an agent is half the job — the other half is reading what it did, and a chat UI is not enough for that. Zedra is a developer workspace designed for mobile: browse files, read code and documents, review changes, run any agent in a real terminal, and shape your own workflow.
 
 ## Features
 
@@ -18,7 +18,7 @@ Developers want to run coding agents from their phone, and we need more than jus
 
 ## How it works
 
-Zedra runs a desktop daemon on your computer. Your phone connects to it over a secure tunnel with TLS 1.3, over QUIC/UDP powered by Iroh. QR scanning handles the first-time pairing to register your devices. After that, the connection is kept across reconnects by PKI auth. Remote control features are defined in [Zedra Protocol](https://github.com/tanlethanh/zedra/blob/main/docs/PROTOCOL_SPECS.md), which the host and client app use to communicate.
+Zedra runs a desktop daemon on your computer. Your phone connects to it over a secure tunnel with TLS 1.3, over QUIC/UDP powered by Iroh. QR scanning handles the first-time pairing to register your devices. After that, the connection is kept across reconnects by PKI auth. Remote control features are defined in [Zedra Protocol](https://github.com/tanlethanh/zedra/blob/main/docs/PROTOCOL_SPECS.md), which the host and client app use to communicate. For what is encrypted and what our servers can see, read [Security & architecture](/docs/security/).
 
 ## Acknowledgements
 
@@ -30,4 +30,5 @@ Zedra runs a desktop daemon on your computer. Your phone connects to it over a s
 ## Next
 
 1. [Installation](/docs/installation/) walks through the install guide.
-2. [Troubleshooting](/docs/troubleshooting/) for common issues.
+2. [Security & architecture](/docs/security/) explains the pairing and tunnel model.
+3. [Troubleshooting](/docs/troubleshooting/) for common issues.

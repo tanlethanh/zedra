@@ -39,6 +39,7 @@ pub mod hook;
 mod installed;
 mod junie;
 mod kilocode;
+mod maki;
 mod openclaw;
 pub(crate) mod opencode;
 mod openhands;
@@ -657,7 +658,7 @@ pub(crate) trait AgentActor: Sync {
     }
 }
 
-static ACTORS: [&dyn AgentActor; 19] = [
+static ACTORS: [&dyn AgentActor; 20] = [
     &claude::ClaudeActor,
     &codex::CodexActor,
     &opencode::OpenCodeActor,
@@ -670,6 +671,7 @@ static ACTORS: [&dyn AgentActor; 19] = [
     &hermes::HermesActor,
     &junie::JunieActor,
     &kilocode::KiloCodeActor,
+    &maki::MakiActor,
     &openclaw::OpenClawActor,
     &openhands::OpenHandsActor,
     &pi::PiActor,
