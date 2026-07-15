@@ -169,10 +169,20 @@ impl TerminalView {
             }
         });
 
+        let focus_handle = cx.focus_handle();
+        let subscriptions = vec![
+            cx.on_focus(&focus_handle, window, |this, _window, cx| {
+                this.terminal.read(cx).send_focus_report(true);
+            }),
+            cx.on_blur(&focus_handle, window, |this, _window, cx| {
+                this.terminal.read(cx).send_focus_report(false);
+            }),
+        ];
+
         Self {
             terminal,
             terminal_id,
-            focus_handle: cx.focus_handle(),
+            focus_handle,
             scroll_offset_px: 0.0,
             keyboard_top_reveal_px: 0.0,
             last_remote_size: None,
@@ -184,7 +194,7 @@ impl TerminalView {
             is_alt_screen: false,
             terminal_theme: TerminalTheme::dark(),
             _event_task: event_task,
-            _subscriptions: vec![],
+            _subscriptions: subscriptions,
         }
     }
 
@@ -508,10 +518,7 @@ impl TerminalView {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        let position = event
-            .up
-            .as_ref()
-            .map_or(event.down.position, |up| up.position);
+        let position = event.position();
 
         let hyperlink = self.terminal.read(cx).hyperlink_at(
             position,
@@ -520,6 +527,19 @@ impl TerminalView {
         );
         if let Some(hyperlink) = hyperlink {
             cx.emit(TerminalEvent::OpenHyperlink(hyperlink));
+            return;
+        }
+
+        // Mouse-tracking TUIs consume the tap as a click; keep the keyboard as-is.
+        let clicked = self.terminal.update(cx, |terminal, _| {
+            terminal.send_mouse_click(position, self.grid_origin, event.modifiers())
+        });
+        if clicked {
+            window.prevent_default();
+            if !self.focus_handle.is_focused(window) {
+                self.focus_handle.focus(window, cx);
+            }
+            cx.notify();
             return;
         }
 
