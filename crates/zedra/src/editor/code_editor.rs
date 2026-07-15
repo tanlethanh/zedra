@@ -54,13 +54,9 @@ pub struct EditorView {
     cached_line_highlights: Rc<Vec<LineHighlights>>,
     /// Whether cached_lines needs rebuilding.
     lines_dirty: bool,
-    /// Horizontal scroll offset in logical pixels.
-    h_scroll_offset: f32,
+    h_scroll: super::HScrollState,
     /// Length (in chars) of the longest line — used to cap horizontal scroll.
     max_line_chars: usize,
-    /// True once a gesture has been committed to horizontal scroll.
-    /// Stays true until a clearly vertical event overrides it.
-    h_scroll_active: bool,
     on_scroll_boundary_changed: Option<Box<dyn FnMut(bool)>>,
 }
 
@@ -88,9 +84,8 @@ impl EditorView {
             cached_lines: Rc::new(Vec::new()),
             cached_line_highlights: Rc::new(Vec::new()),
             lines_dirty: true,
-            h_scroll_offset: 0.0,
+            h_scroll: super::HScrollState::new(),
             max_line_chars: 0,
-            h_scroll_active: false,
             on_scroll_boundary_changed: None,
         }
     }
@@ -115,8 +110,7 @@ impl EditorView {
         self.buffer.set_text(content);
         self.cached_line_highlights = Rc::new(Vec::new());
         self.lines_dirty = true;
-        self.h_scroll_offset = 0.0;
-        self.h_scroll_active = false;
+        self.h_scroll = super::HScrollState::new();
         self.scroll_handle
             .0
             .borrow()
@@ -278,7 +272,10 @@ fn selectable_line_len_utf16(line: &str) -> usize {
     }
 }
 
-fn line_range_for_selection_lines(lines: &[&str], range_utf16: Range<usize>) -> Option<(u32, u32)> {
+pub(crate) fn line_range_for_selection_lines(
+    lines: &[&str],
+    range_utf16: Range<usize>,
+) -> Option<(u32, u32)> {
     if lines.is_empty() || range_utf16.is_empty() {
         return None;
     }
@@ -325,8 +322,8 @@ impl Render for EditorView {
         // uniform_list forces all items to the same height (item 0's measured height = LINE_HEIGHT).
         // To get `bottom_inset` worth of scroll space we need enough extra items to cover it.
         let extra_items = (bottom_inset / LINE_HEIGHT).ceil() as usize;
-        let h_scroll_offset = self.h_scroll_offset;
-        // Captured before the scroll event fires; restored while h_scroll_active so
+        let h_scroll_offset = self.h_scroll.offset;
+        // Captured before the scroll event fires; restored while h-scrolling so
         // the vertical position doesn't drift during a horizontal swipe.
         let scroll_y_lock = self.scroll_handle.0.borrow().base_handle.offset().y;
 
@@ -351,33 +348,13 @@ impl Render for EditorView {
             .font_family(fonts::MONO_FONT_FAMILY)
             .on_scroll_wheel(
                 cx.listener(move |this, event: &ScrollWheelEvent, _window, cx| {
-                    let (delta_x, delta_y) = match event.delta {
-                        ScrollDelta::Pixels(p) => (f32::from(p.x), f32::from(p.y)),
-                        ScrollDelta::Lines(l) => (l.x * 20.0, l.y * 20.0),
-                    };
-                    // Enter H-scroll mode: strict threshold (2.5×, 5 px min) to commit.
-                    // Exit H-scroll mode: a strongly vertical event (3× vertical) overrides.
-                    // While locked, accept any event with non-zero horizontal delta so a
-                    // drifting finger doesn't break the scroll mid-gesture.
-                    if delta_y.abs() > delta_x.abs() * 3.0 {
-                        this.h_scroll_active = false;
-                    } else if delta_x.abs() > delta_y.abs() * 2.5 && delta_x.abs() > 5.0 {
-                        this.h_scroll_active = true;
-                    }
-                    if this.h_scroll_active && delta_x.abs() > 0.1 {
-                        let char_width = FONT_SIZE * 0.6;
-                        let max_offset = (this.max_line_chars as f32 * char_width).max(0.0);
-                        this.h_scroll_offset =
-                            (this.h_scroll_offset - delta_x).clamp(0.0, max_offset);
-                        // Undo any vertical drift: the uniform_list overflow scroll already fired
-                        // (bubble phase, inner first) and may have nudged y. Restore it to the
-                        // value captured at the start of this render so vertical position is locked
-                        // for the duration of the horizontal gesture.
-                        this.scroll_handle
-                            .0
-                            .borrow()
-                            .base_handle
-                            .set_offset(point(px(0.0), scroll_y_lock));
+                    if this.h_scroll.handle_wheel(
+                        event,
+                        this.max_line_chars,
+                        FONT_SIZE,
+                        &this.scroll_handle,
+                        scroll_y_lock,
+                    ) {
                         cx.notify();
                     }
                     this.notify_scroll_boundary_changed();

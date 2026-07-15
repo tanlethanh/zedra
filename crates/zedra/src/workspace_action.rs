@@ -22,6 +22,22 @@ pub struct AddSelectionToChat;
 
 #[derive(Clone, PartialEq, Action)]
 #[action(namespace = workspace, no_json)]
+pub struct AddSelectionMention;
+
+#[derive(Clone, PartialEq, Action)]
+#[action(namespace = workspace, no_json)]
+pub struct AddSelectionComment;
+
+#[derive(Clone, PartialEq, Action)]
+#[action(namespace = workspace, no_json)]
+pub struct SendAllPendingComments;
+
+#[derive(Clone, PartialEq, Action)]
+#[action(namespace = workspace, no_json)]
+pub struct DismissPendingComments;
+
+#[derive(Clone, PartialEq, Action)]
+#[action(namespace = workspace, no_json)]
 pub struct OpenGitDiff {
     pub path: String,
     /// 0 = Staged, 1 = Unstaged, 2 = Untracked

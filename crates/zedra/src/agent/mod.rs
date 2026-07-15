@@ -54,6 +54,14 @@ pub struct Ask {
     pub prompt: String,
 }
 
+/// A review comment attached to a selected diff range — opencode-style review
+/// block: source mention + quoted code + free-text comment.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct AddComment {
+    pub add_to_chat: AddToChat,
+    pub comment: String,
+}
+
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct Loc {
     pub file: PathBuf,
@@ -201,6 +209,20 @@ pub trait AgentAdapter: Send + Sync {
             fenced_add_to_chat_context(&input.add_to_chat)
         ))
     }
+
+    /// Paste context only, like `add_to_chat`, plus the reviewer's comment text.
+    fn add_comment(
+        &mut self,
+        input: AddComment,
+        term: &mut dyn TermCtx,
+        _app: &mut dyn AppCtx,
+    ) -> Result<()> {
+        term.paste(&format!(
+            "{}\n\ncomment: {}",
+            fenced_add_to_chat_context(&input.add_to_chat),
+            input.comment
+        ))
+    }
 }
 
 fn native_target_presentation(title: &str, image_name: &str) -> TargetPresentation {
@@ -266,6 +288,15 @@ impl AgentAdapter for ShellAdapter {
     fn ask(&mut self, _input: Ask, _term: &mut dyn TermCtx, _app: &mut dyn AppCtx) -> Result<()> {
         bail!("Shell does not support ask")
     }
+
+    fn add_comment(
+        &mut self,
+        _input: AddComment,
+        _term: &mut dyn TermCtx,
+        _app: &mut dyn AppCtx,
+    ) -> Result<()> {
+        bail!("Shell does not support Comment")
+    }
 }
 
 #[derive(Default)]
@@ -302,6 +333,20 @@ impl AgentAdapter for ClaudeAdapter {
             "{}\n\n{}",
             input.prompt,
             Self::mention(&input.add_to_chat)
+        ))
+    }
+
+    fn add_comment(
+        &mut self,
+        input: AddComment,
+        term: &mut dyn TermCtx,
+        _app: &mut dyn AppCtx,
+    ) -> Result<()> {
+        term.paste(&format!(
+            "{}\n{}\ncomment: {}",
+            Self::mention(&input.add_to_chat),
+            fenced_block(&input.add_to_chat.text),
+            input.comment
         ))
     }
 }
@@ -435,12 +480,18 @@ fn code_fence(text: &str) -> String {
     "`".repeat((longest_run + 1).max(3))
 }
 
+/// Wrap `text` in a fence long enough that the text itself can't close it
+/// early. Shared by `fenced_add_to_chat_context` and comment formatting.
+fn fenced_block(text: &str) -> String {
+    let fence = code_fence(text);
+    format!("{fence}text\n{text}\n{fence}")
+}
+
 fn fenced_add_to_chat_context(input: &AddToChat) -> String {
-    let fence = code_fence(&input.text);
     format!(
-        "{}\n\n{fence}text\n{}\n{fence}",
+        "{}\n\n{}",
         source_range_label(input),
-        input.text
+        fenced_block(&input.text)
     )
 }
 
@@ -660,6 +711,59 @@ mod tests {
         assert_eq!(
             fenced_add_to_chat_context(&input),
             "docs/README.md:L1-L3\n\n````text\n```sh\nls\n```\n````"
+        );
+    }
+
+    fn add_comment_input() -> AddComment {
+        AddComment {
+            add_to_chat: add_to_chat_input(),
+            comment: "Should this be memoized?".into(),
+        }
+    }
+
+    #[test]
+    fn shell_adapter_rejects_comment() {
+        let mut adapter = ShellAdapter;
+        let mut term = Term::new();
+        let mut app = App;
+
+        let error = adapter
+            .add_comment(add_comment_input(), &mut term, &mut app)
+            .unwrap_err();
+
+        assert!(error.to_string().contains("does not support Comment"));
+        assert!(term.writes.is_empty());
+    }
+
+    #[test]
+    fn claude_add_comment_pastes_mention_fenced_code_and_comment() {
+        let mut adapter = adapter("claude");
+        let mut term = Term::new();
+        let mut app = App;
+
+        adapter
+            .add_comment(add_comment_input(), &mut term, &mut app)
+            .unwrap();
+
+        assert_eq!(
+            take_paste_payload(&mut term),
+            "@src/main.rs#L10-L12\n```text\nfn main() {}\n```\ncomment: Should this be memoized?"
+        );
+    }
+
+    #[test]
+    fn generic_add_comment_pastes_fenced_context_and_comment() {
+        let mut adapter = adapter("codex");
+        let mut term = Term::new();
+        let mut app = App;
+
+        adapter
+            .add_comment(add_comment_input(), &mut term, &mut app)
+            .unwrap();
+
+        assert_eq!(
+            take_paste_payload(&mut term),
+            "src/main.rs:L10-L12\n\n```text\nfn main() {}\n```\n\ncomment: Should this be memoized?"
         );
     }
 

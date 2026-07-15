@@ -1655,3 +1655,41 @@ the first step that can't resolve.
    `pid` and does *not* start `iproxy`. Switch the pref back to the simulator and re-run
    `bridge-ios` — expected: `/ping`'s `pid` matches the simulator's process, and no stray
    `iproxy` remains (`ps aux | grep iproxy`).
+
+## 25. Combined Diff View + Selection Mention/Comment
+
+Verifies the unified multi-file diff buffer (`CombinedDiffView`) and the
+diff-view-only "Mention"/"Comment" native selection actions.
+
+1. In a workspace with staged, unstaged, and untracked changes across at
+   least two files, open the git drawer and tap any changed file — expected:
+   one scrolling diff screen opens showing all changed files as a single
+   buffer, grouped Staged → Changes → Untracked with a section label before
+   each group's first file, and a bold file-header row (path + `+ins/-del`)
+   before each file's hunks; the view auto-scrolls so the tapped file's
+   header is at the top.
+2. Tap a different file back in the git drawer while the diff screen is
+   still open — expected: the same combined buffer scrolls to that file
+   instead of pushing a new screen.
+3. Select a range of lines inside a diff hunk — expected: the native
+   selection menu shows **Mention** and **Comment** (not "Add to Chat").
+   Confirm "Add to Chat" still appears, and Mention/Comment do *not*, when
+   selecting text in the regular code editor or a markdown file.
+4. Tap **Mention** on a selection — expected: the existing "Choose an
+   AI-agent terminal" picker appears; picking one pastes `@path#Lx-Ly` into
+   that terminal, same as today's Add to Chat.
+5. Tap **Comment** on a selection — expected: a bottom sheet opens with a
+   multi-line input and two actions, **Comment** and **Submit**.
+   - **Comment**: sheet dismisses, no agent picker appears, and a banner
+     reading "1 comment pending" with **Send All** and **×** appears
+     directly below the workspace header. Repeat on another selection —
+     expected: the banner count increments ("2 comments pending").
+   - **Submit**: sheet dismisses and the agent-target picker appears
+     immediately; picking a terminal pastes a single formatted block
+     (mention + fenced code + `comment: <text>`) without touching the
+     pending banner.
+6. With 2+ comments pending, tap **Send All** — expected: the picker appears
+   once; picking a terminal pastes one formatted block per pending comment
+   into that terminal, then the banner disappears.
+7. With comments pending, tap the banner's **×** — expected: the banner
+   disappears immediately and nothing is pasted anywhere.

@@ -15,16 +15,20 @@ use zedra_session::{
     SessionState, signer::ClientSigner,
 };
 
-use crate::agent;
+use crate::agent::{self, AgentAdapter};
 use crate::agent_detail::AgentDetail;
 use crate::agent_manage::AgentManage;
 use crate::agent_picker::AgentPicker;
 use crate::agent_sessions::AgentSessions;
 use crate::delta::{ClientDeltaInfo, DeltaState};
+use crate::editor::comment_composer::{CommentComposer, CommentComposerEvent};
 use crate::editor::git_sidebar::GitFileSection;
 use crate::file_search::{FileSearchEvent, FileSearchPanel};
 use crate::pending::{SharedPendingSlot, shared_pending_slot, spawn_periodic_task};
-use crate::platform_bridge::{self, AlertButton, HapticFeedback, SoundEffect, status_bar_inset};
+use crate::platform_bridge::{
+    self, AlertButton, CustomSheetDetent, CustomSheetOptions, HapticFeedback, SoundEffect,
+    status_bar_inset,
+};
 use crate::telemetry::view_telemetry;
 use crate::terminal_card::strip_ps1_prefix;
 use crate::terminal_state::TerminalState;
@@ -33,10 +37,11 @@ use crate::transport_badge::ConnectionStatusIndicator;
 use crate::ui::{DrawerEvent, DrawerHost, DrawerSide};
 use crate::workspace_action::{self, GoHome, OpenFileSearch, OpenQuickAction, RequestDisconnect};
 use crate::workspace_action::{
-    AddSelectionToChat, CloseDrawer, CloseTerminal, CreateAgent, CreateNewTerminal, GitCommit,
-    GitShowItemActions, GitStage, GitUnstage, HideConnecting, NavigateBack, OpenAgentDetail,
-    OpenAgentManage, OpenAgentSessions, OpenDrawer, OpenFile, OpenGitDiff, OpenTerminal,
-    RestartConnection, ResumeAgentSession, RevealInFileExplorer, ShowConnecting,
+    AddSelectionComment, AddSelectionMention, AddSelectionToChat, CloseDrawer, CloseTerminal,
+    CreateAgent, CreateNewTerminal, DismissPendingComments, GitCommit, GitShowItemActions,
+    GitStage, GitUnstage, HideConnecting, NavigateBack, OpenAgentDetail, OpenAgentManage,
+    OpenAgentSessions, OpenDrawer, OpenFile, OpenGitDiff, OpenTerminal, RestartConnection,
+    ResumeAgentSession, RevealInFileExplorer, SendAllPendingComments, ShowConnecting,
     SpawnAgentTerminal, ToggleDrawer,
 };
 use crate::workspace_connecting::WorkspaceConnecting;
@@ -124,6 +129,12 @@ pub struct Workspace {
     _pending_platform_action_task: Task<()>,
     /// Terminal to open immediately after the first sync completes (set by notification deeplink).
     pending_terminal_after_sync: Option<String>,
+    /// Comments marked pending via the diff-view comment composer, shown by
+    /// the pending-comments banner until "Send All" or dismissed.
+    pending_comments: Vec<PendingComment>,
+    /// Subscription to whichever `CommentComposer` sheet is currently open;
+    /// replaced (dropping the previous one) each time a new composer opens.
+    comment_composer_subscription: Option<Subscription>,
     _subscriptions: Vec<Subscription>,
     delta_host_reconciling: bool,
 }
@@ -147,6 +158,14 @@ pub(crate) enum PendingWorkspaceAction {
         target: AddToChatTarget,
         input: agent::AddToChat,
     },
+    AddSelectionComment {
+        target: AddToChatTarget,
+        input: agent::AddComment,
+    },
+    SendAllComments {
+        target: AddToChatTarget,
+        comments: Vec<PendingComment>,
+    },
     SpawnAgentTerminal {
         launch_cmd: String,
         initial_title: String,
@@ -163,6 +182,14 @@ struct ConnectionRequest {
     ticket: Option<ZedraPairingTicket>,
     signer: Arc<dyn ClientSigner>,
     session_id: Option<String>,
+}
+
+/// A "Comment" marked pending via the diff-view comment composer, awaiting a
+/// "Send All" pick or discard from the pending-comments banner.
+#[derive(Clone)]
+struct PendingComment {
+    add_to_chat: agent::AddToChat,
+    comment: String,
 }
 
 #[derive(Clone)]
@@ -802,12 +829,7 @@ impl Workspace {
             &gitdiff,
             |this, _gitdiff, event: &GitdiffHeaderChanged, cx| {
                 this.content.update(cx, |content, cx| {
-                    content.set_git_diff_subtitle(
-                        event.filename.clone(),
-                        event.added,
-                        event.removed,
-                        cx,
-                    );
+                    content.set_git_diff_subtitle(event.added, event.removed, cx);
                 });
             },
         );
@@ -1096,6 +1118,8 @@ impl Workspace {
             pending_platform_action,
             _pending_platform_action_task: pending_platform_action_task,
             pending_terminal_after_sync: None,
+            pending_comments: Vec::new(),
+            comment_composer_subscription: None,
             delta_host_reconciling: false,
             _subscriptions: vec![
                 drawer_host_subscription,
@@ -1953,10 +1977,9 @@ impl Workspace {
                 });
                 view_telemetry::record(view_telemetry::workspace_file(&path));
             }
-            WorkspaceMainView::GitDiff { path, section } => {
-                let git_section = section_from_u8(section);
+            WorkspaceMainView::GitDiff { path, section: _ } => {
                 self.gitdiff.update(cx, |g, cx| {
-                    g.open_diff(path, git_section, cx);
+                    g.open_combined(Some(path), cx);
                 });
                 let gitdiff = self.gitdiff.clone();
                 self.content.update(cx, move |c, cx| {
@@ -2062,10 +2085,27 @@ impl Workspace {
             text: selection.text,
         };
 
+        self.present_agent_target_picker("Add to Chat", cx, move |target| {
+            PendingWorkspaceAction::AddSelectionToChat {
+                target,
+                input: input.clone(),
+            }
+        });
+    }
+
+    /// Show the shared "choose an AI-agent terminal" picker and stash a
+    /// `PendingWorkspaceAction` (built by `on_pick`) once the user picks one.
+    /// Shared by "Add to Chat"/"Mention", "Submit" comment, and "Send All".
+    fn present_agent_target_picker(
+        &mut self,
+        title: &str,
+        cx: &mut Context<Self>,
+        on_pick: impl Fn(AddToChatTarget) -> PendingWorkspaceAction + Send + 'static,
+    ) {
         let targets = self.add_to_chat_targets(cx);
         if targets.is_empty() {
             platform_bridge::show_selection(
-                "Add to Chat",
+                title,
                 "No AI agent detected",
                 vec![AlertButton::cancel("OK")],
                 |_| {},
@@ -2080,9 +2120,10 @@ impl Workspace {
             .chain(std::iter::once(AlertButton::cancel("Cancel")))
             .collect();
         let pending_platform_action = self.pending_platform_action.clone();
+        let title = title.to_string();
 
         platform_bridge::show_selection(
-            "Add to Chat",
+            &title,
             "Choose an AI-agent terminal.",
             buttons,
             move |selection| {
@@ -2093,10 +2134,113 @@ impl Workspace {
                     return;
                 };
 
-                pending_platform_action
-                    .set(PendingWorkspaceAction::AddSelectionToChat { target, input });
+                pending_platform_action.set(on_pick(target));
             },
         );
+    }
+
+    fn handle_add_selection_mention(
+        &mut self,
+        _action: &AddSelectionMention,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let Some(selection) = self.resolve_diff_selection(window, cx) else {
+            warn!("agent: add selection mention missing selection");
+            return;
+        };
+
+        window.clear_read_only_selection_cache();
+        self.present_add_to_chat(selection, cx);
+    }
+
+    fn handle_add_selection_comment(
+        &mut self,
+        _action: &AddSelectionComment,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let Some(selection) = self.resolve_diff_selection(window, cx) else {
+            warn!("agent: add selection comment missing selection");
+            return;
+        };
+        window.clear_read_only_selection_cache();
+
+        let workdir = self.workspace_state.read(cx).workdir.clone();
+        let add_to_chat = agent::AddToChat {
+            rel: PathBuf::from(workspace_relative_path(&selection.path, &workdir)),
+            file: PathBuf::from(&selection.path),
+            start: selection.start,
+            end: selection.end,
+            text: selection.text.clone(),
+        };
+
+        let composer = cx.new(|cx| CommentComposer::new(selection, cx));
+        self.comment_composer_subscription = Some(cx.subscribe(
+            &composer,
+            move |workspace, _composer, event: &CommentComposerEvent, cx| match event {
+                CommentComposerEvent::SavePending { text } => {
+                    workspace.pending_comments.push(PendingComment {
+                        add_to_chat: add_to_chat.clone(),
+                        comment: text.clone(),
+                    });
+                    let count = workspace.pending_comments.len();
+                    workspace
+                        .content
+                        .update(cx, |c, cx| c.set_pending_comments_count(count, cx));
+                    platform_bridge::dismiss_custom_sheet();
+                    cx.notify();
+                }
+                CommentComposerEvent::SubmitNow { text } => {
+                    platform_bridge::dismiss_custom_sheet();
+                    let input = agent::AddComment {
+                        add_to_chat: add_to_chat.clone(),
+                        comment: text.clone(),
+                    };
+                    workspace.present_agent_target_picker("Submit Comment", cx, move |target| {
+                        PendingWorkspaceAction::AddSelectionComment {
+                            target,
+                            input: input.clone(),
+                        }
+                    });
+                }
+            },
+        ));
+
+        platform_bridge::show_custom_sheet(
+            CustomSheetOptions {
+                detents: vec![CustomSheetDetent::Medium, CustomSheetDetent::Large],
+                initial_detent: CustomSheetDetent::Medium,
+                shows_grabber: true,
+                expands_on_scroll_edge: true,
+                edge_attached_in_compact_height: false,
+                width_follows_preferred_content_size_when_edge_attached: false,
+                corner_radius: None,
+                modal_in_presentation: false,
+            },
+            composer,
+        );
+    }
+
+    /// Resolve the window's active read-only selection against the combined
+    /// diff view. Mirrors `WorkspaceEditor::resolve_read_only_selection` but
+    /// for the diff view's own selection area, which isn't handled there.
+    fn resolve_diff_selection(
+        &self,
+        window: &Window,
+        cx: &Context<Self>,
+    ) -> Option<EditorSelection> {
+        let selection = window.latest_read_only_selection()?;
+        if selection.area_id.to_string()
+            != crate::editor::combined_diff_view::DIFF_SELECTION_AREA_ID
+        {
+            return None;
+        }
+        self.gitdiff
+            .read(cx)
+            .diff_view()
+            .read(cx)
+            .line_range_for_selection(selection.range_utf16)
     }
 
     fn handle_open_git_diff(
@@ -2752,6 +2896,16 @@ impl Workspace {
                 self.schedule_add_to_chat_after_activation(target, input, cx);
                 platform_bridge::dismiss_custom_sheet();
             }
+            PendingWorkspaceAction::AddSelectionComment { target, input } => {
+                self.activate_existing_terminal(target.tid.clone(), cx);
+                self.schedule_add_comment_after_activation(target, input, cx);
+                platform_bridge::dismiss_custom_sheet();
+            }
+            PendingWorkspaceAction::SendAllComments { target, comments } => {
+                self.activate_existing_terminal(target.tid.clone(), cx);
+                self.schedule_send_all_comments_after_activation(target, comments, cx);
+                platform_bridge::dismiss_custom_sheet();
+            }
             PendingWorkspaceAction::SpawnAgentTerminal {
                 launch_cmd,
                 initial_title,
@@ -2774,14 +2928,19 @@ impl Workspace {
         }
     }
 
-    fn schedule_add_to_chat_after_activation(
+    /// Shared tail of every "paste into an agent terminal after activation"
+    /// flow (Add to Chat, Mention, Comment, Send All): wait for the terminal
+    /// to finish activating, build the term/app context once, then hand off
+    /// to `action` for the actual adapter call(s).
+    fn schedule_agent_terminal_action(
         &self,
         target: AddToChatTarget,
-        input: agent::AddToChat,
         cx: &mut Context<Self>,
+        action: impl FnOnce(&mut dyn AgentAdapter, &mut AgentTerminalTermCtx, &mut WorkspaceAgentApp)
+        + 'static,
     ) {
         cx.spawn(async move |_workspace, cx| {
-            // Let the terminal activation paint before the selected text is pasted.
+            // Let the terminal activation paint before anything is pasted.
             cx.background_executor().timer(ADD_TO_CHAT_SEND_DELAY).await;
 
             let slug = target.slug.clone();
@@ -2792,12 +2951,88 @@ impl Workspace {
                 input_tx: target.input_tx,
             };
             let mut app = WorkspaceAgentApp;
-
-            if let Err(error) = adapter.add_to_chat(input, &mut term, &mut app) {
-                warn!(agent = slug, error = %error, "agent: add selection to chat failed");
-            }
+            action(adapter.as_mut(), &mut term, &mut app);
         })
         .detach();
+    }
+
+    fn schedule_add_to_chat_after_activation(
+        &self,
+        target: AddToChatTarget,
+        input: agent::AddToChat,
+        cx: &mut Context<Self>,
+    ) {
+        let slug = target.slug.clone();
+        self.schedule_agent_terminal_action(target, cx, move |adapter, term, app| {
+            if let Err(error) = adapter.add_to_chat(input, term, app) {
+                warn!(agent = slug, error = %error, "agent: add selection to chat failed");
+            }
+        });
+    }
+
+    fn schedule_add_comment_after_activation(
+        &self,
+        target: AddToChatTarget,
+        input: agent::AddComment,
+        cx: &mut Context<Self>,
+    ) {
+        let slug = target.slug.clone();
+        self.schedule_agent_terminal_action(target, cx, move |adapter, term, app| {
+            if let Err(error) = adapter.add_comment(input, term, app) {
+                warn!(agent = slug, error = %error, "agent: add selection comment failed");
+            }
+        });
+    }
+
+    fn schedule_send_all_comments_after_activation(
+        &self,
+        target: AddToChatTarget,
+        comments: Vec<PendingComment>,
+        cx: &mut Context<Self>,
+    ) {
+        let slug = target.slug.clone();
+        self.schedule_agent_terminal_action(target, cx, move |adapter, term, app| {
+            for comment in comments {
+                let input = agent::AddComment {
+                    add_to_chat: comment.add_to_chat,
+                    comment: comment.comment,
+                };
+                if let Err(error) = adapter.add_comment(input, term, app) {
+                    warn!(agent = slug, error = %error, "agent: send all comments failed");
+                }
+            }
+        });
+    }
+
+    fn handle_send_all_pending_comments(
+        &mut self,
+        _action: &SendAllPendingComments,
+        _window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        if self.pending_comments.is_empty() {
+            return;
+        }
+        let comments = std::mem::take(&mut self.pending_comments);
+        self.content
+            .update(cx, |c, cx| c.set_pending_comments_count(0, cx));
+        self.present_agent_target_picker("Send All Comments", cx, move |target| {
+            PendingWorkspaceAction::SendAllComments {
+                target,
+                comments: comments.clone(),
+            }
+        });
+    }
+
+    fn handle_dismiss_pending_comments(
+        &mut self,
+        _action: &DismissPendingComments,
+        _window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.pending_comments.clear();
+        self.content
+            .update(cx, |c, cx| c.set_pending_comments_count(0, cx));
     }
 
     fn request_terminal_delete_confirmation(&self, terminal_id: String) {
@@ -2933,6 +3168,10 @@ impl Render for Workspace {
             .on_action(cx.listener(Self::handle_open_file))
             .on_action(cx.listener(Self::handle_reveal_in_file_explorer))
             .on_action(cx.listener(Self::handle_add_selection_to_chat))
+            .on_action(cx.listener(Self::handle_add_selection_mention))
+            .on_action(cx.listener(Self::handle_add_selection_comment))
+            .on_action(cx.listener(Self::handle_send_all_pending_comments))
+            .on_action(cx.listener(Self::handle_dismiss_pending_comments))
             .on_action(cx.listener(Self::handle_open_git_diff))
             .on_action(cx.listener(Self::handle_git_stage))
             .on_action(cx.listener(Self::handle_git_unstage))
@@ -3551,25 +3790,18 @@ pub struct WorkspaceContent {
     show_connecting: bool,
     connecting_view: Entity<WorkspaceConnecting>,
     mainview_bounds: Option<Bounds<Pixels>>,
+    /// Count for the pending-comments banner; the comments themselves live on
+    /// `Workspace` — `WorkspaceContent` only needs to know whether to show it.
+    pending_comments_count: usize,
     _subscriptions: Vec<Subscription>,
 }
 
 enum WorkspaceSubtitle {
     Default,
-    Text {
-        text: SharedString,
-    },
-    File {
-        path: SharedString,
-    },
-    Terminal {
-        id: String,
-    },
-    GitDiff {
-        filename: SharedString,
-        added: usize,
-        removed: usize,
-    },
+    Text { text: SharedString },
+    File { path: SharedString },
+    Terminal { id: String },
+    GitDiff { added: usize, removed: usize },
 }
 
 fn render_subtitle(cx: &App, text: impl IntoElement) -> AnyElement {
@@ -3585,12 +3817,7 @@ fn render_subtitle(cx: &App, text: impl IntoElement) -> AnyElement {
         .into_any_element()
 }
 
-fn render_gitdiff_subtitle(
-    cx: &App,
-    filename: SharedString,
-    added: usize,
-    removed: usize,
-) -> AnyElement {
+fn render_gitdiff_subtitle(cx: &App, added: usize, removed: usize) -> AnyElement {
     div()
         .w_full()
         .min_w_0()
@@ -3609,7 +3836,7 @@ fn render_gitdiff_subtitle(
                 .truncate()
                 .text_center()
                 .text_color(rgb(theme::text_secondary(cx)))
-                .child(filename),
+                .child("Diff"),
         )
         .when(added > 0, |this| {
             this.child(
@@ -3654,6 +3881,7 @@ impl WorkspaceContent {
             show_connecting: false,
             connecting_view: connecting,
             mainview_bounds: None,
+            pending_comments_count: 0,
             _subscriptions: vec![terminal_state_sub, workspace_state_sub],
         }
     }
@@ -3692,19 +3920,84 @@ impl WorkspaceContent {
         cx.notify();
     }
 
-    pub fn set_git_diff_subtitle(
-        &mut self,
-        filename: String,
-        added: usize,
-        removed: usize,
-        cx: &mut Context<Self>,
-    ) {
-        self.subtitle = WorkspaceSubtitle::GitDiff {
-            filename: filename.into(),
-            added,
-            removed,
-        };
+    pub fn set_git_diff_subtitle(&mut self, added: usize, removed: usize, cx: &mut Context<Self>) {
+        self.subtitle = WorkspaceSubtitle::GitDiff { added, removed };
         cx.notify();
+    }
+
+    pub fn set_pending_comments_count(&mut self, count: usize, cx: &mut Context<Self>) {
+        if self.pending_comments_count == count {
+            return;
+        }
+        self.pending_comments_count = count;
+        cx.notify();
+    }
+
+    fn render_pending_comments_banner(&self, cx: &mut Context<Self>) -> impl IntoElement {
+        let count = self.pending_comments_count;
+        let label = if count == 1 {
+            "1 comment pending".to_string()
+        } else {
+            format!("{count} comments pending")
+        };
+
+        div()
+            .w_full()
+            .flex()
+            .flex_row()
+            .items_center()
+            .justify_between()
+            .gap(px(theme::SPACING_SM))
+            .px(px(theme::DRAWER_PADDING))
+            .py(px(8.0))
+            .bg(rgb(theme::bg_card(cx)))
+            .border_b_1()
+            .border_color(rgb(theme::border_subtle(cx)))
+            .child(
+                div()
+                    .flex_1()
+                    .min_w_0()
+                    .truncate()
+                    .text_size(px(theme::FONT_DETAIL))
+                    .text_color(rgb(theme::text_secondary(cx)))
+                    .child(label),
+            )
+            .child(
+                div()
+                    .flex()
+                    .flex_row()
+                    .items_center()
+                    .gap(px(theme::SPACING_SM))
+                    .child(
+                        div()
+                            .id("pending-comments-send-all")
+                            .cursor_pointer()
+                            .font_weight(FontWeight::MEDIUM)
+                            .text_size(px(theme::FONT_DETAIL))
+                            .text_color(rgb(theme::accent_blue(cx)))
+                            .child("Send All")
+                            .on_press(cx.listener(|_this, _event, window, cx| {
+                                window.dispatch_action(
+                                    workspace_action::SendAllPendingComments.boxed_clone(),
+                                    cx,
+                                );
+                            })),
+                    )
+                    .child(
+                        div()
+                            .id("pending-comments-dismiss")
+                            .cursor_pointer()
+                            .text_size(px(theme::FONT_DETAIL))
+                            .text_color(rgb(theme::text_muted(cx)))
+                            .child("×")
+                            .on_press(cx.listener(|_this, _event, window, cx| {
+                                window.dispatch_action(
+                                    workspace_action::DismissPendingComments.boxed_clone(),
+                                    cx,
+                                );
+                            })),
+                    ),
+            )
     }
 
     pub fn show_connecting_view(&mut self, cx: &mut Context<Self>) {
@@ -3741,11 +4034,9 @@ impl WorkspaceContent {
                     .to_owned();
                 render_subtitle(cx, subtitle)
             }
-            WorkspaceSubtitle::GitDiff {
-                filename,
-                added,
-                removed,
-            } => render_gitdiff_subtitle(cx, filename.clone(), *added, *removed),
+            WorkspaceSubtitle::GitDiff { added, removed } => {
+                render_gitdiff_subtitle(cx, *added, *removed)
+            }
         }
     }
 
@@ -3822,7 +4113,11 @@ impl Render for WorkspaceContent {
                             .items_center()
                             .justify_center()
                             .cursor_pointer()
-                            .hit_slop(px(20.0))
+                            // Kept modest (not the usual generous slop) — this sits right
+                            // above scrollable content (e.g. the combined diff view's sticky
+                            // file header), and a larger slop swallows taps meant for that
+                            // content instead of this button.
+                            .hit_slop(px(8.0))
                             .on_press(cx.listener(|_this, _event, window, cx| {
                                 platform_bridge::trigger_haptic(HapticFeedback::ImpactLight);
                                 window.dispatch_action(
@@ -3893,7 +4188,11 @@ impl Render for WorkspaceContent {
                             .items_center()
                             .justify_center()
                             .cursor_pointer()
-                            .hit_slop(px(20.0))
+                            // Kept modest (not the usual generous slop) — this sits right
+                            // above scrollable content (e.g. the combined diff view's sticky
+                            // file header), and a larger slop swallows taps meant for that
+                            // content instead of this button.
+                            .hit_slop(px(8.0))
                             .on_press(cx.listener(|_this, _event, window, cx| {
                                 platform_bridge::trigger_haptic(HapticFeedback::ImpactLight);
                                 window.dispatch_action(
@@ -3909,6 +4208,9 @@ impl Render for WorkspaceContent {
                             ),
                     ),
             )
+            .when(self.pending_comments_count > 0, |el| {
+                el.child(self.render_pending_comments_banner(cx))
+            })
             .child(
                 div()
                     .relative()
