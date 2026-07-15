@@ -94,7 +94,7 @@ impl GitRepo {
 
     /// Working tree status.
     pub fn status(&self) -> Result<Vec<StatusEntry>> {
-        let out = self.git(&["status", "--porcelain=v1"])?;
+        let out = self.git(&["status", "--porcelain=v1", "--untracked-files=all"])?;
         let mut entries = Vec::new();
         for line in out.lines() {
             if line.len() < 3 {
@@ -356,6 +356,21 @@ mod tests {
         assert_eq!(status[0].staged_status, None);
         assert_eq!(status[0].unstaged_status, Some(FileStatus::Untracked));
         assert_eq!(status[0].path, "new.txt");
+    }
+
+    #[test]
+    fn status_untracked_dir_lists_individual_files() {
+        let (dir, repo) = init_repo();
+        std::fs::create_dir(dir.path().join("subdir")).unwrap();
+        std::fs::write(dir.path().join("subdir/a.txt"), "a").unwrap();
+        std::fs::write(dir.path().join("subdir/b.txt"), "b").unwrap();
+        let status = repo.status().unwrap();
+        let mut paths: Vec<_> = status.iter().map(|e| e.path.as_str()).collect();
+        paths.sort();
+        assert_eq!(paths, vec!["subdir/a.txt", "subdir/b.txt"]);
+        for entry in &status {
+            assert_eq!(entry.unstaged_status, Some(FileStatus::Untracked));
+        }
     }
 
     #[test]
