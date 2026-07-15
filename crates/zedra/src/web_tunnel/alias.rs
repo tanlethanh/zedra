@@ -92,7 +92,7 @@ pub(super) async fn ensure_proxy() -> Result<u16, String> {
                 .map_err(|e| format!("failed to bind SOCKS proxy: {e}"))?;
             let port = listener.local_addr().map_err(|e| e.to_string())?.port();
             spawn_accept_loop(listener);
-            tracing::info!("[debug:web-tunnel] alias SOCKS proxy on 127.0.0.1:{port}");
+            tracing::info!("web-tunnel: alias SOCKS proxy on 127.0.0.1:{port}");
             Ok::<_, String>(port)
         })
         .await

@@ -1352,7 +1352,7 @@ async fn send_web_connect_error(
     message: impl Into<String>,
 ) {
     let message = message.into();
-    tracing::warn!("[debug:web-tunnel] web connect rejected: {message}");
+    tracing::warn!("web-tunnel: web connect rejected: {message}");
     let _ = tx
         .send(WebTunnelOutput {
             data: vec![],

@@ -2421,7 +2421,7 @@ private final class NativeWebViewController: UIViewController, WKNavigationDeleg
     func webView(_ webView: WKWebView, didFailProvisionalNavigation navigation: WKNavigation!, withError error: Error) {
         let nsError = error as NSError
         NSLog(
-            "[debug:webview] didFailProvisionalNavigation url=%@ domain=%@ code=%d description=%@",
+            "webview: didFailProvisionalNavigation url=%@ domain=%@ code=%d description=%@",
             webView.url?.absoluteString ?? initialURL.absoluteString,
             nsError.domain,
             nsError.code,
@@ -2433,7 +2433,7 @@ private final class NativeWebViewController: UIViewController, WKNavigationDeleg
     func webView(_ webView: WKWebView, didFail navigation: WKNavigation!, withError error: Error) {
         let nsError = error as NSError
         NSLog(
-            "[debug:webview] didFail url=%@ domain=%@ code=%d description=%@",
+            "webview: didFail url=%@ domain=%@ code=%d description=%@",
             webView.url?.absoluteString ?? initialURL.absoluteString,
             nsError.domain,
             nsError.code,
@@ -2718,7 +2718,9 @@ private enum NativeWebViewPresenter {
                 let nav = UINavigationController(rootViewController: controller)
                 nav.modalPresentationStyle = .fullScreen
                 nav.overrideUserInterfaceStyle = NativePresentationTheme.interfaceStyle
-                controller.onDismiss = {
+                // Weak nav: the controller stores this closure and nav owns the
+                // controller, so a strong capture would leak both on every open.
+                controller.onDismiss = { [weak nav] in
                     if presentedController === nav {
                         presentedController = nil
                         activeController = nil

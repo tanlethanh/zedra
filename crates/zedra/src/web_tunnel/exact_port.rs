@@ -66,7 +66,7 @@ pub(crate) fn stop(port: u16) -> bool {
     match state().bound.lock().unwrap().remove(&port) {
         Some(bound) => {
             bound.task.abort();
-            tracing::info!("[debug:web-tunnel] exact-port stopped 127.0.0.1:{port}");
+            tracing::info!("web-tunnel: exact-port stopped 127.0.0.1:{port}");
             true
         }
         None => false,
@@ -91,7 +91,7 @@ pub(super) async fn ensure(endpoint_id: PublicKey, port: u16) -> Result<(), ()> 
     }
     match TcpListener::bind((Ipv4Addr::LOCALHOST, port)).await {
         Ok(listener) => {
-            tracing::info!("[debug:web-tunnel] exact-port bound 127.0.0.1:{port}");
+            tracing::info!("web-tunnel: exact-port bound 127.0.0.1:{port}");
             let task = spawn_accept_loop(listener, endpoint_id);
             state()
                 .bound
@@ -113,7 +113,7 @@ fn spawn_accept_loop(listener: TcpListener, endpoint_id: PublicKey) -> tokio::ta
             let (stream, _) = match listener.accept().await {
                 Ok(accepted) => accepted,
                 Err(error) => {
-                    tracing::warn!("[debug:web-tunnel] exact-port accept failed: {error}");
+                    tracing::warn!("web-tunnel: exact-port accept failed: {error}");
                     break;
                 }
             };
@@ -132,7 +132,7 @@ async fn handle_connection(stream: TcpStream, endpoint_id: PublicKey) {
     let (tx, rx, initial) = match bridge::connect(&session, port).await {
         Ok(parts) => parts,
         Err(error) => {
-            tracing::info!("[debug:web-tunnel] exact-port connect {port} failed: {error}");
+            tracing::info!("web-tunnel: exact-port connect {port} failed: {error}");
             return;
         }
     };

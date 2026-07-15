@@ -83,7 +83,7 @@ fn run_debug_tunnel(
                 crate::web_tunnel::open_url(session, &url);
             }
         }
-        None => tracing::warn!("[debug:web-tunnel] devtool: no active workspace session"),
+        None => tracing::warn!("web-tunnel: devtool: no active workspace session"),
     }
 }
 

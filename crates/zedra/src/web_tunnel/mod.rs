@@ -74,28 +74,30 @@ fn session_for(endpoint_id: &PublicKey) -> Option<SessionHandle> {
 /// can record it for quick reopen), or `None` when `url` opened in the system
 /// browser instead.
 pub fn open_url(session_handle: SessionHandle, url: &str) -> Option<String> {
+    // Log only the origin, never the raw URL: the path/query of a user's local
+    // web app can carry session tokens or OAuth params.
+    let origin = webview_title(url);
     let Ok(port) = parse_loopback_target(url) else {
-        tracing::info!("[debug:web-tunnel] {url} not host-local -> system browser");
+        tracing::info!("web-tunnel: {origin} not host-local -> system browser");
         platform_bridge::bridge().open_url(url);
         return None;
     };
     let (Some(endpoint_id), Ok(runtime)) = (session_handle.endpoint_id(), session_handle.runtime())
     else {
-        tracing::info!("[debug:web-tunnel] no session endpoint -> system browser: {url}");
+        tracing::info!("web-tunnel: no session endpoint -> system browser: {origin}");
         platform_bridge::bridge().open_url(url);
         return None;
     };
-    tracing::info!("[debug:web-tunnel] open {url} (loopback :{port}) via {endpoint_id}");
+    tracing::info!("web-tunnel: open {origin} (loopback :{port}) via {endpoint_id}");
     registry()
         .sessions
         .lock()
         .unwrap()
         .insert(endpoint_id, session_handle);
-    let title = webview_title(url);
     let spawn_url = url.to_string();
-    let spawn_title = title.clone();
+    let spawn_title = origin.clone();
     runtime.spawn(async move { serve(endpoint_id, spawn_url, spawn_title, port).await });
-    Some(title)
+    Some(origin)
 }
 
 /// Turn manual input into a URL: an explicit scheme passes through, a bare port
@@ -114,30 +116,51 @@ pub fn normalize_target(input: &str) -> String {
     format!("http://{input}")
 }
 
-/// `host:port` label for a trackable loopback target, or `None` when `url` is
-/// not a host-local http(s) target (those open in the system browser, untracked).
-pub fn loopback_title(url: &str) -> Option<String> {
-    parse_loopback_target(url).ok().map(|_| webview_title(url))
-}
-
 async fn serve(endpoint_id: PublicKey, url: String, title: String, port: u16) {
+    // The alias rewrites the webview host to `<word>.zedra.test`, which changes
+    // the TLS SNI; an https host still presents its `localhost` certificate, so
+    // validation fails. Alias mode therefore only serves cleartext http.
+    let alias_ok = is_cleartext_http(&url);
     if registry().prefs.lock().unwrap().get(&endpoint_id) == Some(&AdapterKind::Alias) {
-        serve_alias(endpoint_id, &url, title).await;
+        if alias_ok {
+            serve_alias(endpoint_id, &url, title).await;
+        } else {
+            notify_https_needs_exact_port(port);
+        }
         return;
     }
     match exact_port::ensure(endpoint_id, port).await {
         Ok(()) => {
             crate::webview::open(crate::webview::WebviewConfig::new(url).title(title));
         }
-        Err(()) => prompt_alias_fallback(endpoint_id, url, title, port),
+        Err(()) if alias_ok => prompt_alias_fallback(endpoint_id, url, title, port),
+        Err(()) => notify_https_needs_exact_port(port),
     }
+}
+
+fn is_cleartext_http(url: &str) -> bool {
+    Url::parse(url)
+        .map(|u| u.scheme() == "http")
+        .unwrap_or(false)
+}
+
+fn notify_https_needs_exact_port(port: u16) {
+    tracing::info!("web-tunnel: port :{port} unavailable and https can't use the alias");
+    platform_bridge::show_native_notification(
+        NativeNotificationOptions::new("Web tunnel: port unavailable")
+            .message(format!(
+                "localhost:{port} can't be bound on this device, and the alias fallback \
+                 can't serve https (its certificate is for localhost). Free the port to load this page."
+            ))
+            .kind(NativeNotificationKind::Warning),
+    );
 }
 
 async fn serve_alias(endpoint_id: PublicKey, url: &str, title: String) {
     let proxy_port = match alias::ensure_proxy().await {
         Ok(port) => port,
         Err(error) => {
-            tracing::warn!("[debug:web-tunnel] alias proxy setup failed: {error}");
+            tracing::warn!("web-tunnel: alias proxy setup failed: {error}");
             notify_failed(&error);
             return;
         }
@@ -151,7 +174,7 @@ async fn serve_alias(endpoint_id: PublicKey, url: &str, title: String) {
 
 /// Surface the exact-port failure and let the user opt this host into the alias.
 fn prompt_alias_fallback(endpoint_id: PublicKey, url: String, title: String, port: u16) {
-    tracing::info!("[debug:web-tunnel] exact-port unavailable for :{port}, offering alias");
+    tracing::info!("web-tunnel: exact-port unavailable for :{port}, offering alias");
     let message = format!(
         "localhost:{port} can't be bound on this device (another host or app holds it). \
          Tap to route this workspace through an alias instead. Learn more: {MODES_DOC_URL}"
@@ -206,7 +229,10 @@ fn alias_url(url: &str, endpoint_id: &PublicKey) -> String {
         return url.to_string();
     };
     let host = alias::alias_host(endpoint_id);
-    let _ = parsed.set_host(Some(&host));
+    if let Err(error) = parsed.set_host(Some(&host)) {
+        tracing::warn!("web-tunnel: alias host rewrite failed: {error}");
+        return url.to_string();
+    }
     parsed.to_string()
 }
 
