@@ -94,31 +94,39 @@ impl GitRepo {
 
     /// Working tree status.
     pub fn status(&self) -> Result<Vec<StatusEntry>> {
-        let out = self.git(&["status", "--porcelain=v1", "--untracked-files=all"])?;
+        // `-z` gives NUL-delimited records with unquoted paths; the default
+        // line format quotes paths containing spaces/special chars, which
+        // would otherwise corrupt every downstream lookup by that path.
+        let out = self.git(&["status", "--porcelain=v1", "-z", "--untracked-files=all"])?;
         let mut entries = Vec::new();
-        for line in out.lines() {
-            if line.len() < 3 {
+        let mut fields = out.split('\0').filter(|f| !f.is_empty());
+        while let Some(record) = fields.next() {
+            if record.len() < 3 {
                 continue;
             }
-            if let Some(path) = line.strip_prefix("?? ") {
+            let xy = &record[..2];
+            let path = &record[3..];
+            let mut chars = xy.chars();
+            let staged_code = chars.next().unwrap_or(' ');
+            let unstaged_code = chars.next().unwrap_or(' ');
+
+            if xy == "??" {
                 entries.push(StatusEntry {
-                    path: parse_status_path(path),
+                    path: path.to_string(),
                     staged_status: None,
                     unstaged_status: Some(FileStatus::Untracked),
                 });
                 continue;
             }
-            if line.len() < 4 {
-                continue;
+
+            // Renamed/copied entries carry the original path as an extra
+            // NUL-terminated field instead of the line-mode " -> " arrow.
+            if staged_code == 'R' || staged_code == 'C' {
+                fields.next();
             }
 
-            let xy = &line[..2];
-            let mut chars = xy.chars();
-            let staged_code = chars.next().unwrap_or(' ');
-            let unstaged_code = chars.next().unwrap_or(' ');
-
             entries.push(StatusEntry {
-                path: parse_status_path(&line[3..]),
+                path: path.to_string(),
                 staged_status: parse_status_code(staged_code),
                 unstaged_status: parse_status_code(unstaged_code),
             });
@@ -276,13 +284,6 @@ impl GitRepo {
     }
 }
 
-fn parse_status_path(path: &str) -> String {
-    path.rsplit_once(" -> ")
-        .map(|(_, new_path)| new_path)
-        .unwrap_or(path)
-        .to_string()
-}
-
 fn parse_status_code(code: char) -> Option<FileStatus> {
     match code {
         ' ' => None,
@@ -371,6 +372,34 @@ mod tests {
         for entry in &status {
             assert_eq!(entry.unstaged_status, Some(FileStatus::Untracked));
         }
+    }
+
+    #[test]
+    fn status_untracked_path_with_space_is_not_quoted() {
+        let (dir, repo) = init_repo();
+        std::fs::create_dir(dir.path().join("sub dir")).unwrap();
+        std::fs::write(dir.path().join("sub dir/a b.txt"), "a").unwrap();
+        let status = repo.status().unwrap();
+        assert_eq!(status.len(), 1);
+        assert_eq!(status[0].path, "sub dir/a b.txt");
+    }
+
+    #[test]
+    fn status_staged_rename() {
+        let (dir, repo) = init_repo();
+        std::fs::write(dir.path().join("old.txt"), "content").unwrap();
+        repo.commit("initial commit", &["old.txt".into()]).unwrap();
+
+        Command::new("git")
+            .args(["mv", "old.txt", "new.txt"])
+            .current_dir(dir.path())
+            .output()
+            .unwrap();
+
+        let status = repo.status().unwrap();
+        assert_eq!(status.len(), 1);
+        assert_eq!(status[0].path, "new.txt");
+        assert_eq!(status[0].staged_status, Some(FileStatus::Renamed));
     }
 
     #[test]
