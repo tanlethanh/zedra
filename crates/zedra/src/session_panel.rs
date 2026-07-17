@@ -155,7 +155,7 @@ impl Render for SessionPanel {
         if let Some(os) = snap.os_version.as_deref()
             && let Some(arch) = snap.arch.as_deref()
         {
-            let platform = format!("{} / {}", os, arch,);
+            let platform = format!("{os} \u{00b7} {arch}");
             info = info.child(info_row(cx, "Platform", platform));
         }
 
