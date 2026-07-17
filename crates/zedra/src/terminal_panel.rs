@@ -31,6 +31,7 @@ impl Render for TerminalPanel {
         let state = self.workspace_state.read(cx);
         let active_id = state.active_terminal_id.clone();
         let terminal_ids = state.terminal_ids.clone();
+        let web_clients = state.web_clients.clone();
 
         let terminals: Vec<_> = terminal_ids
             .iter()
@@ -72,12 +73,60 @@ impl Render for TerminalPanel {
                         shell_state: meta.shell_state,
                         last_exit_code: meta.last_exit_code,
                         on_close: Some(on_close),
+                        web_badge: false,
                     },
                 )
                 .on_press(cx.listener(move |_this, _event, window, cx| {
                     window.dispatch_action(
                         workspace_action::OpenTerminal {
                             id: tid_tap.clone(),
+                        }
+                        .boxed_clone(),
+                        cx,
+                    );
+                }));
+
+                content = content.child(card);
+            }
+        }
+
+        if !web_clients.is_empty() {
+            content = content.gap_1();
+            for card_state in web_clients {
+                let close_id = card_state.id.clone();
+                let on_close = Box::new(cx.listener(move |_this, _event, window, cx| {
+                    window.dispatch_action(
+                        workspace_action::CloseWebClient {
+                            id: close_id.clone(),
+                        }
+                        .boxed_clone(),
+                        cx,
+                    );
+                }));
+
+                let open_id = card_state.id.clone();
+                let card = render_terminal_card(
+                    cx,
+                    TerminalCardProps {
+                        id: card_state.id,
+                        index: 0,
+                        is_active: false,
+                        title: card_state
+                            .title
+                            .or_else(|| Some(crate::agent::name(&card_state.slug))),
+                        cwd: Some(format!("localhost:{}", card_state.port)),
+                        agent_icon: Some(crate::agent::icon(&card_state.slug)),
+                        agent_state: card_state.state,
+                        shell_state: crate::terminal_state::ShellState::Idle,
+                        last_exit_code: None,
+                        on_close: Some(on_close),
+                        web_badge: true,
+                    },
+                )
+                .on_press(cx.listener(move |_this, _event, window, cx| {
+                    window.dispatch_action(
+                        workspace_action::OpenWebClient {
+                            id: open_id.clone(),
                         }
                         .boxed_clone(),
                         cx,

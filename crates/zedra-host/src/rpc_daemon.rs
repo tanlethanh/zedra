@@ -1551,6 +1551,9 @@ pub struct DaemonState {
     /// Delta client; updated at runtime when a mobile client reports its
     /// Delta info via `SetClientDeltaInfo`. `None` if Delta is not configured.
     pub delta: Arc<tokio::sync::RwLock<Option<Arc<crate::delta::DeltaClient>>>>,
+    /// Host-managed agent web-client servers (e.g. `opencode serve`),
+    /// daemon-scoped so they survive client reconnects.
+    pub web_clients: crate::web_client::WebClientManager,
 }
 
 impl std::fmt::Debug for DaemonState {
@@ -1570,6 +1573,7 @@ impl DaemonState {
     ) -> Self {
         Self {
             fs: Arc::new(LocalFs),
+            web_clients: crate::web_client::WebClientManager::new(workdir.clone()),
             workdir,
             identity,
             delta_pubkey,
@@ -2858,6 +2862,77 @@ async fn dispatch(
         ZedraMessage::WebConnect(msg) => {
             session.touch().await;
             run_web_connect(msg.inner, msg.rx, msg.tx).await;
+        }
+
+        ZedraMessage::WebClientStart(msg) => {
+            session.touch().await;
+            let result = match state.web_clients.start(&msg.slug).await {
+                Ok(info) => WebClientStartResult {
+                    id: info.id,
+                    port: info.port,
+                    path: info.path,
+                    error: None,
+                },
+                Err(error) => WebClientStartResult {
+                    id: String::new(),
+                    port: 0,
+                    path: String::new(),
+                    error: Some(error),
+                },
+            };
+            let _ = msg.tx.send(result).await;
+        }
+
+        ZedraMessage::WebClientStop(msg) => {
+            session.touch().await;
+            let error = state.web_clients.stop(&msg.id).await.err();
+            let _ = msg.tx.send(WebClientStopResult { error }).await;
+        }
+
+        ZedraMessage::WebClientSetPath(msg) => {
+            session.touch().await;
+            let error = state.web_clients.set_path(&msg.id, &msg.path).await.err();
+            let _ = msg.tx.send(WebClientSetPathResult { error }).await;
+        }
+
+        ZedraMessage::WebClientList(msg) => {
+            session.touch().await;
+            let clients = state.web_clients.list().await;
+            let _ = msg.tx.send(WebClientListResult { clients }).await;
+        }
+
+        ZedraMessage::WebClientWatch(msg) => {
+            session.touch().await;
+            let mut updates = state.web_clients.subscribe();
+            let snapshot = state.web_clients.list().await;
+            let irpc_tx = msg.tx;
+            tokio::spawn(async move {
+                for info in snapshot {
+                    let seed = WebClientUpdate {
+                        id: info.id,
+                        slug: info.slug,
+                        port: info.port,
+                        title: info.title,
+                        state: info.state,
+                        closed: false,
+                        path: info.path,
+                    };
+                    if irpc_tx.send(seed).await.is_err() {
+                        return;
+                    }
+                }
+                loop {
+                    match updates.recv().await {
+                        Ok(update) => {
+                            if irpc_tx.send(update).await.is_err() {
+                                break;
+                            }
+                        }
+                        Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => continue,
+                        Err(tokio::sync::broadcast::error::RecvError::Closed) => break,
+                    }
+                }
+            });
         }
 
         ZedraMessage::FsRead(msg) => {

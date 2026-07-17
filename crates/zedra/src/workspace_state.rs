@@ -4,7 +4,7 @@ use std::path::PathBuf;
 use std::sync::{Mutex, OnceLock};
 use tracing::*;
 use uuid::Uuid;
-use zedra_rpc::proto::HostInfoSnapshot;
+use zedra_rpc::proto::{AgentState, HostInfoSnapshot, WebClientUpdate};
 
 use zedra_session::*;
 
@@ -162,6 +162,22 @@ fn upsert_web_tunnel(tunnels: &mut Vec<TrackedTunnel>, url: &str, title: &str, n
     }
 }
 
+/// A host-managed agent web-client server (e.g. `opencode serve`) shown as a
+/// card. Runtime-only: rebuilt from the host's `WebClientWatch` stream on every
+/// connect. Icon and display name resolve from `slug`.
+#[derive(Clone, Debug, PartialEq)]
+pub struct WebClientCard {
+    pub id: String,
+    pub slug: String,
+    /// Host loopback port; the app tunnels `http://localhost:<port>`.
+    pub port: u16,
+    pub title: Option<String>,
+    pub state: AgentState,
+    /// URL path to open on the server, tracking where the user last navigated.
+    /// Host-held, so it survives reconnects.
+    pub path: String,
+}
+
 /// Shareable workspace state. Clone copies the Arc only. Read via methods (non-blocking).
 #[derive(Clone, Default, Serialize, Deserialize)]
 pub struct WorkspaceState {
@@ -199,6 +215,10 @@ pub struct WorkspaceState {
     pub terminal_ids: Vec<String>,
     #[serde(skip)]
     pub host_info: Option<HostInfoSnapshot>,
+    // Host-managed web-client servers (e.g. `opencode serve`), live from the
+    // host's `WebClientWatch` stream. Rebuilt per connect, so not persisted.
+    #[serde(skip)]
+    pub web_clients: Vec<WebClientCard>,
 }
 
 #[derive(Clone, PartialEq)]
@@ -213,6 +233,7 @@ struct WorkspaceStateSyncSnapshot {
     active_terminal_id: Option<String>,
     terminal_ids: Vec<String>,
     host_info: Option<HostInfoSnapshot>,
+    web_clients: Vec<WebClientCard>,
     delta_host_pubkey: Option<[u8; 32]>,
     delta_host_node_id: Option<Uuid>,
 }
@@ -287,6 +308,7 @@ impl WorkspaceState {
             active_terminal_id: self.active_terminal_id.clone(),
             terminal_ids: self.terminal_ids.clone(),
             host_info: self.host_info.clone(),
+            web_clients: self.web_clients.clone(),
             delta_host_pubkey: self.delta_host_pubkey,
             delta_host_node_id: self.delta_host_node_id,
         }
@@ -299,6 +321,7 @@ impl WorkspaceState {
         self.main_view_stack.reset(WorkspaceMainView::Default);
         self.terminal_ids.clear();
         self.host_info = None;
+        self.web_clients.clear();
     }
 
     pub fn mark_disconnected(&mut self, cx: &mut Context<Self>) {
@@ -492,6 +515,31 @@ impl WorkspaceState {
     /// tunnel never reorders the list.
     pub fn record_web_tunnel(&mut self, url: &str, title: &str, cx: &mut Context<Self>) {
         upsert_web_tunnel(&mut self.web_tunnels, url, title, Self::now_u64());
+        cx.emit(WorkspaceStateEvent::StateChanged);
+        cx.notify();
+    }
+
+    /// Apply a live web-client update from the host's `WebClientWatch` stream:
+    /// remove on close, otherwise upsert by id (preserving list order).
+    pub fn apply_web_client_update(&mut self, update: WebClientUpdate, cx: &mut Context<Self>) {
+        if update.closed {
+            self.web_clients.retain(|card| card.id != update.id);
+        } else if let Some(card) = self.web_clients.iter_mut().find(|c| c.id == update.id) {
+            card.slug = update.slug;
+            card.port = update.port;
+            card.title = update.title;
+            card.state = update.state;
+            card.path = update.path;
+        } else {
+            self.web_clients.push(WebClientCard {
+                id: update.id,
+                slug: update.slug,
+                port: update.port,
+                title: update.title,
+                state: update.state,
+                path: update.path,
+            });
+        }
         cx.emit(WorkspaceStateEvent::StateChanged);
         cx.notify();
     }

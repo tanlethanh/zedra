@@ -102,6 +102,7 @@ unsafe extern "C" {
         labels: *const *const std::ffi::c_char,
         subtitles: *const *const std::ffi::c_char,
         image_names: *const *const std::ffi::c_char,
+        trailing_image_names: *const *const std::ffi::c_char,
     );
     /// Present a native edit menu anchored at a window coordinate.
     fn ios_present_native_edit_menu(
@@ -424,6 +425,15 @@ impl PlatformBridge for IosBridge {
             .collect();
         let image_name_ptrs: Vec<*const std::ffi::c_char> =
             c_image_names.iter().map(|name| name.as_ptr()).collect();
+        let c_trailing_names: Vec<CString> = items
+            .iter()
+            .map(|item| {
+                CString::new(item.trailing_icon.as_deref().unwrap_or(""))
+                    .unwrap_or_else(|_| CString::new("").unwrap())
+            })
+            .collect();
+        let trailing_name_ptrs: Vec<*const std::ffi::c_char> =
+            c_trailing_names.iter().map(|name| name.as_ptr()).collect();
         unsafe {
             ios_present_list_picker(
                 id,
@@ -433,6 +443,7 @@ impl PlatformBridge for IosBridge {
                 label_ptrs.as_ptr(),
                 subtitle_ptrs.as_ptr(),
                 image_name_ptrs.as_ptr(),
+                trailing_name_ptrs.as_ptr(),
             );
         }
     }

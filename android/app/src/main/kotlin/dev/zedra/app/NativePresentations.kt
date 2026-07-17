@@ -1143,6 +1143,7 @@ object NativePresentations {
         val messageHandlerName: String?,
         val interceptNavigation: Boolean,
         val socksProxy: String?,
+        val injectJs: String?,
     )
 
     private fun parseWebViewConfig(configJson: String?): WebViewConfig? {
@@ -1155,6 +1156,7 @@ object NativePresentations {
                 messageHandlerName = obj.optString("messageHandlerName", "").takeIf { it.isNotBlank() },
                 interceptNavigation = obj.optBoolean("interceptNavigation", false),
                 socksProxy = obj.optString("socksProxy", "").takeIf { it.isNotBlank() },
+                injectJs = obj.optString("injectJs", "").takeIf { it.isNotBlank() },
             )
         } catch (e: Throwable) {
             null
@@ -1196,6 +1198,7 @@ object NativePresentations {
             }
             NativePresentations.resetWebViewFavicon()
             NativePresentations.updateWebViewChrome(view, config.title)
+            injectJs(view)
         }
 
         override fun onPageFinished(view: WebView, url: String?) {
@@ -1204,6 +1207,15 @@ object NativePresentations {
                 android.util.Log.i("zedra", "[debug:webview] onPageFinished url=$url")
             }
             NativePresentations.updateWebViewChrome(view, config.title)
+            injectJs(view)
+        }
+
+        // No user-script API here, so run the script at both page callbacks:
+        // onPageStarted may be too early for a JS context, onPageFinished too
+        // late to beat the page. Injected scripts must be idempotent.
+        private fun injectJs(view: WebView) {
+            val js = config.injectJs ?: return
+            view.evaluateJavascript(js, null)
         }
 
         // Previously unimplemented, so a blocked/failed load (cleartext policy, host

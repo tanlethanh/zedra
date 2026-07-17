@@ -936,3 +936,55 @@ async fn test_superseded_static_qr_returns_slot_not_found() {
         result
     );
 }
+
+// ---------------------------------------------------------------------------
+// Web client: opencode shares one server across cards, fresh session per card.
+// Ignored by default — needs `opencode` on PATH and writes throwaway sessions.
+// Run with: cargo test -p zedra-host --test integration -- --ignored opencode
+// ---------------------------------------------------------------------------
+
+#[tokio::test]
+#[ignore = "needs opencode on PATH; creates real sessions"]
+async fn opencode_web_client_shares_one_server_per_card() {
+    use zedra_host::web_client::WebClientManager;
+
+    let workdir = std::env::temp_dir().join(format!("zedra-wc-it-{}", std::process::id()));
+    std::fs::create_dir_all(&workdir).unwrap();
+    let manager = WebClientManager::new(workdir.clone());
+
+    let a = manager.start("opencode").await.expect("first card");
+    let b = manager.start("opencode").await.expect("second card");
+
+    // One shared server: same port, distinct fresh sessions, distinct paths.
+    assert_eq!(a.port, b.port, "both cards share one opencode serve");
+    assert_ne!(a.path, b.path, "each card is its own fresh session");
+    assert!(a.path.contains("/session/") && b.path.contains("/session/"));
+    assert_eq!(manager.list().await.len(), 2);
+
+    let port = a.port;
+    let alive = |port: u16| async move {
+        reqwest::Client::new()
+            .get(format!("http://127.0.0.1:{port}/"))
+            .timeout(Duration::from_secs(1))
+            .send()
+            .await
+            .is_ok()
+    };
+    assert!(alive(port).await, "server up while cards are open");
+
+    // Closing one card leaves the shared server up for the other.
+    manager.stop(&a.id).await.unwrap();
+    assert_eq!(manager.list().await.len(), 1);
+    assert!(alive(port).await, "server stays up while a card remains");
+
+    // Closing the last card reaps the process.
+    manager.stop(&b.id).await.unwrap();
+    assert!(manager.list().await.is_empty());
+    tokio::time::sleep(Duration::from_millis(500)).await;
+    assert!(
+        !alive(port).await,
+        "server reaped after the last card closes"
+    );
+
+    std::fs::remove_dir_all(&workdir).ok();
+}

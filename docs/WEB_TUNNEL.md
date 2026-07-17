@@ -87,6 +87,33 @@ Two ways to open a host web app on the phone:
   session with an active `Subscribe` stream; the app opens it through the same
   seam. Requires a phone connected to that workspace's daemon.
 
+## Keyboard and the tunnelled page
+
+A tunnelled page is a full app the user drives with its own UI, so the webview
+adds no chrome of its own to the keyboard:
+
+- **No form accessory bar.** `hide_input_accessory` drops WKWebView's
+  prev/next/Done strip, which a web app with its own composer never needs. iOS
+  only — Android's WebView has no equivalent bar.
+- **No QuickType strip.** The suggestion row belongs to the keyboard, not the
+  webview, so nothing native can remove it. The tunnel injects a script that
+  marks editable fields `autocorrect="off"` / `spellcheck="false"`; WebKit maps
+  those onto the field's UIKit text traits. **This trades away autocorrect and
+  predictions inside tunnelled pages** — the same lever does both, so one cannot
+  be kept without the other.
+
+Both apply to every tunnelled page, not just agent web clients.
+
+## Route tracking
+
+`open_url_with` takes an optional hook fired with the page's path on every
+navigation. A single-page app routes with `history.pushState`, which fires no
+native navigation callback, so the tunnel injects a script that hooks the
+history API and posts back over the `zedra` bridge. The agent web client uses
+this to remember which session the user is on; see `docs/PROTOCOL_SPECS.md`
+§5.9. Injected scripts run more than once per document on Android, so they are
+idempotence-guarded.
+
 ## Tracked tunnels
 
 Each loopback tunnel opened for a workspace — from a terminal link or `zedra

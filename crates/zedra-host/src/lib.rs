@@ -26,4 +26,5 @@ pub mod sqlite_readonly;
 pub mod telemetry;
 pub mod utils;
 pub mod version_check;
+pub mod web_client;
 pub mod workspace_lock;

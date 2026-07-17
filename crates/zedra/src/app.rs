@@ -113,6 +113,7 @@ impl ZedraApp {
         ))]
         {
             let workspaces = workspaces.downgrade();
+            let web_client_workspaces = workspaces.clone();
             cx.register_devtool_action("web-tunnel", move |params, _window, cx| {
                 let Some(workspaces) = workspaces.upgrade() else {
                     return serde_json::json!({"ok": false, "error": "workspaces dropped"});
@@ -152,6 +153,30 @@ impl ZedraApp {
                     let _ = app.update(cx, |app, cx| app.set_screen(screen, cx));
                 });
                 serde_json::json!({"ok": true})
+            });
+
+            // Spawn an agent web client without the native picker, which tooling
+            // can't tap (`devtool.sh call web-client '{"slug":"opencode"}'`).
+            cx.register_devtool_action("web-client", move |params, window, cx| {
+                let Some(workspaces) = web_client_workspaces.upgrade() else {
+                    return serde_json::json!({"ok": false, "error": "workspaces dropped"});
+                };
+                let slug = params
+                    .get("slug")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("opencode")
+                    .to_string();
+                let Some(workspace) = workspaces.read(cx).active().cloned() else {
+                    return serde_json::json!({"ok": false, "error": "no active workspace"});
+                };
+                workspace.update(cx, |ws, cx| {
+                    ws.handle_spawn_agent_web_client(
+                        &crate::workspace_action::SpawnAgentWebClient { slug: slug.clone() },
+                        window,
+                        cx,
+                    );
+                });
+                serde_json::json!({"ok": true, "slug": slug})
             });
         }
 
@@ -348,7 +373,40 @@ impl ZedraApp {
             QuickActionEvent::CloseTerminal { tid, ws_index } => {
                 self.close_terminal_from_quick_action(*ws_index, tid, cx);
             }
+            QuickActionEvent::OpenWebClient { id, ws_index } => {
+                self.set_screen(AppScreen::Workspace, cx);
+                self.web_client_from_quick_action(*ws_index, id, false, cx);
+            }
+            QuickActionEvent::CloseWebClient { id, ws_index } => {
+                self.web_client_from_quick_action(*ws_index, id, true, cx);
+            }
         }
+    }
+
+    fn web_client_from_quick_action(
+        &self,
+        ws_index: usize,
+        id: &str,
+        close: bool,
+        cx: &mut Context<Self>,
+    ) {
+        let Some(workspace) = self
+            .workspaces
+            .read(cx)
+            .workspace_by_index(ws_index)
+            .cloned()
+        else {
+            tracing::warn!("workspace {ws_index} not found for web client {id} from quick action");
+            return;
+        };
+        let id = id.to_string();
+        workspace.update(cx, |ws, cx| {
+            if close {
+                ws.close_web_client_from_quick_action(id, cx);
+            } else {
+                ws.open_web_client_from_quick_action(id, cx);
+            }
+        });
     }
 
     fn close_quick_action_drawer(&self, cx: &mut Context<Self>) {

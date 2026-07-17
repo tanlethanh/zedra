@@ -723,6 +723,41 @@ impl SessionHandle {
         Ok(result.files)
     }
 
+    /// Start the host-managed web-client server for `slug` (e.g. `opencode
+    /// serve`). Returns `(id, loopback port, first path)` once it is listening.
+    pub async fn web_client_start(&self, slug: String) -> Result<(String, u16, String)> {
+        let result: WebClientStartResult = self.call(WebClientStartReq { slug }).await?;
+        if let Some(e) = result.error {
+            return Err(anyhow::anyhow!(e));
+        }
+        Ok((result.id, result.port, result.path))
+    }
+
+    /// Stop a host-managed web-client server by id.
+    pub async fn web_client_stop(&self, id: String) -> Result<()> {
+        let result: WebClientStopResult = self.call(WebClientStopReq { id }).await?;
+        if let Some(e) = result.error {
+            return Err(anyhow::anyhow!(e));
+        }
+        Ok(())
+    }
+
+    /// Record where the user navigated inside a web client's UI, so reopening
+    /// the card returns to that view. The host holds it across reconnects.
+    pub async fn web_client_set_path(&self, id: String, path: String) -> Result<()> {
+        let result: WebClientSetPathResult = self.call(WebClientSetPathReq { id, path }).await?;
+        if let Some(e) = result.error {
+            return Err(anyhow::anyhow!(e));
+        }
+        Ok(())
+    }
+
+    /// Snapshot the host-managed web-client servers for this workspace.
+    pub async fn web_client_list(&self) -> Result<Vec<WebClientInfo>> {
+        let result: WebClientListResult = self.call(WebClientListReq {}).await?;
+        Ok(result.clients)
+    }
+
     /// Notify the host of the app's foreground/background state.
     /// Fire-and-forget: errors are logged but not surfaced.
     pub async fn notify_app_state(&self, in_foreground: bool) {

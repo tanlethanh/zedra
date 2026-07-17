@@ -212,13 +212,18 @@ private final class AgentListPickerViewController: UITableViewController {
     private let itemLabels: [String]
     private let itemSubtitles: [String?]
     private let itemImageNames: [String?]
+    private let itemTrailingImageNames: [String?]
+    // Mirrors `platform_bridge::LIST_PICKER_TRAILING_OFFSET`: a trailing-accessory
+    // tap is reported as `row + this`, so the shared selection path is unchanged.
+    private let trailingSelectionOffset: Int32 = 1 << 28
     init(
         callbackID: UInt32,
         title: String?,
         message: String?,
         itemLabels: [String],
         itemSubtitles: [String?],
-        itemImageNames: [String?]
+        itemImageNames: [String?],
+        itemTrailingImageNames: [String?]
     ) {
         self.callbackID = callbackID
         self.pickerTitle = title
@@ -226,6 +231,7 @@ private final class AgentListPickerViewController: UITableViewController {
         self.itemLabels = itemLabels
         self.itemSubtitles = itemSubtitles
         self.itemImageNames = itemImageNames
+        self.itemTrailingImageNames = itemTrailingImageNames
         super.init(style: .insetGrouped)
     }
 
@@ -301,6 +307,20 @@ private final class AgentListPickerViewController: UITableViewController {
         }
         cell.contentConfiguration = content
         cell.selectionStyle = .default
+
+        // Web-capable rows get a separately tappable trailing accessory.
+        if let trailingName = itemTrailingImageNames[safe: indexPath.row].flatMap({ $0 }),
+           let image = NativePresentationBridge.actionListImage(named: trailingName) {
+            let button = UIButton(type: .system)
+            button.setImage(image, for: .normal)
+            button.tintColor = NativePresentationTheme.secondaryTextColor
+            button.tag = indexPath.row
+            button.frame = CGRect(x: 0, y: 0, width: 44, height: 44)
+            button.addTarget(self, action: #selector(trailingTapped(_:)), for: .touchUpInside)
+            cell.accessoryView = button
+        } else {
+            cell.accessoryView = nil
+        }
         return cell
     }
 
@@ -308,6 +328,13 @@ private final class AgentListPickerViewController: UITableViewController {
         tableView.deselectRow(at: indexPath, animated: true)
         dismiss(animated: true) {
             zedra_ios_selection_result(self.callbackID, Int32(indexPath.row))
+        }
+    }
+
+    @objc private func trailingTapped(_ sender: UIButton) {
+        let row = Int32(sender.tag)
+        dismiss(animated: true) {
+            zedra_ios_selection_result(self.callbackID, row + self.trailingSelectionOffset)
         }
     }
 }
@@ -1640,7 +1667,8 @@ private enum PresentationCoordinator {
         message: String?,
         itemLabels: [String],
         itemSubtitles: [String?],
-        itemImageNames: [String?]
+        itemImageNames: [String?],
+        itemTrailingImageNames: [String?]
     ) {
         DispatchQueue.main.async {
             guard !itemLabels.isEmpty else {
@@ -1658,7 +1686,8 @@ private enum PresentationCoordinator {
                 message: message,
                 itemLabels: itemLabels,
                 itemSubtitles: itemSubtitles,
-                itemImageNames: itemImageNames
+                itemImageNames: itemImageNames,
+                itemTrailingImageNames: itemTrailingImageNames
             )
             let navigation = UINavigationController(rootViewController: controller)
             navigation.overrideUserInterfaceStyle = NativePresentationTheme.interfaceStyle
@@ -2115,6 +2144,50 @@ private struct NativeWebViewConfig: Decodable {
     var messageHandlerName: String?
     var interceptNavigation: Bool = false
     var socksProxy: String?
+    var injectJs: String?
+    var hideInputAccessory: Bool = false
+}
+
+/// WKWebView that can drop the keyboard's form accessory bar (the prev/next/Done
+/// strip above the keys). The first responder is WebKit's private content view,
+/// not this web view, so overriding `inputAccessoryView` here does nothing —
+/// instead the content view is re-classed to a subclass that returns nil. Scoped
+/// to this instance, so other web views in the process keep their bar.
+private final class NativeWebView: WKWebView {
+    private static let subclassSuffix = "_ZedraNoInputAccessory"
+
+    func hideInputAccessory() {
+        guard let contentView = scrollView.subviews.first(where: {
+            String(describing: type(of: $0)).hasPrefix("WKContent")
+        }) else {
+            return
+        }
+        let baseClass: AnyClass = type(of: contentView)
+        let name = NSStringFromClass(baseClass) + Self.subclassSuffix
+        if let cached = NSClassFromString(name) {
+            object_setClass(contentView, cached)
+            return
+        }
+        guard let subclass = objc_allocateClassPair(baseClass, name, 0),
+              let source = class_getInstanceMethod(
+                  NativeWebView.self,
+                  #selector(getter: NativeWebView.zedraNilInputAccessoryView)
+              )
+        else {
+            return
+        }
+        class_addMethod(
+            subclass,
+            #selector(getter: UIResponder.inputAccessoryView),
+            method_getImplementation(source),
+            method_getTypeEncoding(source)
+        )
+        objc_registerClassPair(subclass)
+        object_setClass(contentView, subclass)
+    }
+
+    /// Donor implementation grafted onto the content-view subclass above.
+    @objc private var zedraNilInputAccessoryView: UIView? { nil }
 }
 
 /// Forwards `window.webkit.messageHandlers.<name>` posts to Rust. Holds only the
@@ -2205,8 +2278,15 @@ private final class NativeWebViewController: UIViewController, WKNavigationDeleg
                 name: name
             )
         }
+        // Runs before the page's own scripts on every navigation, so a caller
+        // can observe a page it does not control (e.g. SPA route changes).
+        if let js = config.injectJs, !js.isEmpty {
+            configuration.userContentController.addUserScript(
+                WKUserScript(source: js, injectionTime: .atDocumentStart, forMainFrameOnly: true)
+            )
+        }
 
-        webView = WKWebView(frame: .zero, configuration: configuration)
+        webView = NativeWebView(frame: .zero, configuration: configuration)
         super.init(nibName: nil, bundle: nil)
     }
 
@@ -2225,6 +2305,9 @@ private final class NativeWebViewController: UIViewController, WKNavigationDeleg
 
         webView.navigationDelegate = self
         webView.allowsBackForwardNavigationGestures = true
+        if config.hideInputAccessory {
+            (webView as? NativeWebView)?.hideInputAccessory()
+        }
         // WKWebView is opaque by default and paints a white content backdrop
         // until the page (or error HTML) renders — a white flash on first load,
         // jarring in dark mode. Non-opaque lets the themed background show through.
@@ -2808,7 +2891,8 @@ func ios_present_list_picker(
     _ itemCount: Int32,
     _ labels: UnsafePointer<UnsafePointer<CChar>?>?,
     _ subtitles: UnsafePointer<UnsafePointer<CChar>?>?,
-    _ imageNames: UnsafePointer<UnsafePointer<CChar>?>?
+    _ imageNames: UnsafePointer<UnsafePointer<CChar>?>?,
+    _ trailingImageNames: UnsafePointer<UnsafePointer<CChar>?>?
 ) {
     PresentationCoordinator.presentListPicker(
         callbackID: callbackID,
@@ -2822,6 +2906,10 @@ func ios_present_list_picker(
         itemImageNames: NativePresentationBridge.optionalStrings(
             count: itemCount,
             labels: imageNames
+        ),
+        itemTrailingImageNames: NativePresentationBridge.optionalStrings(
+            count: itemCount,
+            labels: trailingImageNames
         )
     )
 }

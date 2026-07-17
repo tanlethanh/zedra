@@ -35,7 +35,24 @@ pub struct ListPickerItem {
     pub label: String,
     pub subtitle: Option<String>,
     pub image_name: Option<String>,
+    /// Optional trailing accessory icon (bundle asset name). When set, the row
+    /// shows a separately tappable accessory; a tap on it reports the selection
+    /// with `trailing = true`.
+    pub trailing_icon: Option<String>,
 }
+
+/// A list-picker choice: which row, and whether its trailing accessory (not the
+/// row body) was tapped.
+#[derive(Clone, Copy, Debug)]
+pub struct ListPickerSelection {
+    pub index: usize,
+    pub trailing: bool,
+}
+
+/// Native rows report a trailing-accessory tap as `index + this offset`, so the
+/// shared `Option<usize>` selection path stays unchanged. Decoded in
+/// [`show_list_picker`]. Far above any realistic row count.
+pub const LIST_PICKER_TRAILING_OFFSET: usize = 1 << 28;
 
 #[derive(Clone, Debug)]
 pub struct NativeEditMenuItem {
@@ -354,19 +371,37 @@ pub fn show_selection(
 
 /// Present a native scrollable list picker.
 ///
-/// `on_result` receives `Some(index)` when the user picks an item, or `None`
-/// when the picker is dismissed without a selection.
+/// `on_result` receives `Some(ListPickerSelection)` when the user picks a row or
+/// its trailing accessory, or `None` when the picker is dismissed. A trailing
+/// accessory tap arrives with `trailing = true`.
 pub fn show_list_picker(
     title: &str,
     message: &str,
     items: Vec<ListPickerItem>,
-    on_result: impl FnOnce(Option<usize>) + Send + 'static,
+    on_result: impl FnOnce(Option<ListPickerSelection>) + Send + 'static,
 ) {
     let id = NEXT_SELECTION_ID.fetch_add(1, Ordering::Relaxed);
+    // Decode the native row index (trailing taps arrive offset) into a typed
+    // selection, so the shared `Option<usize>` dispatch path is unchanged.
+    let wrapped = move |raw: Option<usize>| {
+        on_result(raw.map(|raw| {
+            if raw >= LIST_PICKER_TRAILING_OFFSET {
+                ListPickerSelection {
+                    index: raw - LIST_PICKER_TRAILING_OFFSET,
+                    trailing: true,
+                }
+            } else {
+                ListPickerSelection {
+                    index: raw,
+                    trailing: false,
+                }
+            }
+        }));
+    };
     selection_callbacks()
         .lock()
         .unwrap()
-        .insert(id, Box::new(on_result));
+        .insert(id, Box::new(wrapped));
     bridge().present_list_picker(id, title, message, &items);
 }
 

@@ -426,6 +426,25 @@ CLI `--version` probes are slow and cached separately from the synchronous agent
 4. **Background completion:** host pushes `HostEvent::AgentInfoChanged { info }` once per managed agent to every session with an active `Subscribe` stream. `info` is the full cached `AgentSummary` for that agent (including versions and live bindings for that session).
 5. **Client update:** replace the cached row for `info.kind` (do not treat the event as a partial patch).
 
+## 5.9 Web Client Servers
+
+- `WebClientStart(WebClientStartReq) -> WebClientStartResult`
+- `WebClientStop(WebClientStopReq) -> WebClientStopResult`
+- `WebClientList(WebClientListReq) -> WebClientListResult`
+- `WebClientWatch(WebClientWatchReq) -> stream WebClientUpdate`
+- `WebClientSetPath(WebClientSetPathReq) -> WebClientSetPathResult`
+
+### Web client conventions
+
+- `InstalledAgentEntry.web_client` marks agents whose actor has a web UI the app can open as a card (e.g. `opencode serve`). Append-only field, defaults `false`; the app offers the web-client affordance only for these. The actor registry is authoritative — no per-slug client logic.
+- A **card is one webview**, not one process. `WebClientStart{slug}` asks the actor to open a card — launch or reuse its server, do any per-card setup — and returns `{id, port, path}` (or `error`). The app tunnels `http://localhost:<port><path>` (§5.5) into the in-app webview.
+- **Process topology is the actor's choice, invisible to the protocol.** The host runs an agent-agnostic process pool keyed by an actor-chosen key: an actor may back many cards with one shared server, or spawn one per card. opencode shares a single `opencode serve` (a server started in any directory serves every project) and opens a **fresh session per card**, so `path` is `/<base64url(workdir)>/session/<id>`. The pool reaps a server when its last card closes.
+- Cards are **daemon-scoped**: they survive client reconnects and are re-listed by `WebClientList`. `WebClientStop{id}` closes one card (reaping the server only when it was the last on it); a server exiting on its own closes its cards too.
+- `WebClientWatch` streams `WebClientUpdate{id, slug, port, title, state, closed, path}` — a full snapshot each time, so a subscriber maintains its list from the stream alone: seeded with all current cards on subscribe (in creation order), an initial update when one opens, live title/state/path changes, then `closed = true` on close. `state` is the shared `AgentState`.
+- Title/state derivation is **actor-owned** (`AgentActor::web_client_open` keeps a sink), read from the agent server's own API; the host never interprets an agent's web protocol generically. A shared server demuxes its event bus to each card by session id. `title` is the provider-stored session title only — never prompt or tool content.
+- `path` is the URL path the app opens, seeded by the actor so a card opens on its session rather than the server's home view. The app reports navigations with `WebClientSetPath{id, path}`, so reopening a card returns to the view the user left. Held **host-side**, so it survives reconnects.
+- `path` is an opaque routing string. It can identify a session, so it is never logged and never sent to telemetry.
+
 ---
 
 ## 6) Host Events
