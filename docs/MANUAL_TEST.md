@@ -1672,8 +1672,8 @@ Covers the animated status banner overlaid at the top of the workspace main view
    starts (haptic tick) and it does **not** open the connection detail — the tap is
    consumed by the button.
 5. Restore the host / network so the session reconnects. Expected: the banner
-   lingers ~3s after "Connected", then slides up under the header and disappears.
-6. Drop the connection again during that 3s linger or slide-up. Expected: the
+   lingers ~1s after "Connected", then slides up under the header and disappears.
+6. Drop the connection again during that 1s linger or slide-up. Expected: the
    dismiss is cancelled and the banner stays/returns for the new not-connected
    state.
 7. Toggle appearance (Settings → Appearance) while the banner is visible. Expected:

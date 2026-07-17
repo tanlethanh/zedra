@@ -855,16 +855,30 @@ impl Connector {
             let conn_established_at = Instant::now();
             let mut paths = conn.paths();
             let mut prev_path: Option<PathInfo> = None;
-            let mut prev_is_direct = false;
+            // Seed from the already-selected path: a connection that starts direct
+            // is not a relay → direct upgrade.
+            let mut prev_is_direct = paths
+                .get()
+                .iter()
+                .find(|p| p.is_selected())
+                .is_some_and(|p| p.is_ip());
             // One-shot latch: set once a direct path forms or the relay-only
             // timeout fires, after which the timeout branch stays dead.
-            let mut direct_decided = false;
+            let mut direct_decided = prev_is_direct;
             let mut idle_detector =
                 IdleDetector::with_recv_baseline(Instant::now(), conn.stats().udp_rx.bytes);
 
             loop {
+                let path_list = paths.get();
+                let selected = path_list.iter().find(|p| p.is_selected());
+
                 let since_connect = conn_established_at.elapsed();
-                if !direct_decided && since_connect >= DIRECT_UPGRADE_TIMEOUT {
+                // Recheck the current path first: a direct path selected right at the
+                // deadline must not emit a timeout the upgrade below then contradicts.
+                if !direct_decided
+                    && !selected.is_some_and(|p| p.is_ip())
+                    && since_connect >= DIRECT_UPGRADE_TIMEOUT
+                {
                     direct_decided = true;
                     let elapsed_ms = since_connect.as_millis() as u64;
                     info!(
@@ -876,8 +890,7 @@ impl Connector {
                         .await;
                 }
 
-                let path_list = paths.get();
-                if let Some(path) = path_list.iter().find(|p| p.is_selected()) {
+                if let Some(path) = selected {
                     let is_direct = path.is_ip();
                     let path_stats = path.stats();
                     let conn_stats = conn.stats();
