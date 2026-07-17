@@ -271,7 +271,7 @@ impl Workspaces {
                     None | Some(ConnectPhase::Disconnected) | Some(ConnectPhase::Failed(_))
                 );
                 if stale {
-                    ws.restart_connection(cx);
+                    ws.restart_connection(true, cx);
                 }
                 if let Some(terminal_id) = terminal_id {
                     ws.open_terminal_after_sync(terminal_id, cx);

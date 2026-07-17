@@ -1655,3 +1655,26 @@ the first step that can't resolve.
    `pid` and does *not* start `iproxy`. Switch the pref back to the simulator and re-run
    `bridge-ios` — expected: `/ping`'s `pid` matches the simulator's process, and no stray
    `iproxy` remains (`ps aux | grep iproxy`).
+
+## 25. Connection Banner (workspace, not-connected states)
+
+Covers the animated status banner overlaid at the top of the workspace main view
+(`workspace_connection_banner.rs`).
+
+1. Connect to a host and open the workspace main view. Expected: no banner while
+   connected.
+2. Drop the connection (stop the host daemon, or turn off Wi-Fi briefly). Expected:
+   the banner slides down under the header showing a yellow dot + "Reconnecting…"
+   (or "Connection idle" when idle), with a refresh button on the right.
+3. Tap the banner body (not the button). Expected: the connection detail
+   (connecting) screen opens; the banner is not shown over that screen.
+4. From the workspace, tap the refresh button on the banner. Expected: a reconnect
+   starts (haptic tick) and it does **not** open the connection detail — the tap is
+   consumed by the button.
+5. Restore the host / network so the session reconnects. Expected: the banner
+   lingers ~1s after "Connected", then slides up under the header and disappears.
+6. Drop the connection again during that 1s linger or slide-up. Expected: the
+   dismiss is cancelled and the banner stays/returns for the new not-connected
+   state.
+7. Toggle appearance (Settings → Appearance) while the banner is visible. Expected:
+   banner surface, border, text, and accent dot recolor with the theme.

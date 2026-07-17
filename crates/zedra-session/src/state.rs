@@ -1,6 +1,6 @@
 use std::fmt;
 
-use crate::ConnectEvent;
+use crate::{ConnectEvent, HolePunchStage};
 
 #[derive(Clone, Debug, PartialEq)]
 pub enum ReconnectReason {
@@ -248,6 +248,18 @@ pub struct TransportSnapshot {
 pub struct ConnectSnapshot {
     pub binding_ms: Option<u64>,
     pub hole_punch_ms: Option<u64>,
+    /// Hole-punch sub-timing: pkarr/DNS discovery to resolve the host.
+    pub resolve_ms: Option<u64>,
+    /// Hole-punch sub-timing: QUIC + TLS handshake after resolve.
+    pub handshake_ms: Option<u64>,
+    /// Live sub-stage while connecting; cleared once the connection is up.
+    pub hole_punch_stage: Option<HolePunchStage>,
+    /// Live elapsed within the current connect stage, for stall detection.
+    pub hole_punch_elapsed_ms: Option<u64>,
+    /// Time from connect to the first direct path; None while relay-only.
+    pub direct_upgrade_ms: Option<u64>,
+    /// No direct path formed within the upgrade window; using relay.
+    pub relay_only: bool,
     pub rpc_ms: Option<u64>,
     pub register_ms: Option<u64>,
     /// Set once a Register handshake has been attempted this process. Sticky
@@ -357,15 +369,32 @@ impl SessionState {
             }
             ConnectEvent::HolePunchStarted => {
                 self.phase = ConnectPhase::HolePunching;
+                snap.hole_punch_stage = Some(HolePunchStage::Resolving);
+                snap.hole_punch_elapsed_ms = Some(0);
+            }
+            ConnectEvent::HolePunchProgress { stage, elapsed_ms } => {
+                snap.hole_punch_stage = Some(stage);
+                snap.hole_punch_elapsed_ms = Some(elapsed_ms);
+            }
+            ConnectEvent::AddrResolved { resolve_ms } => {
+                snap.resolve_ms = Some(resolve_ms);
+                snap.hole_punch_stage = Some(HolePunchStage::Handshake);
+                snap.hole_punch_elapsed_ms = Some(0);
             }
             ConnectEvent::HolePunchComplete {
                 remote_node_id,
                 alpn,
                 hole_punch_ms,
+                resolve_ms,
+                handshake_ms,
             } => {
                 snap.remote_node_id = Some(remote_node_id);
                 snap.alpn = Some(alpn);
                 snap.hole_punch_ms = Some(hole_punch_ms);
+                snap.resolve_ms = Some(resolve_ms);
+                snap.handshake_ms = Some(handshake_ms);
+                snap.hole_punch_stage = None;
+                snap.hole_punch_elapsed_ms = None;
             }
             ConnectEvent::EndpointAddrChanged { endpoint_addr } => {
                 snap.relay_connected = endpoint_addr.relay_urls().next().is_some();
@@ -475,10 +504,15 @@ impl SessionState {
                     last_alive_at,
                 });
             }
-            ConnectEvent::PathUpgraded { .. } => {
+            ConnectEvent::PathUpgraded { upgrade_ms, .. } => {
+                snap.direct_upgrade_ms = Some(upgrade_ms);
+                snap.relay_only = false;
                 if let Some(ref mut t) = snap.transport {
                     t.path_upgraded = true;
                 }
+            }
+            ConnectEvent::DirectUpgradeTimeout { .. } => {
+                snap.relay_only = true;
             }
             ConnectEvent::NoActivePath => {
                 // Keep the last transport metadata and last_alive_at so UI can
@@ -553,6 +587,12 @@ impl SessionState {
 fn reset_timing(snap: &mut ConnectSnapshot) {
     snap.binding_ms = None;
     snap.hole_punch_ms = None;
+    snap.resolve_ms = None;
+    snap.handshake_ms = None;
+    snap.hole_punch_stage = None;
+    snap.hole_punch_elapsed_ms = None;
+    snap.direct_upgrade_ms = None;
+    snap.relay_only = false;
     snap.rpc_ms = None;
     snap.register_ms = None;
     snap.auth_ms = None;

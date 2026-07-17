@@ -100,15 +100,16 @@ Emitted by `zedra` (app crate) and `zedra-session`.
 | `app_open` | `saved_workspaces`, `app_version`, `platform`, `arch` | `app.rs` — cold start |
 | `screen_view` | `screen`, `screen_name`, `screen_class` | `app.rs`, `workspace.rs`, `workspace_drawer.rs`, `workspace_terminal.rs`, `settings_view.rs` — GPUI logical views |
 | `qr_scan_initiated` | — | `app.rs` — Scan QR tapped |
-| `connect_success` | `total_ms`, `binding_ms`, `hole_punch_ms`, `auth_ms`, `fetch_ms`, `path`, `network`, `rtt_ms`, `relay`, `relay_latency_ms`, `alpn`, `has_ipv4`, `has_ipv6`, `symmetric_nat`, `is_first_pairing` | `handle.rs` — connect() |
+| `connect_success` | `total_ms`, `binding_ms`, `hole_punch_ms`, `resolve_ms`, `handshake_ms`, `auth_ms`, `fetch_ms`, `path`, `network`, `rtt_ms`, `relay`, `relay_latency_ms`, `alpn`, `has_ipv4`, `has_ipv6`, `symmetric_nat`, `is_first_pairing` | `handle.rs` — connect() (`hole_punch_ms` = `resolve_ms` discovery + `handshake_ms` QUIC) |
 | `connect_failed` | `phase`, `error`, `elapsed_ms`, `relay`, `alpn`, `has_ipv4`, `has_ipv6`, `relay_connected` | `handle.rs` — set_failed() |
 | `session_resumed` | `terminal_count`, `resume_ms` | `app.rs` — reconnect to existing session |
 | `disconnect` | — | `app.rs` — user disconnect |
 | `workspace_selected` | `source` (`"active"` or `"saved"`) | `app.rs` — workspace tapped |
 | `reconnect_started` | `reason` | `handle.rs` — reconnect loop |
-| `reconnect_success` | `attempt`, `elapsed_ms`, `reason`, `binding_ms`, `hole_punch_ms`, `auth_ms`, `fetch_ms`, `path`, `network`, `rtt_ms`, `relay`, `alpn`, `has_ipv4`, `has_ipv6` | `handle.rs` |
+| `reconnect_success` | `attempt`, `elapsed_ms`, `reason`, `binding_ms`, `hole_punch_ms`, `resolve_ms`, `handshake_ms`, `auth_ms`, `fetch_ms`, `path`, `network`, `rtt_ms`, `relay`, `alpn`, `has_ipv4`, `has_ipv6` | `handle.rs` |
 | `reconnect_exhausted` | `attempts`, `elapsed_ms`, `reason`, `fatal_error` (optional) | `handle.rs` |
-| `path_upgraded` | `network`, `rtt_ms`, `from_relay` | `handle.rs` — path watcher |
+| `path_upgraded` | `network`, `rtt_ms`, `from_relay`, `upgrade_ms` (relay→direct time) | `handle.rs` — path watcher |
+| `direct_upgrade_timeout` | `elapsed_ms`, `relay`, `network`, `symmetric_nat` | `workspace.rs` — no direct path within the upgrade window (relay-only) |
 | `connection_latency_sample` | `source`, `connection_type`, `network_type`, `rtt_ms`, `relay`, `relay_region`, `nearest_relay_region`, `path_count`, `interval_secs`, `sample_reason` | `workspace.rs` — selected-path latency sample |
 | `terminal_opened` | `source`, `terminal_count` | `workspace_view.rs` |
 | `terminal_closed` | `remaining` | `workspace_view.rs` |
