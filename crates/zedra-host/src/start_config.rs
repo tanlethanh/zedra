@@ -46,7 +46,10 @@ pub fn save(config_dir: &Path, config: &StartConfig) -> Result<()> {
 /// before this file existed stay restartable.
 pub fn load(config_dir: &Path) -> StartConfig {
     match std::fs::read_to_string(config_dir.join(FILE_NAME)) {
-        Ok(contents) => serde_yaml::from_str(&contents).unwrap_or_default(),
+        Ok(contents) => serde_yaml::from_str(&contents).unwrap_or_else(|e| {
+            tracing::warn!("start_config: failed to parse {FILE_NAME}, using defaults: {e}");
+            StartConfig::default()
+        }),
         Err(_) => StartConfig::default(),
     }
 }
