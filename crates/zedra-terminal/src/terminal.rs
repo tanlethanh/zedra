@@ -334,6 +334,10 @@ impl Terminal {
         self.processor.sync_timeout().sync_timeout()
     }
 
+    pub(crate) fn synchronized_output_pending(&self) -> bool {
+        self.synchronized_update_deadline().is_some()
+    }
+
     fn stop_synchronized_update(&mut self) -> bool {
         if self.synchronized_update_deadline().is_none() {
             return false;

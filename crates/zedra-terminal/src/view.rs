@@ -154,7 +154,9 @@ impl TerminalView {
                                 this.workdir = Some(cwd.clone());
                             }
                             cx.emit(event);
-                            cx.notify();
+                            if !this.terminal.read(cx).synchronized_output_pending() {
+                                cx.notify();
+                            }
                         }) {
                             error!("failed to emit terminal event: {:?}", e);
                         }
@@ -723,12 +725,10 @@ impl Render for TerminalView {
                                 this.remote_scroll_offset_px += py;
                                 let lines = (this.remote_scroll_offset_px / step_px).trunc() as i32;
                                 if lines != 0 {
-                                    let moved = this.terminal.update(cx, |terminal, _| {
+                                    this.terminal.update(cx, |terminal, _| {
                                         terminal.commit_scroll_lines(lines, event, grid_origin)
                                     });
-                                    if moved {
-                                        this.remote_scroll_offset_px -= lines as f32 * step_px;
-                                    }
+                                    this.remote_scroll_offset_px -= lines as f32 * step_px;
                                 }
                             } else {
                                 this.remote_scroll_offset_px = 0.0;
@@ -821,10 +821,10 @@ mod tests {
         })
     }
 
-    fn attach_mouse_tracking_channel(
+    fn attach_terminal_channel(
         window: WindowHandle<TerminalView>,
         cx: &mut TestAppContext,
-    ) -> mpsc::Receiver<Vec<u8>> {
+    ) -> (mpsc::Receiver<Vec<u8>>, mpsc::Sender<Vec<u8>>) {
         let (input_tx, input_rx) = mpsc::channel(256);
         let (output_tx, output_rx) = mpsc::channel(4);
         window
@@ -832,6 +832,14 @@ mod tests {
                 terminal_view.attach_channel(input_tx, output_rx, cx);
             })
             .unwrap();
+        (input_rx, output_tx)
+    }
+
+    fn attach_mouse_tracking_channel(
+        window: WindowHandle<TerminalView>,
+        cx: &mut TestAppContext,
+    ) -> mpsc::Receiver<Vec<u8>> {
+        let (input_rx, output_tx) = attach_terminal_channel(window, cx);
         output_tx
             .try_send(b"\x1b[?1049h\x1b[?1003h\x1b[?1006h".to_vec())
             .unwrap();
@@ -1046,6 +1054,47 @@ mod tests {
             },
             event => panic!("expected hyperlink event, got {event:?}"),
         }
+        cx.quit();
+    }
+
+    #[test]
+    fn synchronized_osc_event_does_not_notify_before_frame_end() {
+        let mut cx = TestAppContext::single();
+        let window = open_terminal_window(&mut cx);
+        let root = window.root(&mut cx).unwrap();
+        let mut notifications = cx.notifications(&root);
+        let (_input_rx, output_tx) = attach_terminal_channel(window, &mut cx);
+
+        root.update(&mut cx, |_, cx| cx.notify());
+        cx.run_until_parked();
+        assert!(notifications.next().now_or_never().flatten().is_some());
+
+        output_tx
+            .try_send(b"\x1b[?2026h\x1b]7;file:///repo\x1b\\held".to_vec())
+            .unwrap();
+        cx.run_until_parked();
+        window
+            .update(&mut cx, |terminal_view, _window, _cx| {
+                assert_eq!(terminal_view.workdir.as_deref(), Some("/repo"));
+            })
+            .unwrap();
+        assert!(notifications.next().now_or_never().is_none());
+
+        output_tx.try_send(b"\x1b[?2026l".to_vec()).unwrap();
+        cx.run_until_parked();
+        assert!(
+            window
+                .update(&mut cx, |terminal_view, _window, cx| {
+                    terminal_view
+                        .terminal
+                        .read(cx)
+                        .content()
+                        .cells
+                        .iter()
+                        .any(|cell| cell.cell.c == 'h')
+                })
+                .unwrap()
+        );
         cx.quit();
     }
 
@@ -1360,6 +1409,41 @@ mod tests {
                 assert_eq!(terminal_view.remote_scroll_offset_px, 0.0);
             })
             .unwrap();
+        cx.quit();
+    }
+
+    #[test]
+    fn rejected_remote_touch_scroll_does_not_accumulate_debt() {
+        let mut cx = TestAppContext::single();
+        let window = open_terminal_window(&mut cx);
+        let (mut input_rx, output_tx) = attach_terminal_channel(window, &mut cx);
+        output_tx
+            .try_send(b"\x1b[?1003h\x1b[?1006h".to_vec())
+            .unwrap();
+        cx.run_until_parked();
+
+        window
+            .update(&mut cx, |terminal_view, _window, cx| {
+                terminal_view.terminal.update(cx, |terminal, _| {
+                    for line in 0..40 {
+                        terminal.advance_bytes(format!("line {line}\r\n").as_bytes());
+                    }
+                    terminal.scroll(100);
+                });
+                let terminal = terminal_view.terminal.read(cx);
+                assert!(terminal.display_offset() > terminal.size().rows / 2);
+            })
+            .unwrap();
+
+        scroll_terminal_touch_delta(window, &mut cx, px(120.0), TouchPhase::Moved);
+
+        window
+            .update(&mut cx, |terminal_view, _window, cx| {
+                let step_px = terminal_view.terminal.read(cx).scroll_step_px();
+                assert!(terminal_view.remote_scroll_offset_px.abs() < step_px);
+            })
+            .unwrap();
+        assert!(input_rx.try_recv().is_err());
         cx.quit();
     }
 
