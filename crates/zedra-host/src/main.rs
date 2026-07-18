@@ -20,12 +20,13 @@ use zedra_host::client as zedra_client;
 use zedra_host::ga4::Ga4;
 use zedra_host::{
     api, delta, global_config, identity, iroh_listener, metrics, net_monitor, paths, qr,
-    rpc_daemon, session_registry, start_config, utils, version_check, workspace_lock,
+    rpc_daemon, session_registry, start_config, uploads, utils, version_check, workspace_lock,
 };
 use zedra_rpc::ZedraPairingTicket;
 use zedra_telemetry::Event;
 
 mod terminal_cli;
+mod webview_cli;
 
 #[derive(Parser)]
 #[command(
@@ -182,6 +183,9 @@ enum Commands {
 
     /// Open or list terminals on the connected phone
     Terminal(terminal_cli::TerminalArgs),
+
+    /// Open a web app / URL in the connected phone's in-app webview
+    Open(webview_cli::OpenArgs),
 
     /// Set up Zedra for detected AI agents, or a specific one
     Setup {
@@ -1153,6 +1157,7 @@ async fn main() -> Result<()> {
                     }
                 });
             }
+            uploads::spawn_startup_cleanup();
 
             // 1. Bind iroh endpoint with configured relay URLs.
             let endpoint_relay_urls: Vec<String> = if relay_url.is_empty() {
@@ -1439,6 +1444,10 @@ async fn main() -> Result<()> {
 
         Commands::Terminal(args) => {
             terminal_cli::run(args).await?;
+        }
+
+        Commands::Open(args) => {
+            webview_cli::run(args).await?;
         }
 
         Commands::Agent { command } => {

@@ -27,7 +27,7 @@ where
             Ok(result) => result,
             Err(err) => {
                 // A join error is a panic/shutdown, not "no data" — surface it.
-                tracing::info!("[debug:agent] blocking probe join failed: {err}");
+                tracing::info!("agent: blocking probe join failed: {err}");
                 None
             }
         }

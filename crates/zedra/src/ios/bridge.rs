@@ -4,9 +4,9 @@ use tracing::*;
 use crate::active_terminal;
 use crate::deeplink;
 use crate::platform_bridge::{
-    self, AlertButton, AlertButtonStyle, CustomSheetOptions, HapticFeedback, ListPickerItem,
-    NativeDictationPreviewOptions, NativeEditMenuItem, NativeFloatingButtonOptions,
-    NativeNotificationOptions, PlatformBridge, SoundEffect, SystemTheme,
+    self, AlertButton, AlertButtonStyle, CustomSheetOptions, HapticFeedback, ImageAcquireSource,
+    ListPickerItem, NativeDictationPreviewOptions, NativeEditMenuItem, NativeFloatingButtonOptions,
+    NativeNotificationOptions, PickedImage, PlatformBridge, SoundEffect, SystemTheme,
 };
 
 /// Screen scale factor (e.g. 3.0 for @3x), stored as f32 bits.
@@ -128,6 +128,13 @@ unsafe extern "C" {
     fn ios_dismiss_custom_sheet();
     /// Open a URL in the system browser via UIApplication.
     fn ios_open_url(url: *const std::ffi::c_char);
+    /// Present a native in-app WKWebView. `config_json` is the serialized
+    /// `webview::WebviewConfig`; `callback_id` keys the Rust handlers.
+    fn ios_open_webview(callback_id: u32, config_json: *const std::ffi::c_char);
+    /// Dismiss the currently presented webview.
+    fn ios_close_webview();
+    /// Evaluate JavaScript in the currently presented webview.
+    fn ios_eval_webview_js(js: *const std::ffi::c_char);
     /// Trigger a UIKit haptic feedback generator.
     /// kind encoding matches HapticFeedback::to_i32().
     fn ios_trigger_haptic(kind: i32);
@@ -184,6 +191,15 @@ unsafe extern "C" {
     fn ios_system_prefers_dark_theme() -> i32;
     /// Apply the app appearance to the native keyboard accessory bar.
     fn ios_set_keyboard_accessory_theme(is_dark: bool);
+    /// Acquire an image natively. source: 0 = photo library, 1 = clipboard.
+    /// Delivers exactly one of zedra_ios_image_acquire_{result,cancel,error}(callback_id, ..).
+    fn ios_acquire_image(callback_id: u32, source: i32);
+    /// Returns true when UIPasteboard currently holds an image (UIPasteboard.hasImages).
+    fn ios_clipboard_has_image() -> bool;
+    /// Show or update a native progress HUD (spinner + message) for `id`.
+    fn ios_present_native_progress(id: u32, message: *const std::ffi::c_char);
+    /// Hide the native progress HUD for `id`.
+    fn ios_dismiss_native_progress(id: u32);
 }
 
 impl PlatformBridge for IosBridge {
@@ -281,6 +297,25 @@ impl PlatformBridge for IosBridge {
         use std::ffi::CString;
         if let Ok(c_url) = CString::new(url) {
             unsafe { ios_open_url(c_url.as_ptr()) };
+        }
+    }
+
+    fn open_webview(&self, callback_id: u32, _url: &str, config_json: &str) {
+        use std::ffi::CString;
+        let Ok(c_config) = CString::new(config_json) else {
+            return;
+        };
+        unsafe { ios_open_webview(callback_id, c_config.as_ptr()) };
+    }
+
+    fn close_webview(&self) {
+        unsafe { ios_close_webview() };
+    }
+
+    fn eval_webview_js(&self, js: &str) {
+        use std::ffi::CString;
+        if let Ok(c_js) = CString::new(js) {
+            unsafe { ios_eval_webview_js(c_js.as_ptr()) };
         }
     }
 
@@ -579,6 +614,25 @@ impl PlatformBridge for IosBridge {
             ios_set_keyboard_accessory_theme(is_dark);
         }
     }
+
+    fn acquire_image(&self, id: u32, source: ImageAcquireSource) {
+        unsafe { ios_acquire_image(id, source.to_i32()) };
+    }
+
+    fn clipboard_has_image(&self) -> bool {
+        unsafe { ios_clipboard_has_image() }
+    }
+
+    fn present_native_progress(&self, id: u32, message: &str) {
+        use std::ffi::CString;
+
+        let message = CString::new(message).unwrap_or_else(|_| CString::new("").unwrap());
+        unsafe { ios_present_native_progress(id, message.as_ptr()) };
+    }
+
+    fn dismiss_native_progress(&self, id: u32) {
+        unsafe { ios_dismiss_native_progress(id) };
+    }
 }
 
 /// Called from the native alert handler after the user taps a button.
@@ -631,6 +685,81 @@ pub extern "C" fn zedra_ios_text_input_result(callback_id: u32, value: *const st
 #[unsafe(no_mangle)]
 pub extern "C" fn zedra_ios_text_input_dismiss(callback_id: u32) {
     platform_bridge::dispatch_text_input_dismiss(callback_id);
+}
+
+/// Deliver a message the webview page posted through its JS bridge.
+#[unsafe(no_mangle)]
+pub extern "C" fn zedra_ios_webview_message(callback_id: u32, message: *const std::ffi::c_char) {
+    if message.is_null() {
+        return;
+    }
+    let message = unsafe { std::ffi::CStr::from_ptr(message) }
+        .to_str()
+        .unwrap_or("")
+        .to_string();
+    crate::webview::dispatch_message(callback_id, message);
+}
+
+/// Ask Rust whether a webview navigation should proceed. Returns `true` to
+/// allow. Called synchronously on the UI thread.
+#[unsafe(no_mangle)]
+pub extern "C" fn zedra_ios_webview_navigate(
+    callback_id: u32,
+    url: *const std::ffi::c_char,
+) -> bool {
+    if url.is_null() {
+        return true;
+    }
+    let url = unsafe { std::ffi::CStr::from_ptr(url) }
+        .to_str()
+        .unwrap_or("");
+    crate::webview::dispatch_navigate(callback_id, url)
+}
+
+/// Called when the webview is dismissed.
+#[unsafe(no_mangle)]
+pub extern "C" fn zedra_ios_webview_dismiss(callback_id: u32) {
+    crate::webview::dispatch_dismiss(callback_id);
+}
+
+/// Called by Swift with the processed image bytes ready to upload.
+/// `extension` is "jpg" or "png" (lowercase, no dot).
+#[unsafe(no_mangle)]
+pub extern "C" fn zedra_ios_image_acquire_result(
+    callback_id: u32,
+    data: *const u8,
+    len: usize,
+    extension: *const std::ffi::c_char,
+) {
+    if data.is_null() || len == 0 {
+        platform_bridge::dispatch_image_acquire_error(callback_id, "empty image data".to_string());
+        return;
+    }
+    let bytes = unsafe { std::slice::from_raw_parts(data, len) }.to_vec();
+    let extension = c_string(extension).unwrap_or_default();
+    platform_bridge::dispatch_image_acquire_result(
+        callback_id,
+        PickedImage {
+            data: bytes,
+            extension,
+        },
+    );
+}
+
+/// Called by Swift when the user cancels the picker, or the clipboard held no image.
+#[unsafe(no_mangle)]
+pub extern "C" fn zedra_ios_image_acquire_cancel(callback_id: u32) {
+    platform_bridge::dispatch_image_acquire_cancel(callback_id);
+}
+
+/// Called by Swift on a decode/processing failure.
+#[unsafe(no_mangle)]
+pub extern "C" fn zedra_ios_image_acquire_error(
+    callback_id: u32,
+    message: *const std::ffi::c_char,
+) {
+    let message = c_string(message).unwrap_or_else(|| "unknown error".to_string());
+    platform_bridge::dispatch_image_acquire_error(callback_id, message);
 }
 
 /// Called from the native app delegate when the app enters the background.

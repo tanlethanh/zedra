@@ -60,7 +60,7 @@ impl DropletEffect {
                     self.pipeline_format = format;
                 }
                 Err(error) => {
-                    tracing::error!("[debug:vfx] droplet pipeline compile failed: {error}");
+                    tracing::error!("vfx: droplet pipeline compile failed: {error}");
                     self.compile_failed = true;
                     return None;
                 }

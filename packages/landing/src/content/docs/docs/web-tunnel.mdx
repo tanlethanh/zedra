@@ -1,0 +1,68 @@
+---
+title: Web tunnel
+description: Open a localhost web app running on your host inside the Zedra app, and control it from the zedra open CLI.
+---
+
+Open a web app running on your host inside the Zedra app. The page loads in a native webview and reaches the host over the connection you already paired — no port forwarding, no public URL.
+
+## Open a tunnel
+
+Three ways to open one:
+
+- Tap a `http://localhost:<port>` link in a Zedra terminal.
+- Run `zedra open <target>` on the host.
+- In the session panel, tap **Open webview** and type an address.
+
+`zedra open` accepts a port, `host:port`, or a full URL:
+
+```sh
+zedra open 5173
+zedra open localhost:5173
+zedra open http://localhost:5173/app
+```
+
+A bare port or `host:port` becomes an `http://` loopback address; a full URL is used as written. A phone must be connected to the workspace.
+
+Every tunnel you open is linked to the session panel under **Web tunnels**. Tap an entry to open it again, or long-press it for **Open** or **Remove**. The list persists across app restarts and reconnects.
+
+## How it works
+
+The webview loads the address on the phone. Each connection the page makes — the document, API calls, WebSockets, server-sent events, and dev-server hot reload — is forwarded over the paired session to the matching port on your host's loopback interface. The tunnel forwards raw TCP, so streaming and long-lived connections behave as they do on the host.
+
+Only host loopback addresses are tunneled. A page can still load public resources — external scripts, APIs, images — but the phone fetches those directly over its own network; they never pass through the host. The host rejects any tunneled request to a non-loopback destination.
+
+## Address modes
+
+The address the page loads under depends on whether Zedra can bind the port on the phone.
+
+### Direct (default)
+
+Zedra binds the port on the phone and loads the address unchanged: `http://localhost:<port>`. Because the origin is a real `localhost`, cookies, CORS, and OAuth redirects registered for `localhost` work the same as on the host. One workspace uses a given device port at a time.
+
+### Alias (fallback)
+
+If the port is already taken on the phone — another app holds it, or another workspace already uses it — Zedra asks to switch to an alias, then serves the workspace at a short per-workspace address like `http://puma.zedra.test:<port>` through an in-app proxy.
+
+Two things change in this mode:
+
+- The origin is `puma.zedra.test`, not `localhost`. Anything tied to a `localhost` origin — `localhost` cookies, OAuth redirect URLs, CORS allowlists — may not work.
+- Only same-origin and relative requests go through the proxy. A page that hardcodes `http://localhost:<port>` or a loopback IP does not reach the host. Direct mode has no such limit.
+
+## Scope
+
+Supported:
+
+- `http://localhost:<port>` and loopback IP equivalents.
+- `https://localhost:<port>` when the app trusts the host server's certificate.
+- Standard requests, WebSocket upgrades, server-sent events, and hot reload.
+- Calls to other loopback ports on the same host.
+
+Not supported:
+
+- Public hostnames as a tunnel target. Opening a non-loopback address sends it to the phone's system browser instead.
+- UDP, WebRTC media, and VPN-style networking. The tunnel forwards TCP only.
+
+## Notes
+
+- Tunnels are tied to the current session. A reconnect, workspace switch, or host restart can drop open connections; reload the page to recover.
+- If a page fails to load, confirm the host server is listening on that port. The webview shows an error page with the address and a retry button, not a blank screen.

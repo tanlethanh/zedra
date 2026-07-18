@@ -24,6 +24,7 @@ use crate::session_registry::{
     ConsumeSlotResult, HostTermMeta, OutputSenderSlot, PairingSlotMode, ServerSession,
     SessionRegistry, TermBacklog, TermSession, MAX_WATCHED_PATHS_PER_SESSION,
 };
+use crate::uploads;
 use crate::utils;
 use anyhow::Result;
 use iroh::endpoint::ConnectionError;
@@ -38,6 +39,7 @@ use std::path::{Component, Path, PathBuf};
 use std::sync::atomic::Ordering;
 use std::sync::Arc;
 use std::time::{SystemTime, UNIX_EPOCH};
+use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use zedra_rpc::proto::*;
 use zedra_rpc::proto_v3::{ZedraProtoV3, ZEDRA_ALPN_V3};
 use zedra_telemetry::Event;
@@ -142,7 +144,7 @@ fn current_username() -> String {
         .unwrap_or_else(|_| "unknown".to_string())
 }
 
-fn current_home_dir() -> Option<String> {
+pub(crate) fn current_home_dir() -> Option<String> {
     std::env::var("HOME")
         .ok()
         .or_else(|| std::env::var("USERPROFILE").ok())
@@ -1031,7 +1033,7 @@ fn connection_latency_sample(
 /// Resolve `user_path` relative to `workdir`, then verify the canonical path
 /// stays inside `workdir`. Rejects absolute paths, `..` escapes, and symlinks
 /// that point outside the jail.
-fn resolve_path(workdir: &Path, user_path: &str) -> Result<PathBuf> {
+pub(crate) fn resolve_path(workdir: &Path, user_path: &str) -> Result<PathBuf> {
     // Reject empty paths
     anyhow::ensure!(!user_path.is_empty(), "empty path");
     let joined = workdir.join(user_path);
@@ -1350,6 +1352,119 @@ fn search_files(root: &Path, query: &str, limit: u32) -> Result<FsSearchResult> 
         truncated,
         error: None,
     })
+}
+
+async fn send_web_connect_error(
+    tx: irpc::channel::mpsc::Sender<WebTunnelOutput>,
+    message: impl Into<String>,
+) {
+    let message = message.into();
+    tracing::warn!("web-tunnel: web connect rejected: {message}");
+    let _ = tx
+        .send(WebTunnelOutput {
+            data: vec![],
+            connected: false,
+            close: true,
+            error: Some(message),
+        })
+        .await;
+}
+
+async fn run_web_connect(
+    req: WebConnectReq,
+    mut rx: irpc::channel::mpsc::Receiver<WebTunnelInput>,
+    tx: irpc::channel::mpsc::Sender<WebTunnelOutput>,
+) {
+    if req.port == 0 {
+        send_web_connect_error(tx, "web tunnel destination port is invalid").await;
+        return;
+    }
+    if !is_loopback_host(&req.host) {
+        send_web_connect_error(tx, "web tunnel only forwards localhost destinations").await;
+        return;
+    }
+
+    let stream = match tokio::net::TcpStream::connect((req.host.as_str(), req.port)).await {
+        Ok(stream) => stream,
+        Err(error) => {
+            send_web_connect_error(
+                tx,
+                format!(
+                    "failed to connect host localhost destination {}:{}: {error}",
+                    req.host, req.port
+                ),
+            )
+            .await;
+            return;
+        }
+    };
+
+    if tx
+        .send(WebTunnelOutput {
+            data: vec![],
+            connected: true,
+            close: false,
+            error: None,
+        })
+        .await
+        .is_err()
+    {
+        return;
+    }
+
+    let (mut host_reader, mut host_writer) = stream.into_split();
+
+    let host_to_app = tokio::spawn(async move {
+        let mut buffer = vec![0; WEB_TUNNEL_MAX_CHUNK_BYTES];
+        loop {
+            let (chunk, close, error) = match host_reader.read(&mut buffer).await {
+                Ok(0) => (vec![], true, None),
+                Ok(n) => (buffer[..n].to_vec(), false, None),
+                Err(error) => (
+                    vec![],
+                    true,
+                    Some(format!("host web tunnel read failed: {error}")),
+                ),
+            };
+            let send = tx.send(WebTunnelOutput {
+                data: chunk,
+                connected: false,
+                close,
+                error,
+            });
+            if send.await.is_err() || close {
+                break;
+            }
+        }
+    });
+
+    let app_to_host = tokio::spawn(async move {
+        loop {
+            match rx.recv().await {
+                Ok(Some(input)) => {
+                    if !input.data.is_empty() {
+                        if host_writer.write_all(&input.data).await.is_err() {
+                            break;
+                        }
+                    }
+                    if input.close {
+                        let _ = host_writer.shutdown().await;
+                        break;
+                    }
+                }
+                Ok(None) => {
+                    let _ = host_writer.shutdown().await;
+                    break;
+                }
+                Err(_) => {
+                    let _ = host_writer.shutdown().await;
+                    break;
+                }
+            }
+        }
+    });
+
+    let _ = tokio::join!(host_to_app, app_to_host);
 }
 
 async fn run_observer(session: Arc<ServerSession>, workdir: PathBuf, my_gen: u64) {
@@ -2755,6 +2870,11 @@ async fn dispatch(
             let _ = msg.tx.send(ClearClientDeltaInfoResult {}).await;
         }
 
+        ZedraMessage::WebConnect(msg) => {
+            session.touch().await;
+            run_web_connect(msg.inner, msg.rx, msg.tx).await;
+        }
+
         ZedraMessage::FsRead(msg) => {
             session.rpc_fs_reads.fetch_add(1, Ordering::Relaxed);
             let path = match resolve_path(&state.workdir, &msg.path) {
@@ -2821,6 +2941,47 @@ async fn dispatch(
             };
             let ok = state.fs.write(&path, &msg.content).is_ok();
             let _ = msg.tx.send(FsWriteResult { ok }).await;
+        }
+
+        ZedraMessage::FsUpload(msg) => {
+            session.rpc_fs_writes.fetch_add(1, Ordering::Relaxed);
+            if msg.data.len() > FS_UPLOAD_MAX_BYTES {
+                tracing::warn!(
+                    "FsUpload: rejected {} byte payload (max {})",
+                    msg.data.len(),
+                    FS_UPLOAD_MAX_BYTES
+                );
+                let _ = msg
+                    .tx
+                    .send(FsUploadResult {
+                        path: String::new(),
+                        error: Some("image exceeds the maximum upload size".to_string()),
+                    })
+                    .await;
+                return Ok(());
+            }
+            let data = msg.inner.data;
+            let extension = msg.inner.extension;
+            let store_result =
+                tokio::task::spawn_blocking(move || uploads::store_upload(&data, &extension))
+                    .await
+                    .map_err(|error| anyhow::anyhow!("upload task failed: {error}"))
+                    .and_then(|result| result);
+            match store_result {
+                Ok(path) => {
+                    let _ = msg.tx.send(FsUploadResult { path, error: None }).await;
+                }
+                Err(e) => {
+                    tracing::warn!("FsUpload: store failed: {e:#}");
+                    let _ = msg
+                        .tx
+                        .send(FsUploadResult {
+                            path: String::new(),
+                            error: Some(e.to_string()),
+                        })
+                        .await;
+                }
+            }
         }
 
         ZedraMessage::FsStat(msg) => {
@@ -3166,6 +3327,9 @@ async fn dispatch(
                     }
                 }
             });
+            // Deliver any `zedra open` requests that arrived before this client
+            // subscribed (phone disconnected/backgrounded when the CLI ran).
+            session.flush_pending_webviews().await;
         }
 
         ZedraMessage::SubscribeHostInfo(msg) => {

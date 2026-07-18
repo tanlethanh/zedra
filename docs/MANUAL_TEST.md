@@ -201,7 +201,7 @@ Use a `debug-telemetry` build so every event prints `[telemetry] >> <name>` to s
 (iOS: `./scripts/ios-log.sh`; Android: `./scripts/android-log.sh`).
 
 1. Fresh install (or clear app data), then launch. Expected: `[telemetry] >> app_open` appears
-   (default is opted-in), and `[debug:telemetry] applied persisted opt-out enabled=true`.
+   (default is opted-in), and `telemetry: applied persisted opt-out enabled=true`.
 2. Open Settings → Privacy and set "Share usage data" to **Off**. Expected: a selection haptic
    fires and the toggle moves to Off.
 3. Stay in the app and navigate to another screen. Expected: **no** `[telemetry] >>` lines.
@@ -209,7 +209,7 @@ Use a `debug-telemetry` build so every event prints `[telemetry] >> <name>` to s
    resume; events from the disabled interval are not backfilled.
 5. Set "Share usage data" back to **Off**, fully quit, and relaunch. Expected: **no**
    `[telemetry] >>` lines at all, including no
-   `app_open`, and `[debug:telemetry] applied persisted opt-out enabled=false`.
+   `app_open`, and `telemetry: applied persisted opt-out enabled=false`.
 6. Open Settings → Privacy and set "Share usage data" back to **On**, then relaunch.
    Expected: `[telemetry] >> app_open` resumes and events fire again.
 7. Tap Settings → Privacy → "Telemetry docs". Expected: the system browser opens
@@ -743,6 +743,121 @@ printf '\033]8;;https://zedra.dev\033\\zedra.dev\033]8;;\033\\\n'
 8. Expected: the URL opens externally
 9. Tap the plain `src/main.rs:12:3`, `git:(refactor-app-session-architecture)`, `hello`, `README`, `v0.112.0`, `gpt-5.4`, and `/model`
 10. Expected: none of those tokens are treated as hyperlinks and no preview sheet opens
+
+## 9a. Terminal Localhost Web Tunnel
+
+The default exact-port mode binds `127.0.0.1:<port>` on the device and opens the literal localhost URL. If that port is unavailable, you can opt the workspace into alias mode, which rewrites the host and routes traffic through the in-app SOCKS5 proxy. On the iOS simulator, exact-port can collide with a server using the same Mac loopback port. In alias mode, use `localhost` rather than `127.0.0.1`, which WKWebView can route outside the proxy.
+
+1. On the host, run `./examples/webview-tunnel/run.sh` (multi-port test app: page on `5173`, JSON API + SSE on `5174`, WebSocket on `5175`; see `examples/webview-tunnel/README.md`).
+2. Connect to the same workspace from iOS or Android and open a terminal.
+3. In the Zedra terminal, run `printf 'http://localhost:5173\n'`.
+4. Tap the underlined localhost URL.
+5. Expected: an in-app native webview opens with the exact URL `http://localhost:5173` and the page loads.
+6. Expected: the page shows the API response, then SSE updates, then WebSocket echo — proving the webview reached the other host localhost ports through the tunnel.
+7. Tap the reload button (↻) at the right edge of the URL capsule.
+8. Expected: the page reloads through the host tunnel without opening the system browser.
+9. Close the webview with the close button (✕) on either platform, or system back on Android.
+10. Expected: the app returns to the terminal and terminal input still works.
+
+### Host web server unreachable (iOS)
+
+1. With the `run.sh` test app **stopped** (or before starting it), open `http://localhost:5173` from a Zedra terminal and tap the link.
+2. Expected: instead of a blank white page, the webview shows an inline error page — a globe icon, "Can't reach this page", the `localhost:5173` host, the underlying error, and a **Try Again** button. The address capsule still shows `localhost`.
+3. Start `./examples/webview-tunnel/run.sh` on the host, then tap **Try Again** (or the reload ↻ button).
+4. Expected: the retry loads the real page through the tunnel (not the error HTML, and no system browser), and the page renders.
+
+### Tunnel modes (devtool)
+
+Exercise the exact-port / alias adapters without contriving two hosts. Fire deeplinks at a **running, connected** app — simulator: `xcrun simctl openurl booted '<deeplink>'`; device: `xcrun devicectl device process launch --terminate-existing --device <udid> --payload-url '<deeplink>' dev.zedra.app.debug` then reconnect the workspace. Debug builds only. See `docs/WEB_TUNNEL_MODES.md`.
+
+Devtool actions — `zedra://devtool/tunnel?…`: `url=<url>` open via the real orchestration · `mode=alias` force the alias for this host · `collide=<port>` mark a port as owned by a foreign host (forces the fallback) · `reset=1` clear per-host prefs + port owners. Prereq: `./examples/webview-tunnel/run.sh` on the host, workspace connected.
+
+1. **Exact-port (device)** — `zedra://devtool/tunnel?url=http://localhost:5173`. Expected: webview at the literal `localhost:5173`; page loads; BACKEND/SSE/WS cards work (companion ports sniffed). Log: `exact-port bound 127.0.0.1:5173`.
+2. **Collision → alias prompt** — `zedra://devtool/tunnel?url=http://localhost:5173&reset=1&collide=5173`. Expected: a native notice "localhost:5173 can't be bound…" with **Use alias** + doc link; tapping it reopens the webview at `<label>.zedra.test:5173` and loads. Log: `exact-port unavailable … offering alias`, then `alias SOCKS proxy on …`.
+3. **Alias direct** — `zedra://devtool/tunnel?url=http://localhost:5173&reset=1&mode=alias`. Expected: straight to the alias — address bar shows `<label>.zedra.test:5173` (honest, not spoofed), page loads.
+4. **Per-host memory** — after 2 or 3, fire `zedra://devtool/tunnel?url=http://localhost:5173` again (no reset). Expected: goes straight to the alias, no prompt.
+5. **Non-loopback** — `zedra://devtool/tunnel?url=https://example.com`. Expected: opens in the system browser (not tunneled).
+6. **Simulator note** — the simulator shares the Mac's loopback, so exact-port `:5173` collides with `run.sh` and lands on the prompt (case 2) on its own; use a real device for the exact-port happy path (case 1).
+
+### Listener manager (devtool)
+
+The **Web tunnel** manager (Settings → Developer → Web tunnel) lists and stops exact-port listeners. Debug builds only.
+
+1. After case 1 binds a listener, open **Settings → Developer → Web tunnel**.
+2. Expected: one `:<port>  <workspace name>` row per bound listener (e.g. `:5173`, plus any companion ports like `:5174`/`:5175` from the sniffer), each with a red **Stop** button. With none bound, an empty "No web tunnel listeners are bound" state.
+3. Tap **Stop** on a row. Expected: a native confirmation alert ("Stop web tunnel listener" / "Free port :&lt;port&gt; for &lt;host&gt;?…") with a destructive **Stop** and **Cancel**. **Cancel** leaves the row untouched. **Stop** removes the row and frees the device port (a fresh open of that port re-binds it, or offers the alias if another app now holds it). Log: `exact-port stopped 127.0.0.1:<port>`.
+4. Tap refresh (↻). Expected: the list re-reads live listeners.
+
+### CLI open + tracked tunnels
+
+Open a web app from the host CLI and reopen it later from the session panel.
+
+1. On the host, run `./examples/webview-tunnel/run.sh`, connect the phone to that workspace.
+2. Run `zedra open 5173` on the host (or `zedra open localhost:5173`, or a full URL). Expected: the phone opens a webview at `http://localhost:5173` and the page loads. The CLI prints `Opening http://localhost:5173 on the connected phone`.
+3. With no phone connected, run `zedra open 5173`. Expected: a non-zero exit with `no client subscribed to receive the request` (or `no session available`).
+4. Open the workspace drawer → session panel. Expected: a **Web tunnels** section listing `localhost:5173` (plus any URL opened from a terminal link). Rows are most-recent-first.
+5. Tap a tunnel row. Expected: it reopens in the webview and moves to the top of the list.
+6. Long-press a tunnel row. Expected: a native sheet with **Open** and destructive **Remove**. **Remove** deletes the row; **Open** reopens it.
+7. Fully quit and relaunch the app, reconnect the workspace. Expected: the **Web tunnels** list is still there (persisted) and no tunnel auto-opens.
+8. Open a non-loopback URL (`zedra open https://example.com`). Expected: it opens in the system browser and does **not** appear in the tracked list.
+5. Tap back (‹). Expected: returns to Settings (not Home); the system back gesture does the same.
+
+### Top bar (both platforms)
+
+1. Open any webview (the tunnel or **Settings → Developer → Webview**).
+2. Expected: a single-row top bar below the status bar: back, forward, a flexible URL capsule (favicon on the left, reload button at its right edge), share, and close. No bottom bar; the page fills the rest of the screen. All five icons (back, forward, favicon, reload, share, close) read as roughly the same visual size and sit on the same vertical center.
+3. Expected: back and forward are dimmed until there is history. The favicon slot is empty until the page's icon loads, then shows the site's actual favicon at roughly the reload icon's visual weight (not stretched larger).
+4. Navigate to a second page (follow an in-page link), then tap back, then forward.
+5. Expected: back/forward move through history, re-dim at each end, and the capsule updates to the current host; the favicon resets and reloads for each navigation.
+6. Tap the URL capsule.
+7. Expected: forward, share, and the favicon hide (back stays visible), and the capsule expands to fill the freed space, showing the full URL left-aligned and editable with the keyboard shown; the reload button is replaced by a clear (✕) button.
+8. Tap the clear button.
+9. Expected: the URL text clears without dismissing the keyboard or losing focus.
+10. Edit the text to a different URL (e.g. `example.com`) and submit (Return / Go).
+11. Expected: the webview navigates to `https://example.com`; the capsule collapses back to its normal width showing the host, and forward/favicon/reload/share reappear.
+12. Tap the capsule, then tap elsewhere without submitting.
+13. Expected: editing is discarded and the bar reverts to its normal (non-editing) layout showing the current host.
+14. Tap the share button.
+15. Expected: the system share sheet opens with the current page URL.
+
+## 9a-1. Generic Webview API
+
+Exercises the reusable `webview.rs` capabilities (config, JS messaging, eval, navigation interception, dismiss) independent of the tunnel. Use the debug-only **Settings → Developer → Webview** row, which opens a self-contained test page.
+
+1. Open Settings, scroll to the Developer section (debug builds only), tap **Webview**.
+2. Expected: a native webview opens titled "Webview Test" showing `ready`. In logs, `webview: message: page loaded` fires on load, and the status line updates to `got: page loaded` (proves web→Rust message and Rust→web `eval_js` round-trip).
+3. Tap **Post message**.
+4. Expected: `webview: message: button tapped` logs and the status line shows `got: button tapped`.
+5. Tap **Try blocked navigation**.
+6. Expected: the navigation is blocked, the page stays put, and `webview: blocked navigation: https://example.com/blocked` logs (proves `on_navigate` interception).
+7. Close the webview (the ✕ close button, or system back on Android).
+8. Expected: `webview: dismissed` logs exactly once, including when a second open replaces a live webview.
+
+### Reading the logs (Android)
+
+App logs use logcat tag `zedra` with the `webview:` prefix:
+
+```sh
+adb logcat -c                       # clear
+adb logcat -s zedra | grep webview  # stream
+```
+
+In a debug build the webview also forwards page `console.*` output to logcat (`webview: console: …`) and enables Chrome remote inspection (`chrome://inspect`).
+
+### Driving it from an agent (Android, debug)
+
+With a `--devtool` build you can reproduce the whole flow without touching the device:
+
+```sh
+./scripts/run-android.sh device --devtool
+./scripts/devtool.sh bridge                 # adb forward + ping
+./scripts/devtool.sh tap-xy 368 56          # open Settings (gear)
+adb shell input swipe 540 1900 540 700 250  # scroll to Developer
+./scripts/devtool.sh tap-xy 196 760         # tap Webview
+adb exec-out screencap -p > /tmp/webview.png
+```
+
+The webview itself is a native overlay (not GPUI), so tap its in-page buttons with `adb shell input tap <x> <y>` and verify via the logcat stream above. Verified working on Android: page load, JS bridge messages, `eval_js` echo, navigation interception, and dismiss.
 
 ## 9b. Terminal Preview Sheet Gesture Ownership
 
@@ -1593,7 +1708,69 @@ id in production). The trailing shows the aggregate `done/total` rollup.
 2. Expected: no crash, no stale grab artifacts; the droplet keeps rendering at its
    logical position and refraction stays sharp after the size change.
 
-## 24. GPUI Devtool on iOS (shared `gpui_devtool` crate)
+## 24. Terminal Image Upload (iOS + Android)
+
+### Long-press menu contents
+1. Long-press an empty area of a terminal.
+2. Expected: a native edit menu appears with `Paste` and `Upload`.
+3. Copy an image to the system clipboard (screenshot, or copy a photo from the
+   Photos/Gallery app), then long-press the terminal again.
+4. Expected: the menu now also shows `Paste Image` between `Paste` and `Upload`.
+5. Copy plain text instead and long-press again.
+6. Expected: `Paste Image` is gone; only `Paste` and `Upload` remain.
+
+### Upload from photo library
+1. Long-press the terminal and tap `Upload`.
+2. Expected: the native photo picker (iOS: Photos picker; Android: photo picker)
+   opens directly — no intermediate action sheet.
+3. Pick a large photo (e.g. a full-resolution camera shot).
+4. Expected: a native progress HUD (spinner + "Uploading image…") appears
+   near the top of the screen — non-blocking, the terminal underneath stays
+   scrollable/interactive — then an absolute host path like
+   `/Users/<you>/.cache/zedra/uploads/<digits>-<uuid>.jpg` is inserted at the cursor
+   with a trailing space, and the HUD disappears.
+5. While the HUD is visible, try scrolling or tapping the terminal.
+6. Expected: it responds normally — the HUD never intercepts touches.
+7. Submit the line to an agent (e.g. Claude Code) with a prompt like
+   "describe this image".
+8. Expected: the agent reads the file and describes it correctly (confirms the
+   uploaded bytes are a valid, correctly-oriented image).
+9. On an Android 7 device, upload a portrait camera photo whose pixels are
+   landscape and whose EXIF orientation rotates or mirrors it.
+10. Expected: the uploaded JPEG matches the orientation shown in the picker.
+11. Dismiss the picker without selecting anything.
+12. Expected: no HUD, no alert, no text inserted — silent no-op.
+13. Toggle the app's theme (light/dark) and repeat an upload in each mode.
+14. Expected: the HUD's colors match the current theme (light card in light
+    mode, dark card in dark mode) — not a fixed dark pill regardless of theme.
+
+### Paste image from clipboard
+1. Copy a screenshot to the clipboard, long-press the terminal, tap `Paste Image`.
+2. Expected: same upload/HUD/path-insertion behavior as the photo-library flow.
+
+### Size handling
+1. Upload a very large (e.g. >20MP) photo.
+2. Expected: no error — the image is silently downscaled/re-encoded on-device
+   before upload; the pasted path resolves to a file a few MB or smaller.
+3. Attempt to upload a corrupt or non-image file, if reachable through the picker.
+4. Expected: an alert appears ("Couldn't read image" / "Upload failed"); no
+   path is inserted.
+
+### Host compatibility and cleanup
+1. Point the app at a host binary built before this feature and repeat the
+   Upload flow.
+2. Expected: an alert appears telling the user to update the Zedra host; no crash.
+3. On a current macOS host, manually age a file under
+   `~/.cache/zedra/uploads/` past the
+   cleanup grace period (or reduce the grace period locally for testing) and
+   restart the host daemon.
+4. Expected: the stale file is removed on startup; recently-uploaded files are
+   left alone.
+5. Run `git status` in the workspace after uploading a few images.
+6. Expected: nothing upload-related appears — uploads live in Zedra's cache
+   directory, outside every repo.
+
+## 25. GPUI Devtool on iOS (shared `gpui_devtool` crate)
 
 Verifies the iOS devtool backend added alongside the pre-existing Android one — same
 HTTP surface, same shared `gpui_devtool` crate, different platform-side tap dispatch.
@@ -1618,7 +1795,7 @@ HTTP surface, same shared `gpui_devtool` crate, different platform-side tap disp
    is rejected by `build-ios.sh` with "release builds cannot enable ... --devtool"; confirm
    `./scripts/build-android.sh --devtool` (no `--debug`) is rejected the same way.
 
-## 24a. Devtool — Default Gestures
+## 25a. Devtool — Default Gestures
 
 Verifies press/long-press work on any `.id(...)`'d element with no declaration.
 
@@ -1635,7 +1812,7 @@ Verifies press/long-press work on any `.id(...)`'d element with no declaration.
    `{"ok":false,"error":"element not found"}` is printed (not swallowed) and the command
    exits non-zero.
 
-## 24a2. `/sequence` — Batched Multi-Step Operations
+## 25a2. `/sequence` — Batched Multi-Step Operations
 
 Verifies `POST /sequence` runs steps in order, in one round trip, and stops at
 the first step that can't resolve.
@@ -1652,7 +1829,7 @@ the first step that can't resolve.
 4. Malformed JSON body or `[]` (empty steps array) — expected: `400 Bad
    Request` with a clear `"error"` field, not a partial/empty 200.
 
-## 24b. iOS Log Daemon (fixed location + simulator/device capture)
+## 25b. iOS Log Daemon (fixed location + simulator/device capture)
 
 1. `./scripts/ios-log.sh daemon start`, then immediately `./scripts/ios-log.sh daemon stop`
    (same shell) — expected: stop reports the daemon's pgid and actually terminates it; confirm

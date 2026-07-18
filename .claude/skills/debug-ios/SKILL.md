@@ -21,7 +21,7 @@ Invoke with bug description + optional flags:
 1. **Plan** — hypothesis from read code first + ordered action steps +
    logs to add.
 2. **Loop** — action → capture → evaluate → next, until root cause confirm
-   or dead-loop (see below).
+   or the first failed attempt requires more information (see below).
 3. **Summary** — report to human: what wrong, what tried, the fix, cleanup
    status, assumptions, recommendations, new concepts, proposals.
 
@@ -32,7 +32,7 @@ Iron Law + Output hygiene apply every phase — read those next.
 
 **NO FIX WITHOUT VERIFIED ROOT CAUSE. NO "DONE" WITHOUT RE-OBSERVE FIX
 WORKING.** Never assume — every hypothesis check against real
-log line or real screenshot/element query before act on it. Can't verify, say so, keep investigate; don't guess-and-ship. Token
+log line or real screenshot/element query before act on it. Can't verify, say so and ask for the missing information; don't guess-and-ship. Token
 cost not reason to stop loop — wrong fix cost user far more
 than another verify pass.
 
@@ -218,10 +218,9 @@ that do: **action → capture → evaluate → next**.
      state, retry step. Don't paper over broken assumption by
      reinterpret next step expectations.
 4. **Next.** Root cause confirm (hypothesis match observed
-   behavior with log evidence), move to fix it (see below). Not,
-   refine hypothesis, continue — this where you loop. Tried 3+
-   genuinely different hypotheses and still can't reproduce or
-   explain it, that dead-loop (see below).
+   behavior with log evidence), move to fix it (see below). If the first
+   attempt does not reproduce or explain the bug, stop and ask for the
+   specific information needed to continue (see below).
 
 ### Applying a fix
 
@@ -256,16 +255,14 @@ Once root cause verify:
 Different shape from correctness debug — per-frame logs expected here, but
 only structured for aggregation. See `references/perf-mode.md`.
 
-### Dead-loop: when stop and ask
+### When to stop and ask
 
 Stop loop, use `AskUserQuestion` (or plain text if specifics
 don't fit multiple-choice question) when:
 
-- Can't reproduce bug after genuinely varied set of attempts
-  (not just repeat same steps), **and** suspect need human
-  action can't perform (physical gesture nuance, real push
-  notification, specific account state, timing tied to real-world
-  network conditions).
+- The first debugging attempt does not reproduce or explain the bug. State
+  what the attempt established and ask for the specific missing action,
+  account state, timing, or logs needed to continue.
 - Form plausible root cause but fix require
   product/architecture call (e.g. "this need data-model change" vs "this
   need one-line guard") — decision belong to human, per

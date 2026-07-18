@@ -578,7 +578,8 @@ impl From<proto::AgentSessionsResult> for AgentSessionsResult {
 }
 
 /// `None` drops events the old client can't decode: the `v4`-only
-/// `TerminalAgentChanged`, and agent events for a filtered (newer) slug.
+/// `TerminalAgentChanged` and `WebViewRequested`, and agent events for a
+/// filtered (newer) slug.
 fn host_event_v3(e: proto::HostEvent) -> Option<HostEvent> {
     match e {
         proto::HostEvent::TerminalCreated { id, launch_cmd, .. } => {
@@ -608,6 +609,7 @@ fn host_event_v3(e: proto::HostEvent) -> Option<HostEvent> {
             state,
         }),
         proto::HostEvent::TerminalAgentChanged { .. } => None,
+        proto::HostEvent::WebViewRequested { .. } => None,
     }
 }
 

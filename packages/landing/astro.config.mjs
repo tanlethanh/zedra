@@ -74,6 +74,7 @@ export default defineConfig({
         { label: "Why Zedra?", slug: "docs" },
         { label: "Installation", slug: "docs/installation" },
         { label: "Security & architecture", slug: "docs/security" },
+        { label: "Web tunnel", slug: "docs/web-tunnel" },
         { label: "Configuration", slug: "docs/configuration" },
         { label: "Troubleshooting", slug: "docs/troubleshooting" },
         {

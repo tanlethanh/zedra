@@ -12,9 +12,10 @@ use crate::button::{
     native_floating_button_id,
 };
 use crate::file_preview_view::FilePreviewView;
+use crate::image_upload::{self, ImageUploadError};
 use crate::platform_bridge::{
-    self, CustomSheetDetent, CustomSheetOptions, HapticFeedback, NativeDictationPreviewOptions,
-    NativeEditMenuItem,
+    self, AlertButton, CustomSheetDetent, CustomSheetOptions, HapticFeedback, ImageAcquireSource,
+    NativeDictationPreviewOptions, NativeEditMenuItem,
 };
 use crate::settings::{ThemeStateEvent, theme_state as theme_entity};
 use crate::telemetry::view_telemetry;
@@ -29,6 +30,14 @@ const NATIVE_PASTE_MENU_TAP_GAP: f32 = 28.0;
 fn native_paste_menu_anchor(position: Point<Pixels>) -> Point<Pixels> {
     // Keep the edit menu visibly separated from the long-press finger.
     point(position.x, position.y - px(NATIVE_PASTE_MENU_TAP_GAP))
+}
+
+/// What each long-press menu item does; paired 1:1 with its `NativeEditMenuItem`.
+#[derive(Clone, Copy)]
+enum PasteMenuAction {
+    PasteText,
+    PasteImage,
+    UploadImage,
 }
 
 pub struct WorkspaceTerminal {
@@ -51,6 +60,10 @@ pub struct WorkspaceTerminal {
     scroll_to_bottom_button_visible: bool,
     scroll_to_bottom_button_hide_pending: bool,
     scroll_to_bottom_button_hide_generation: u64,
+    image_upload_in_progress: bool,
+    /// Non-input focus target. Moving focus here drops the terminal keyboard without
+    /// clearing focus entirely (which the terminal input would immediately re-grab).
+    container_focus: FocusHandle,
     _subscriptions: Vec<Subscription>,
 }
 
@@ -250,7 +263,13 @@ impl WorkspaceTerminal {
                 }
                 TerminalEvent::OpenHyperlink(hyperlink) => match &hyperlink.target {
                     TerminalHyperlinkTarget::Url { url } => {
-                        platform_bridge::bridge().open_url(url);
+                        if let Some(title) =
+                            crate::web_tunnel::open_url(this.session_handle.clone(), url)
+                        {
+                            this.workspace_state.update(cx, |state, cx| {
+                                state.record_web_tunnel(url, &title, cx);
+                            });
+                        }
                     }
                     TerminalHyperlinkTarget::File { path, .. } => {
                         this.preview.update(cx, |preview, cx| {
@@ -274,12 +293,30 @@ impl WorkspaceTerminal {
                 },
                 TerminalEvent::NativePasteMenuRequested { position } => {
                     let terminal_view = this.terminal_view.clone();
+                    let weak_this = cx.weak_entity();
                     platform_bridge::trigger_haptic(HapticFeedback::ImpactMedium);
+
+                    let mut menu = vec![(
+                        NativeEditMenuItem::new("Paste").image("doc.on.clipboard"),
+                        PasteMenuAction::PasteText,
+                    )];
+                    if platform_bridge::bridge().clipboard_has_image() {
+                        menu.push((
+                            NativeEditMenuItem::new("Paste Image").image("photo.on.rectangle"),
+                            PasteMenuAction::PasteImage,
+                        ));
+                    }
+                    menu.push((
+                        NativeEditMenuItem::new("Upload").image("photo.badge.plus"),
+                        PasteMenuAction::UploadImage,
+                    ));
+                    let (items, actions): (Vec<_>, Vec<_>) = menu.into_iter().unzip();
+
                     platform_bridge::show_native_edit_menu(
                         native_paste_menu_anchor(*position),
-                        vec![NativeEditMenuItem::new("Paste").image("doc.on.clipboard")],
-                        move |index, cx| match index {
-                            0 => {
+                        items,
+                        move |index, cx| match actions.get(index) {
+                            Some(PasteMenuAction::PasteText) => {
                                 if let Some(text) =
                                     cx.read_from_clipboard().and_then(|item| item.text())
                                 {
@@ -288,7 +325,17 @@ impl WorkspaceTerminal {
                                     });
                                 }
                             }
-                            _ => {}
+                            Some(PasteMenuAction::PasteImage) => {
+                                let _ = weak_this.update(cx, |this, cx| {
+                                    this.start_image_upload(ImageAcquireSource::Clipboard, cx);
+                                });
+                            }
+                            Some(PasteMenuAction::UploadImage) => {
+                                let _ = weak_this.update(cx, |this, cx| {
+                                    this.start_image_upload(ImageAcquireSource::PhotoLibrary, cx);
+                                });
+                            }
+                            None => {}
                         },
                     );
                 }
@@ -404,6 +451,8 @@ impl WorkspaceTerminal {
             scroll_to_bottom_button_visible: false,
             scroll_to_bottom_button_hide_pending: false,
             scroll_to_bottom_button_hide_generation: 0,
+            image_upload_in_progress: false,
+            container_focus: cx.focus_handle(),
             _subscriptions: subscriptions,
         };
         this.sync_terminal_theme(cx);
@@ -455,6 +504,66 @@ impl WorkspaceTerminal {
                 false
             }
         }
+    }
+
+    fn start_image_upload(&mut self, source: ImageAcquireSource, cx: &mut Context<Self>) {
+        if self.image_upload_in_progress {
+            return;
+        }
+        self.image_upload_in_progress = true;
+        cx.notify();
+
+        // Drop the terminal keyboard before the picker appears by moving focus to a
+        // non-input element. `active_window()` is None on iOS, so use the window handles.
+        for window in cx.windows() {
+            let container_focus = self.container_focus.clone();
+            let _ = window.update(cx, move |_, window, cx| {
+                window.hide_soft_keyboard();
+                window.focus(&container_focus, cx);
+            });
+        }
+
+        let session_handle = self.session_handle.clone();
+        let terminal_view = self.terminal_view.clone();
+        cx.spawn(async move |this, cx| {
+            // Show the progress HUD only for the upload phase — never during the
+            // picker or after a cancel.
+            let result = async {
+                let image = image_upload::acquire(source).await?;
+                let progress_id = platform_bridge::allocate_native_progress_id();
+                platform_bridge::show_native_progress(progress_id, "Uploading image…");
+                let uploaded = image_upload::upload(image, session_handle).await;
+                platform_bridge::hide_native_progress(progress_id);
+                uploaded
+            }
+            .await;
+            let _ = this.update(cx, |this, cx| {
+                this.image_upload_in_progress = false;
+                match result {
+                    Ok(rel_path) => {
+                        let _ = terminal_view.update(cx, |terminal_view, cx| {
+                            terminal_view.paste_text_from_native_menu(&format!("{rel_path} "), cx);
+                        });
+                    }
+                    Err(ImageUploadError::Cancelled) => {}
+                    Err(error) => {
+                        warn!("image upload failed: {}", error.user_message());
+                        platform_bridge::show_alert(
+                            "Image Upload Failed",
+                            &error.user_message(),
+                            vec![AlertButton {
+                                label: "OK".into(),
+                                style: platform_bridge::AlertButtonStyle::Default,
+                                image_name: None,
+                            }],
+                            |_| {},
+                        );
+                    }
+                }
+                cx.notify();
+            });
+        })
+        .detach();
     }
 
     fn resize_remote_terminal(
@@ -536,6 +645,7 @@ impl Render for WorkspaceTerminal {
 
         div()
             .id(("workspace-terminal-surface", cx.entity_id()))
+            .track_focus(&self.container_focus)
             .relative()
             .size_full()
             // Alt-screen TUIs (vim, OpenCode) need the container to shrink so reconcile fires

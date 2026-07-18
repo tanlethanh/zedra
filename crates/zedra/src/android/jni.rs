@@ -33,6 +33,12 @@ use crate::platform_bridge::{
 // ============================================================================
 
 static JVM: Mutex<Option<Arc<JavaVM>>> = Mutex::new(None);
+// MainActivity class cached on the main thread at bootstrap: native (tokio) threads
+// attach with the bootstrap classloader, which can't resolve app classes via
+// `find_class`, so Rust→Java calls off the main thread (e.g. the web tunnel opening a
+// webview from its runtime) would fail with ClassNotFoundException without this.
+static MAIN_ACTIVITY_CLASS: Mutex<Option<GlobalRef>> = Mutex::new(None);
+const MAIN_ACTIVITY_CLASS_NAME: &str = "dev/zedra/app/MainActivity";
 static INIT: Once = Once::new();
 static FILES_DIR: Mutex<Option<String>> = Mutex::new(None);
 static APP_VERSION: Mutex<Option<String>> = Mutex::new(None);
@@ -240,6 +246,21 @@ pub extern "system" fn Java_dev_zedra_app_MainActivity_bootstrap(
         tracing::error!("jni: bootstrap failed to obtain JavaVM");
     }
 
+    // Cache MainActivity's class here (main thread, app classloader) so off-thread
+    // Rust→Java calls can resolve it. Derived from the activity object to stay correct
+    // whether `bootstrap` is a static or instance native method.
+    match env.get_object_class(&activity) {
+        Ok(class) => match env.new_global_ref(&class) {
+            Ok(global) => {
+                if let Ok(mut guard) = MAIN_ACTIVITY_CLASS.lock() {
+                    *guard = Some(global);
+                }
+            }
+            Err(error) => tracing::error!(?error, "jni: cache MainActivity global ref failed"),
+        },
+        Err(error) => tracing::error!(?error, "jni: get MainActivity class failed"),
+    }
+
     if let Ok(jni::objects::JValueGen::Object(file_obj)) =
         env.call_method(&activity, "getFilesDir", "()Ljava/io/File;", &[])
     {
@@ -438,6 +459,62 @@ pub extern "system" fn Java_dev_zedra_app_MainActivity_nativeTextInputDismiss(
 }
 
 #[unsafe(no_mangle)]
+pub extern "system" fn Java_dev_zedra_app_MainActivity_nativeWebViewMessage(
+    mut env: JNIEnv,
+    _class: JClass,
+    callback_id: jint,
+    message: jni::objects::JString,
+) {
+    if callback_id <= 0 {
+        return;
+    }
+    let message: String = match env.get_string(&message) {
+        Ok(value) => value.into(),
+        Err(error) => {
+            tracing::error!(?error, "jni: failed to read webview message");
+            return;
+        }
+    };
+    crate::webview::dispatch_message(callback_id as u32, message);
+}
+
+#[unsafe(no_mangle)]
+pub extern "system" fn Java_dev_zedra_app_MainActivity_nativeWebViewNavigate(
+    mut env: JNIEnv,
+    _class: JClass,
+    callback_id: jint,
+    url: jni::objects::JString,
+) -> jni::sys::jboolean {
+    if callback_id <= 0 {
+        return jni::sys::JNI_TRUE;
+    }
+    let url: String = match env.get_string(&url) {
+        Ok(value) => value.into(),
+        Err(error) => {
+            tracing::error!(?error, "jni: failed to read webview navigate url");
+            return jni::sys::JNI_TRUE;
+        }
+    };
+    if crate::webview::dispatch_navigate(callback_id as u32, &url) {
+        jni::sys::JNI_TRUE
+    } else {
+        jni::sys::JNI_FALSE
+    }
+}
+
+#[unsafe(no_mangle)]
+pub extern "system" fn Java_dev_zedra_app_MainActivity_nativeWebViewDismiss(
+    _env: JNIEnv,
+    _class: JClass,
+    callback_id: jint,
+) {
+    if callback_id <= 0 {
+        return;
+    }
+    crate::webview::dispatch_dismiss(callback_id as u32);
+}
+
+#[unsafe(no_mangle)]
 pub extern "system" fn Java_dev_zedra_app_MainActivity_nativeFloatingButtonPressed(
     _env: JNIEnv,
     _class: JClass,
@@ -571,6 +648,14 @@ pub(crate) fn jni_call(name: &'static str, f: impl FnOnce() + std::panic::Unwind
     }
 }
 
+/// The MainActivity class cached at bootstrap, if present.
+fn cached_main_activity_class() -> Option<GlobalRef> {
+    MAIN_ACTIVITY_CLASS
+        .lock()
+        .ok()
+        .and_then(|guard| guard.clone())
+}
+
 pub(crate) fn with_class(
     name: &'static str,
     class_name: &'static str,
@@ -601,16 +686,23 @@ pub(crate) fn with_class(
         },
     };
 
-    let class = match env.find_class(class_name) {
-        Ok(class) => class,
-        Err(error) => {
-            tracing::error!(name, class_name, ?error, "Failed to find JNI class");
-            if env.exception_check().unwrap_or(false) {
-                env.exception_describe().ok();
-                env.exception_clear().ok();
+    let cached = (class_name == MAIN_ACTIVITY_CLASS_NAME)
+        .then(cached_main_activity_class)
+        .flatten();
+    let class: JClass = match &cached {
+        // SAFETY: the cached global ref keeps the class alive for this call.
+        Some(global) => unsafe { JClass::from_raw(global.as_obj().as_raw()) },
+        None => match env.find_class(class_name) {
+            Ok(class) => class,
+            Err(error) => {
+                tracing::error!(name, class_name, ?error, "Failed to find JNI class");
+                if env.exception_check().unwrap_or(false) {
+                    env.exception_describe().ok();
+                    env.exception_clear().ok();
+                }
+                return;
             }
-            return;
-        }
+        },
     };
 
     f(&mut env, &class);
@@ -676,6 +768,62 @@ pub fn open_url(url: &str) {
                 &[(&j_url).into()],
             ) {
                 tracing::error!("jni: openUrl failed: {:?}", e);
+            }
+        });
+    });
+}
+
+pub fn open_webview(callback_id: u32, config_json: &str) {
+    let config_owned = config_json.to_string();
+    jni_call("open_webview", move || {
+        with_main_activity_class("open_webview", |env, class| {
+            let j_config = match env.new_string(&config_owned) {
+                Ok(s) => s,
+                Err(e) => {
+                    tracing::error!("jni: new_string webview config failed: {:?}", e);
+                    return;
+                }
+            };
+            if let Err(e) = env.call_static_method(
+                class,
+                "openWebView",
+                "(ILjava/lang/String;)V",
+                &[(callback_id as jint).into(), (&j_config).into()],
+            ) {
+                tracing::error!("jni: openWebView failed: {:?}", e);
+            }
+        });
+    });
+}
+
+pub fn close_webview() {
+    jni_call("close_webview", move || {
+        with_main_activity_class("close_webview", |env, class| {
+            if let Err(e) = env.call_static_method(class, "closeWebView", "()V", &[]) {
+                tracing::error!("jni: closeWebView failed: {:?}", e);
+            }
+        });
+    });
+}
+
+pub fn eval_webview_js(js: &str) {
+    let js_owned = js.to_string();
+    jni_call("eval_webview_js", move || {
+        with_main_activity_class("eval_webview_js", |env, class| {
+            let j_js = match env.new_string(&js_owned) {
+                Ok(s) => s,
+                Err(e) => {
+                    tracing::error!("jni: new_string webview js failed: {:?}", e);
+                    return;
+                }
+            };
+            if let Err(e) = env.call_static_method(
+                class,
+                "evalWebView",
+                "(Ljava/lang/String;)V",
+                &[(&j_js).into()],
+            ) {
+                tracing::error!("jni: evalWebView failed: {:?}", e);
             }
         });
     });
@@ -1129,16 +1277,21 @@ fn with_main_activity<R>(
         },
     };
 
-    let class = match env.find_class("dev/zedra/app/MainActivity") {
-        Ok(c) => c,
-        Err(e) => {
-            tracing::error!(name, "jni: find MainActivity failed: {:?}", e);
-            if env.exception_check().unwrap_or(false) {
-                env.exception_describe().ok();
-                env.exception_clear().ok();
+    let cached = cached_main_activity_class();
+    let class: JClass = match &cached {
+        // SAFETY: the cached global ref keeps the class alive for this call.
+        Some(global) => unsafe { JClass::from_raw(global.as_obj().as_raw()) },
+        None => match env.find_class(MAIN_ACTIVITY_CLASS_NAME) {
+            Ok(c) => c,
+            Err(e) => {
+                tracing::error!(name, "jni: find MainActivity failed: {:?}", e);
+                if env.exception_check().unwrap_or(false) {
+                    env.exception_describe().ok();
+                    env.exception_clear().ok();
+                }
+                return None;
             }
-            return None;
-        }
+        },
     };
 
     match f(&mut env, &class) {
@@ -1314,6 +1467,97 @@ pub extern "system" fn Java_dev_zedra_app_MainActivity_nativeDeltaGoogleSignInEr
     let message = jstring_to_string(&mut env, &message)
         .unwrap_or_else(|| "Google sign-in failed".to_string());
     platform_bridge::dispatch_delta_google_sign_in_error(callback_id as u32, message);
+}
+
+// =============================================================================
+// Image acquisition (photo picker / clipboard image read)
+// =============================================================================
+
+/// Acquire an image natively. `source`: 0 = photo library, 1 = clipboard.
+/// Delivers exactly one of `nativeImageAcquireResult`/`Cancel`/`Error` from Kotlin.
+pub fn acquire_image(id: u32, source: i32) {
+    jni_call("acquire_image", move || {
+        with_main_activity("acquire_image", |env, class| {
+            env.call_static_method(
+                class,
+                "acquireImage",
+                "(II)V",
+                &[(id as jint).into(), (source as jint).into()],
+            )?;
+            Ok(())
+        });
+    });
+}
+
+/// Cheap synchronous check: does the clipboard currently hold an image?
+pub fn clipboard_has_image() -> bool {
+    let mut has_image = false;
+    jni_call(
+        "clipboard_has_image",
+        std::panic::AssertUnwindSafe(|| {
+            with_main_activity_class("clipboard_has_image", |env, class| {
+                let Ok(value) = env.call_static_method(class, "clipboardHasImage", "()Z", &[])
+                else {
+                    return;
+                };
+                has_image = value.z().unwrap_or(false);
+            });
+        }),
+    );
+    has_image
+}
+
+/// Delivered from `MainActivity` once the picker/clipboard read + downscale
+/// finishes. `extension` is "jpg" or "png".
+#[unsafe(no_mangle)]
+pub extern "system" fn Java_dev_zedra_app_MainActivity_nativeImageAcquireResult(
+    mut env: JNIEnv,
+    _class: JClass,
+    callback_id: jint,
+    data: jni::objects::JByteArray,
+    extension: jni::objects::JString,
+) {
+    if callback_id <= 0 {
+        return;
+    }
+    let bytes = env.convert_byte_array(&data).unwrap_or_default();
+    let extension = jstring_to_string(&mut env, &extension).unwrap_or_default();
+    platform_bridge::dispatch_image_acquire_result(
+        callback_id as u32,
+        platform_bridge::PickedImage {
+            data: bytes,
+            extension,
+        },
+    );
+}
+
+/// Delivered when the user cancels the picker, or the clipboard held no image.
+#[unsafe(no_mangle)]
+pub extern "system" fn Java_dev_zedra_app_MainActivity_nativeImageAcquireCancel(
+    _env: JNIEnv,
+    _class: JClass,
+    callback_id: jint,
+) {
+    if callback_id <= 0 {
+        return;
+    }
+    platform_bridge::dispatch_image_acquire_cancel(callback_id as u32);
+}
+
+/// Delivered on a decode/processing failure.
+#[unsafe(no_mangle)]
+pub extern "system" fn Java_dev_zedra_app_MainActivity_nativeImageAcquireError(
+    mut env: JNIEnv,
+    _class: JClass,
+    callback_id: jint,
+    message: jni::objects::JString,
+) {
+    if callback_id <= 0 {
+        return;
+    }
+    let message = jstring_to_string(&mut env, &message)
+        .unwrap_or_else(|| "image processing failed".to_string());
+    platform_bridge::dispatch_image_acquire_error(callback_id as u32, message);
 }
 
 pub fn show_text_input(id: u32, title: &str, placeholder: &str, initial_value: &str) {
@@ -1517,6 +1761,44 @@ pub fn hide_native_dictation_preview(id: u32) {
     });
 }
 
+pub fn present_native_progress(id: u32, message: &str) {
+    let message = message.to_string();
+    jni_call("present_native_progress", move || {
+        with_main_activity_class("present_native_progress", |env, class| {
+            let message = match env.new_string(&message) {
+                Ok(value) => value,
+                Err(error) => {
+                    tracing::error!(?error, "jni: progress message string failed");
+                    return;
+                }
+            };
+            if let Err(error) = env.call_static_method(
+                class,
+                "presentNativeProgress",
+                "(ILjava/lang/String;)V",
+                &[(id as jint).into(), (&message).into()],
+            ) {
+                tracing::error!(?error, "jni: presentNativeProgress failed");
+            }
+        });
+    });
+}
+
+pub fn dismiss_native_progress(id: u32) {
+    jni_call("dismiss_native_progress", move || {
+        with_main_activity_class("dismiss_native_progress", |env, class| {
+            if let Err(error) = env.call_static_method(
+                class,
+                "dismissNativeProgress",
+                "(I)V",
+                &[(id as jint).into()],
+            ) {
+                tracing::error!(?error, "jni: dismissNativeProgress failed");
+            }
+        });
+    });
+}
+
 pub fn present_native_notification(id: u32, options: &NativeNotificationOptions) {
     let title = options.title.clone();
     let message = options.message.clone().unwrap_or_default();
@@ -1626,7 +1908,3 @@ pub fn set_native_theme(is_dark: bool) {
         });
     });
 }
-
-// Suppress unused-import warning for GlobalRef, kept for potential future use.
-#[allow(dead_code)]
-fn _gref_marker(_: GlobalRef) {}

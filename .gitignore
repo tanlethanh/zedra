@@ -5,6 +5,7 @@
 .codex/hooks.json
 .opencode/plugins/zedra.js
 .zedra/agent-hooks/
+.zedra/uploads/
 
 /target
 target

@@ -26,6 +26,7 @@ pub mod session_registry;
 pub mod sqlite_readonly;
 pub mod start_config;
 pub mod telemetry;
+pub mod uploads;
 pub mod utils;
 pub mod version_check;
 pub mod workspace_lock;

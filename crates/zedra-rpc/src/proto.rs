@@ -219,6 +219,17 @@ pub enum ZedraProto {
     /// Kept at enum tail because protocol variants are append-only.
     #[rpc(tx = oneshot::Sender<ClearClientDeltaInfoResult>)]
     ClearClientDeltaInfo(ClearClientDeltaInfoReq),
+
+    /// Upload binary image bytes into the workspace uploads directory.
+    /// The host names the file; the client never controls the destination path.
+    /// Kept at enum tail because protocol variants are append-only.
+    #[rpc(tx = oneshot::Sender<FsUploadResult>)]
+    FsUpload(FsUploadReq),
+
+    /// Connect one app-local web proxy stream to a host-side loopback TCP port.
+    /// Kept at enum tail because protocol variants are append-only.
+    #[rpc(rx = mpsc::Receiver<WebTunnelInput>, tx = mpsc::Sender<WebTunnelOutput>)]
+    WebConnect(WebConnectReq),
 }
 
 // ---------------------------------------------------------------------------
@@ -226,6 +237,9 @@ pub enum ZedraProto {
 // ---------------------------------------------------------------------------
 
 pub const ZEDRA_ALPN: &[u8] = b"zedra/rpc/4";
+
+/// Maximum accepted `FsUpload` payload size, well under irpc's 16 MiB message cap.
+pub const FS_UPLOAD_MAX_BYTES: usize = 8 * 1024 * 1024;
 
 /// Default page size for `FsList` requests (host uses this when `limit == 0`).
 pub const FS_LIST_DEFAULT_LIMIT: u32 = 50;
@@ -243,6 +257,8 @@ pub const FS_DOCS_TREE_MAX_LIMIT: u32 = 1000;
 pub const FS_DOCS_TREE_MAX_OFFSET: u32 = 5_000;
 /// Maximum filesystem entries visited while rebuilding one docs tree snapshot.
 pub const FS_DOCS_TREE_MAX_VISITED_ENTRIES: u32 = 10_000;
+/// Maximum byte chunk forwarded through one web tunnel stream frame.
+pub const WEB_TUNNEL_MAX_CHUNK_BYTES: usize = 32 * 1024;
 
 // ---------------------------------------------------------------------------
 // Serde helper for [u8; 64] (serde supports arrays only up to size 32 by default)
@@ -630,6 +646,44 @@ pub struct ClearClientDeltaInfoReq {}
 #[derive(Debug, Serialize, Deserialize)]
 pub struct ClearClientDeltaInfoResult {}
 
+// ---------------------------------------------------------------------------
+// Web tunnel types
+// ---------------------------------------------------------------------------
+
+/// The web tunnel only ever forwards loopback destinations. This is the shared
+/// trust-boundary predicate: the app rejects non-loopback targets early and the
+/// host rejects them before opening the TCP connection. Keep it single-sourced
+/// so the two sides cannot drift.
+pub fn is_loopback_host(host: &str) -> bool {
+    host.eq_ignore_ascii_case("localhost")
+        || host
+            .parse::<std::net::IpAddr>()
+            .map(|addr| addr.is_loopback())
+            .unwrap_or(false)
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct WebConnectReq {
+    pub host: String,
+    pub port: u16,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct WebTunnelInput {
+    #[serde(with = "serde_bytes")]
+    pub data: Vec<u8>,
+    pub close: bool,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct WebTunnelOutput {
+    #[serde(with = "serde_bytes")]
+    pub data: Vec<u8>,
+    pub connected: bool,
+    pub close: bool,
+    pub error: Option<String>,
+}
+
 /// A single fuzzy-search hit. `match_indices` are the host matcher's matched
 /// character positions into `rel_path`, so the client highlights exactly what
 /// the host scored instead of re-running a divergent matcher.
@@ -676,6 +730,21 @@ pub struct FsWriteReq {
 #[derive(Debug, Serialize, Deserialize)]
 pub struct FsWriteResult {
     pub ok: bool,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+pub struct FsUploadReq {
+    #[serde(with = "serde_bytes")]
+    pub data: Vec<u8>,
+    /// Lowercase extension without a leading dot (e.g. "jpg", "png").
+    pub extension: String,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+pub struct FsUploadResult {
+    /// Workspace-relative path of the stored file. Empty when `error` is set.
+    pub path: String,
+    pub error: Option<String>,
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -841,6 +910,10 @@ pub enum HostEvent {
         terminal_id: String,
         agent_slug: Option<String>,
     },
+    /// Host asked the client to open a web tunnel / webview at `url` (from
+    /// `zedra open <target>`). The client resolves loopback targets through the
+    /// web tunnel and tracks them per workspace. Appended at `zedra/rpc/4`.
+    WebViewRequested { url: String },
 }
 
 // ---------------------------------------------------------------------------
