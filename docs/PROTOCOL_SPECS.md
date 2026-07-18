@@ -234,7 +234,7 @@ Result types that carry `error: Option<String>`:
 `FsListResult`, `FsSearchResult`, `FsReadResult`, `FsStatResult`, `SessionSwitchResult`, `TermCreateResult`,
 `GitStatusResult`, `GitDiffResult`, `GitLogResult`, `GitCommitResult`, `GitStageResult`,
 `GitUnstageResult`, `GitBranchesResult`, `AgentListResult`, `AgentSessionsResult`,
-`AgentResumeResult`, `LspDiagnosticsResult`, `FsUploadResult`.
+`AgentResumeResult`, `LspDiagnosticsResult`, `FsUploadResult`, `WebTunnelOutput`.
 
 Types that use non-string status fields or enum variants instead:
 `FsWriteResult` (`ok: bool`), `GitCheckoutResult` (`ok: bool`), `FsWatchResult`/`FsUnwatchResult` (enum),
@@ -294,7 +294,20 @@ Types that use non-string status fields or enum variants instead:
   - `NotWatched`
   - `Unsupported` (client-local fallback when host does not support observer RPCs)
 
-## 5.5 Terminals
+## 5.5 Web Tunnel
+
+- `WebConnect(WebConnectReq) <-> WebTunnelInput/WebTunnelOutput` (bidirectional)
+
+### WebConnect conventions
+
+- `WebConnect` is the browser tunnel path. The app-local WebView SOCKS5 proxy sends a `WebConnectReq` for each loopback TCP destination requested by the browser.
+- The app and host both validate that the destination is loopback only: `localhost`, `127.0.0.0/8`, or `::1`.
+- The host opens `tokio::net::TcpStream` to `WebConnectReq.host:WebConnectReq.port`, then sends a `WebTunnelOutput` with `connected = true` before any tunneled bytes. The app must wait for this before returning SOCKS success to WebView.
+- `WebTunnelInput.data` and `WebTunnelOutput.data` are raw byte chunks capped by `WEB_TUNNEL_MAX_CHUNK_BYTES`.
+- `close = true` half-closes or tears down that tunnel stream. `error = Some(msg)` means the stream failed and the receiver should close its local side.
+- The tunnel does not parse HTTP. HTTP, HTTPS, WebSocket upgrades, SSE, HMR, keep-alive, and backend calls are all just bytes after the SOCKS handshake.
+
+## 5.6 Terminals
 
 - `TermCreate(TermCreateReq) -> TermCreateResult`
 - `TermAttach(TermAttachReq) <-> TermInput/TermOutput` (bidirectional)
@@ -346,7 +359,7 @@ replace the session bound to the authenticated dispatch loop. Clients must not
 use it to switch the active workspace; connect to the target session through the
 normal `Connect`/`AuthProve` flow instead.
 
-## 5.6 Git
+## 5.7 Git
 
 - `GitStatus(GitStatusReq) -> GitStatusResult`
 - `GitDiff(GitDiffReq) -> GitDiffResult`
@@ -369,7 +382,7 @@ All Git result types carry `error: Option<String>`. Host sends error when git re
 - `GitStage` stages the provided paths with `git add -- <paths>`.
 - `GitUnstage` removes the provided paths from the index while preserving working tree contents.
 
-## 5.7 AI, Managed Agents, and LSP
+## 5.8 AI, Managed Agents, and LSP
 
 - `AiPrompt(AiPromptReq) -> AiPromptResult`
 - `AgentList(AgentListReq) -> AgentListResult`
@@ -434,6 +447,7 @@ Current host event variants:
 - `FsChanged { path }`
 - `AgentInfoChanged { info }`
 - `TerminalAgentChanged { terminal_id, agent_slug }`
+- `WebViewRequested { url }`
 
 Client rules:
 
@@ -442,6 +456,7 @@ Client rules:
 - `FsChanged { path }`: invalidate cached file tree for the watched path and reload affected expanded nodes.
 - `AgentInfoChanged`: replace cached `AgentSummary` for `info.slug`. One event per managed agent per version refresh. Requires an active `Subscribe` stream.
 - `TerminalAgentChanged`: update the terminal's agent identity to `agent_slug` (`None` clears it). Emitted when the host-resolved foreground agent for a terminal changes (command start/end). Authoritative — clients render it instead of re-detecting locally. Requires an active `Subscribe` stream.
+- `WebViewRequested`: open `url` in the in-app webview, routing loopback targets through the web tunnel (non-loopback opens in the system browser). Emitted from `zedra open <target>` via the local REST API. Loopback targets are tracked per workspace for quick reopen. Appended at `zedra/rpc/4`; dropped for `v3` clients.
 
 ---
 
@@ -681,6 +696,11 @@ Any protocol-layer change must include all applicable steps:
   path serves both. `v2` clients get empty agent `live` fields and have
   `Pi`/`Hermes` + the `v3`-only `HostEvent` variants filtered out. Response-only
   delta; stopgap pending issue #140.
+
+### 2026-06-19
+
+- Added `WebConnect(WebConnectReq) <-> WebTunnelInput/WebTunnelOutput` for the app WebView SOCKS tunnel. The browser path streams raw TCP bytes to host loopback.
+- ALPN bumped to `zedra/rpc/4`.
 
 ### 2026-06-11
 

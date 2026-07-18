@@ -913,6 +913,22 @@ impl Workspace {
                             break;
                         }
                     }
+                    Ok(HostEvent::WebViewRequested { url }) => {
+                        let should_break = workspace
+                            .update(cx, |ws, cx| {
+                                if let Some(title) =
+                                    crate::web_tunnel::open_url(ws.session_handle().clone(), &url)
+                                {
+                                    ws.workspace_state.update(cx, |state, cx| {
+                                        state.record_web_tunnel(&url, &title, cx);
+                                    });
+                                }
+                            })
+                            .is_err();
+                        if should_break {
+                            break;
+                        }
+                    }
                     Ok(_) => {}
                     Err(broadcast::error::RecvError::Lagged(skipped)) => {
                         tracing::warn!("workspace host event listener lagged by {}", skipped);
@@ -3682,7 +3698,7 @@ impl WorkspaceContent {
         cx: &mut Context<Self>,
     ) -> Self {
         let empty_view = cx.new(|_cx| Empty);
-        let connecting = cx.new(|cx| WorkspaceConnecting::new(session_state, cx));
+        let connecting = cx.new(|cx| WorkspaceConnecting::new(session_state.clone(), cx));
 
         let terminal_state_sub = cx.observe(&terminal_state, |_, _, cx| cx.notify());
         let workspace_state_sub = cx.observe(&workspace_state, |_, _, cx| cx.notify());

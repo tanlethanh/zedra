@@ -5,6 +5,9 @@
 // __attribute__((weak)) ensures the linker always prefers the strong Obj-C definition.
 __attribute__((weak)) void ios_present_qr_scanner(void) {}
 __attribute__((weak)) void ios_open_url(const char *url) {}
+__attribute__((weak)) void ios_open_webview(unsigned int callback_id, const char *config_json) {}
+__attribute__((weak)) void ios_close_webview(void) {}
+__attribute__((weak)) void ios_eval_webview_js(const char *js) {}
 __attribute__((weak)) void ios_update_native_floating_button(
     unsigned int callback_id,
     const char *system_image_name,

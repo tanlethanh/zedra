@@ -148,6 +148,8 @@ Mobile remote editor for iOS and Android. Primary platform is iOS (`gpui_ios` + 
 - `docs/GPUI_*.md` — GPUI internals playbooks: rendering model, focus/input/keyboard, animations, mobile interaction, text protocol, native presentations, Android backend
 - `docs/TELEMETRY.md` — telemetry events and privacy
 - `docs/MANUAL_TEST.md` — manual verification steps for UI and device work
+- `docs/WEBVIEW.md` — generic native in-app webview API (`webview.rs`): config, messaging, JS eval, navigation interception
+- `docs/WEB_TUNNEL.md` — localhost web tunnel transport; `docs/WEB_TUNNEL_MODES.md` — exact-port vs alias adapters and origin tradeoffs
 - `docs/DEVTOOL.md` — in-app HTTP devtool for agent-driven UI scripting (debug iOS + Android); wrapper at `scripts/devtool.sh`
 - `docs/RELAY.md` — self-hosted iroh-relay deployment
 - `docs/RELEASE.md` — how to cut a release

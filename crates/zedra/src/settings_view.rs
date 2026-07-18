@@ -19,6 +19,7 @@ const PRIVACY_POLICY_URL: &str = "https://zedra.dev/privacy";
 #[derive(Clone, Debug)]
 pub enum SettingsEvent {
     NavigateHome,
+    OpenWebTunnel,
     DropletToggled(bool),
 }
 
@@ -468,6 +469,57 @@ impl SettingsView {
         );
     }
 
+    fn show_test_webview(&self) {
+        use base64::Engine as _;
+        platform_bridge::trigger_haptic(HapticFeedback::ImpactLight);
+
+        // Self-contained page that exercises the JS bridge (posts on load and on
+        // tap) and offers a link to a blocked external origin.
+        const PAGE: &str = r#"<!doctype html><meta name=viewport content="width=device-width,initial-scale=1">
+<body style="font-family:-apple-system,system-ui,sans-serif;margin:0;padding:24px;background:#111;color:#eee">
+<h2>Zedra Webview Test</h2>
+<p id=out>loading…</p>
+<button style="font-size:16px;padding:10px 16px" onclick="post('button tapped')">Post message</button>
+<p><a href="https://example.com/blocked">Try blocked navigation</a></p>
+<script>
+function bridge(){
+  if(window.webkit&&window.webkit.messageHandlers&&window.webkit.messageHandlers.zedra)return function(m){window.webkit.messageHandlers.zedra.postMessage(m)};
+  if(window.zedra&&window.zedra.postMessage)return function(m){window.zedra.postMessage(m)};
+  return null;
+}
+function post(m){var b=bridge();if(b)b(m)}
+window.zedraSetStatus=function(s){document.getElementById('out').textContent=s}
+console.log('bridge present: '+(bridge()?'yes':'no')+' (webkit='+(typeof window.webkit)+' zedra='+(typeof window.zedra)+')');
+document.getElementById('out').textContent=bridge()?'ready (bridge ok)':'ready (no bridge)';
+post('page loaded');
+</script>"#;
+        let data_url = format!(
+            "data:text/html;base64,{}",
+            base64::engine::general_purpose::STANDARD.encode(PAGE)
+        );
+
+        crate::webview::open(
+            crate::webview::WebviewConfig::new(data_url)
+                .title("Webview Test")
+                .on_message(|message| {
+                    tracing::info!("webview: message: {message}");
+                    // Echo back into the page to exercise Rust->web eval.
+                    let escaped = message.replace('\\', "\\\\").replace('\'', "\\'");
+                    crate::webview::eval_js(&format!("window.zedraSetStatus('got: {escaped}')"));
+                })
+                .on_navigate(|url| {
+                    // Allow the initial data: load; block external https links.
+                    if url.starts_with("https://") {
+                        tracing::info!("webview: blocked navigation: {url}");
+                        crate::webview::NavigationPolicy::Cancel
+                    } else {
+                        crate::webview::NavigationPolicy::Allow
+                    }
+                })
+                .on_dismiss(|| tracing::info!("webview: dismissed")),
+        );
+    }
+
     fn show_test_custom_sheet(&self, cx: &mut Context<Self>) {
         platform_bridge::trigger_haptic(HapticFeedback::ImpactSoft);
         self.sheet_state.update(cx, |state, cx| {
@@ -734,6 +786,28 @@ impl Render for SettingsView {
                                         )
                                         .on_press(cx.listener(|this, _event, _window, cx| {
                                             this.show_test_custom_sheet(cx);
+                                        })),
+                                    )
+                                    .child(
+                                        action_row(
+                                            cx,
+                                            "settings-test-webview",
+                                            "Webview",
+                                            "JS messaging, eval, and navigation interception",
+                                        )
+                                        .on_press(cx.listener(|this, _event, _window, _cx| {
+                                            this.show_test_webview();
+                                        })),
+                                    )
+                                    .child(
+                                        action_row(
+                                            cx,
+                                            "settings-web-tunnel",
+                                            "Web tunnel",
+                                            "Manage localhost listeners bound on this device",
+                                        )
+                                        .on_press(cx.listener(|_this, _event, _window, cx| {
+                                            cx.emit(SettingsEvent::OpenWebTunnel);
                                         })),
                                     )
                                     .child(

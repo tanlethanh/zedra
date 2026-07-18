@@ -64,6 +64,9 @@ pub mod image_upload;
 pub mod native_presentation;
 pub mod platform_bridge;
 pub mod telemetry;
+pub mod web_tunnel;
+pub mod web_tunnel_manager;
+pub mod webview;
 
 // Embedded assets (SVG icons) — shared across platforms
 use rust_embed::RustEmbed;

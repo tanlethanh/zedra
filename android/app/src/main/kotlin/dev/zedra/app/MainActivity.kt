@@ -261,6 +261,9 @@ class MainActivity : AppCompatActivity() {
     // gesture-nav implementation which sends KEYCODE_BACK as a key event (source=SOURCE_KEYBOARD).
     override fun dispatchKeyEvent(event: KeyEvent): Boolean {
         if (event.keyCode == KeyEvent.KEYCODE_BACK && event.action == KeyEvent.ACTION_UP) {
+            if (NativePresentations.handleBackPressed()) {
+                return true
+            }
             if (nativeSystemBackPressed()) {
                 return true
             }
@@ -376,6 +379,12 @@ class MainActivity : AppCompatActivity() {
         @JvmStatic external fun nativeTextInputResult(callbackId: Int, value: String)
 
         @JvmStatic external fun nativeTextInputDismiss(callbackId: Int)
+
+        @JvmStatic external fun nativeWebViewMessage(callbackId: Int, message: String)
+
+        @JvmStatic external fun nativeWebViewNavigate(callbackId: Int, url: String): Boolean
+
+        @JvmStatic external fun nativeWebViewDismiss(callbackId: Int)
 
         @JvmStatic external fun nativeFloatingButtonPressed(callbackId: Int)
 
@@ -518,6 +527,21 @@ class MainActivity : AppCompatActivity() {
             activity.runOnUiThread {
                 activity.startActivity(Intent(Intent.ACTION_VIEW, Uri.parse(url)))
             }
+        }
+
+        @JvmStatic
+        fun openWebView(callbackId: Int, configJson: String) {
+            NativePresentations.openWebView(callbackId, configJson)
+        }
+
+        @JvmStatic
+        fun closeWebView() {
+            NativePresentations.closeWebView()
+        }
+
+        @JvmStatic
+        fun evalWebView(js: String) {
+            NativePresentations.evalWebView(js)
         }
 
         /** Returns 1 for dark, 0 for light, -1 when unavailable. */

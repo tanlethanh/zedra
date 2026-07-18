@@ -23,6 +23,15 @@ pub enum DeeplinkAction {
         endpoint_addr: String,
         terminal_id: Option<String>,
     },
+    /// Debug devtool: drive the web tunnel on the active workspace directly, to
+    /// reproduce adapter cases. `zedra://devtool/tunnel?url=<url>&mode=alias&collide=<port>&reset=1`.
+    #[cfg(debug_assertions)]
+    DebugTunnel {
+        url: Option<String>,
+        force_alias: bool,
+        collide: Option<u16>,
+        reset: bool,
+    },
 }
 
 static PENDING_DEEPLINK: PendingSlot<DeeplinkAction> = PendingSlot::new();
@@ -59,6 +68,14 @@ pub fn parse(url: &str) -> Result<DeeplinkAction> {
                 terminal_id,
             })
         }
+        #[cfg(debug_assertions)]
+        "devtool/tunnel" => Ok(DeeplinkAction::DebugTunnel {
+            // url is passed unencoded (no `&`); the simple query parser keeps it intact.
+            url: parse_query_param(query, "url").filter(|u| !u.is_empty()),
+            force_alias: parse_query_param(query, "mode").as_deref() == Some("alias"),
+            collide: parse_query_param(query, "collide").and_then(|p| p.parse().ok()),
+            reset: parse_query_param(query, "reset").is_some(),
+        }),
         other => Err(anyhow!("unknown deeplink action: {}", other)),
     }
 }
