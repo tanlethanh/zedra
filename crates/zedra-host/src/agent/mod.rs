@@ -115,6 +115,7 @@ pub fn agent_session_limit(limit: u32) -> usize {
     let configured = std::env::var("ZEDRA_AGENT_SESSION_LIMIT")
         .ok()
         .and_then(|value| value.parse::<u32>().ok())
+        .or_else(|| crate::global_config::get().agent_session_limit)
         .unwrap_or(AGENT_SESSION_DEFAULT_LIMIT);
     let limit = if limit == 0 { configured } else { limit };
     limit.clamp(1, AGENT_SESSION_MAX_LIMIT) as usize

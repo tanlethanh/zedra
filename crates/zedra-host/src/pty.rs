@@ -141,6 +141,7 @@ impl ShellSession {
 fn default_shell() -> String {
     windows_shell_from_env(&["ZEDRA_SHELL"])
         .or_else(|| windows_shell_from_env(&["ZEDRA_LAUNCH_SHELL"]))
+        .or_else(|| crate::global_config::get().shell.clone())
         .or_else(detect_parent_shell)
         .or_else(|| windows_shell_from_env(&["SHELL"]))
         .or_else(|| windows_shell_from_env(&["COMSPEC", "ComSpec"]))
@@ -149,7 +150,12 @@ fn default_shell() -> String {
 
 #[cfg(not(windows))]
 fn default_shell() -> String {
-    std::env::var("SHELL").unwrap_or_else(|_| "/bin/bash".to_string())
+    // Explicit config beats the inherited `$SHELL` so a user can pin a shell.
+    crate::global_config::get()
+        .shell
+        .clone()
+        .or_else(|| std::env::var("SHELL").ok())
+        .unwrap_or_else(|| "/bin/bash".to_string())
 }
 
 #[cfg(windows)]

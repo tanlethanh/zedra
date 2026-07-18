@@ -19,8 +19,8 @@ use zedra_host::agent::cli as agent_cli;
 use zedra_host::client as zedra_client;
 use zedra_host::ga4::Ga4;
 use zedra_host::{
-    api, delta, identity, iroh_listener, metrics, net_monitor, paths, qr, rpc_daemon,
-    session_registry, start_config, utils, version_check, workspace_lock,
+    api, delta, global_config, identity, iroh_listener, metrics, net_monitor, paths, qr,
+    rpc_daemon, session_registry, start_config, utils, version_check, workspace_lock,
 };
 use zedra_rpc::ZedraPairingTicket;
 use zedra_telemetry::Event;
@@ -942,6 +942,16 @@ async fn main() -> Result<()> {
             usage_refresh_secs,
         } => {
             let workdir = resolve_workdir(workdir);
+            // Merge `<workdir>/.zedra/config.yaml` over the global file before any
+            // consumer reads it; an explicit flag/env still wins over both.
+            global_config::init(&workdir);
+            let global = global_config::get();
+            let relay_url = if relay_url.is_empty() {
+                global.relay_url.clone()
+            } else {
+                relay_url
+            };
+            let no_telemetry = no_telemetry || global.no_telemetry;
             let pairing_mode = if static_qr {
                 session_registry::PairingSlotMode::Static
             } else {

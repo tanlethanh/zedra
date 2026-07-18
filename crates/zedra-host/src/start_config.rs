@@ -1,12 +1,13 @@
-// start_config.rs — persisted daemon launch flags, written as `config.yaml`
+// start_config.rs — persisted daemon launch flags, written as `launch.yaml`
 // next to `daemon.lock` so `zedra update` can relaunch daemons with the
-// options they were originally started with.
+// options they were originally started with. Distinct from the user-editable
+// `config.yaml` (see `global_config.rs`): this file is machine-written state.
 
 use anyhow::Result;
 use serde::{Deserialize, Serialize};
 use std::path::Path;
 
-pub const FILE_NAME: &str = "config.yaml";
+pub const FILE_NAME: &str = "launch.yaml";
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(default)]

@@ -9,14 +9,15 @@ pub fn list_installed_agents() -> AgentInstalledListResult {
         .iter()
         .filter_map(|actor| {
             std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-                let launch_cmd = actor.resolved_program();
+                let launch_cmd =
+                    crate::global_config::agent_launch_cmd(actor.slug(), actor.resolved_program());
                 InstalledAgentEntry {
                     slug: actor.slug().to_string(),
                     display_name: actor.display_name().to_string(),
                     icon_name: actor.icon_name().to_string(),
                     available: launch_cmd.is_some(),
                     version: None,
-                    launch_cmd: launch_cmd.map(str::to_string),
+                    launch_cmd,
                 }
             }))
             .map_err(|_| tracing::warn!("installed agent probe panicked for `{}`", actor.slug()))
