@@ -224,6 +224,19 @@ Use a `debug-telemetry` build so every event prints `[telemetry] >> <name>` to s
    Analytics or Crashlytics calls are made. On Android, Delta push notifications remain
    available.
 
+## 0d-Markdown. Editable Markdown Preview
+
+1. Connect to a workspace and tap a terminal file link for a markdown file (`.md`) so the native custom sheet opens with the rendered preview
+2. Expected: an `Edit` pill appears in the sheet header (it does not appear for non-markdown files, nor for read-only agent config/memory files opened from the managed-agent view)
+3. Tap `Edit`: the rendered preview is replaced by an editable source view seeded with the file's markdown; the keyboard opens
+4. Type an edit and pause (~0.5s)
+5. Expected: the header shows `Saving…` then `Saved`; re-reading the file on the host (e.g. `cat` in the terminal) shows the edit persisted
+6. Tap `Done`: edit mode exits and the preview re-renders with your changes
+7. Conflict path: with the sheet still open on a file, modify that same file on the host from the terminal (append a line), then type another edit in the editor
+8. Expected: the header save status clears and a banner appears — "File changed on the host. Reload or overwrite?" — with `Reload` and `Overwrite` buttons; autosave is paused
+9. Tap `Reload`: the editor and preview adopt the host's current content, discarding the local edit; autosave resumes on the next edit
+10. Repeat the conflict, then tap `Overwrite`: the local edit is written over the host change and the banner clears
+
 ## 0e. Developer Native Selection
 
 1. Run a Debug iOS build and open Settings

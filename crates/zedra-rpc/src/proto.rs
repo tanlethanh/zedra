@@ -665,17 +665,38 @@ pub struct FsReadResult {
     pub content: String,
     pub too_large: bool,
     pub error: Option<String>,
+    /// Disk version at read time. Pairs with `size` to form the optimistic
+    /// concurrency token a later `FsWrite` echoes as `expected_*`. Mirrors how
+    /// editors (Vim, VS Code, Zed) detect external edits via stat, not hashing.
+    pub mtime: Option<u64>,
+    pub size: u64,
 }
 
 #[derive(Debug, Serialize, Deserialize)]
 pub struct FsWriteReq {
     pub path: String,
     pub content: String,
+    /// Expected on-disk version (mtime, size) from the last read/write the
+    /// client observed. `None` skips the check (blind write, e.g. new file).
+    pub expected_mtime: Option<u64>,
+    pub expected_size: Option<u64>,
+    /// Overwrite even when the disk version no longer matches `expected_*`.
+    pub force: bool,
 }
 
 #[derive(Debug, Serialize, Deserialize)]
 pub struct FsWriteResult {
     pub ok: bool,
+    /// Set when the write was rejected because the disk version changed since
+    /// the client's `expected_*`. The client should reload or force-overwrite.
+    pub conflict: bool,
+    /// Disk version after a successful write, or the current (conflicting) disk
+    /// version when `conflict` is set. The client adopts this as its new token.
+    pub mtime: Option<u64>,
+    pub size: u64,
+    /// Current on-disk content, populated only on `conflict`, so the client can
+    /// reload or merge without a second round trip.
+    pub current_content: Option<String>,
 }
 
 #[derive(Debug, Serialize, Deserialize)]

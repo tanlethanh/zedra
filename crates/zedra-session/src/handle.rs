@@ -402,14 +402,32 @@ impl SessionHandle {
             .await?)
     }
 
-    pub async fn fs_write(&self, path: &str, content: &str) -> Result<()> {
-        let _: FsWriteResult = self
+    /// Write `content` to `path` with optimistic concurrency. `expected` is the
+    /// `(mtime, size)` version the client last observed for this file (`None`
+    /// for a new file or a deliberate blind write). When the disk version no
+    /// longer matches, the returned [`FsWriteResult`] has `conflict: true` and
+    /// `current_content`; pass `force` to overwrite regardless. On success the
+    /// caller must adopt the returned `(mtime, size)` as its new token.
+    pub async fn fs_write(
+        &self,
+        path: &str,
+        content: &str,
+        expected: Option<(Option<u64>, u64)>,
+        force: bool,
+    ) -> Result<FsWriteResult> {
+        let (expected_mtime, expected_size) = match expected {
+            Some((mtime, size)) => (mtime, Some(size)),
+            None => (None, None),
+        };
+        Ok(self
             .call(FsWriteReq {
                 path: path.to_string(),
                 content: content.to_string(),
+                expected_mtime,
+                expected_size,
+                force,
             })
-            .await?;
-        Ok(())
+            .await?)
     }
 
     pub async fn fs_stat(&self, path: &str) -> Result<FsStatResult> {

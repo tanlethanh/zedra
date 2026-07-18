@@ -2753,19 +2753,26 @@ async fn dispatch(
                             content: String::new(),
                             too_large: false,
                             error: Some(e.to_string()),
+                            mtime: None,
+                            size: 0,
                         })
                         .await;
                     return Ok(());
                 }
             };
             const MAX_FILE_SIZE: u64 = 500 * 1024;
-            if std::fs::metadata(&path).map(|m| m.len()).unwrap_or(0) > MAX_FILE_SIZE {
+            // One stat drives the size guard and the (mtime, size) version token
+            // the client echoes on write for optimistic concurrency.
+            let stat = state.fs.stat(&path).ok();
+            if stat.as_ref().map(|s| s.size).unwrap_or(0) > MAX_FILE_SIZE {
                 let _ = msg
                     .tx
                     .send(FsReadResult {
                         content: String::new(),
                         too_large: true,
                         error: None,
+                        mtime: None,
+                        size: 0,
                     })
                     .await;
                 return Ok(());
@@ -2778,6 +2785,8 @@ async fn dispatch(
                             content,
                             too_large: false,
                             error: None,
+                            mtime: stat.as_ref().and_then(|s| s.modified),
+                            size: stat.as_ref().map(|s| s.size).unwrap_or(0),
                         })
                         .await;
                 }
@@ -2789,6 +2798,8 @@ async fn dispatch(
                             content: String::new(),
                             too_large: false,
                             error: Some(e.to_string()),
+                            mtime: None,
+                            size: 0,
                         })
                         .await;
                 }
@@ -2801,12 +2812,84 @@ async fn dispatch(
                 Ok(p) => p,
                 Err(e) => {
                     tracing::warn!("FsWrite: rejected path {:?}: {}", msg.path, e);
-                    let _ = msg.tx.send(FsWriteResult { ok: false }).await;
+                    let _ = msg
+                        .tx
+                        .send(FsWriteResult {
+                            ok: false,
+                            conflict: false,
+                            mtime: None,
+                            size: 0,
+                            current_content: None,
+                        })
+                        .await;
                     return Ok(());
                 }
             };
-            let ok = state.fs.write(&path, &msg.content).is_ok();
-            let _ = msg.tx.send(FsWriteResult { ok }).await;
+
+            // Optimistic concurrency: when the client supplied an expected
+            // (mtime, size), reject if the file on disk no longer matches it,
+            // unless `force`. A missing expected token (new file) skips the
+            // check. The client adopts the returned version after a successful
+            // write so its own next write does not self-conflict.
+            if !msg.force && (msg.expected_mtime.is_some() || msg.expected_size.is_some()) {
+                let current = state.fs.stat(&path).ok();
+                let cur_mtime = current.as_ref().and_then(|s| s.modified);
+                let cur_size = current.as_ref().map(|s| s.size);
+                let conflict = current.is_some()
+                    && (cur_mtime != msg.expected_mtime
+                        || Some(cur_size.unwrap_or(0)) != msg.expected_size);
+                if conflict {
+                    tracing::info!(
+                        "[debug:fs-conflict] FsWrite rejected for {:?}: expected ({:?},{:?}) disk ({:?},{:?})",
+                        path,
+                        msg.expected_mtime,
+                        msg.expected_size,
+                        cur_mtime,
+                        cur_size,
+                    );
+                    let current_content = state.fs.read(&path).ok();
+                    let _ = msg
+                        .tx
+                        .send(FsWriteResult {
+                            ok: false,
+                            conflict: true,
+                            mtime: cur_mtime,
+                            size: cur_size.unwrap_or(0),
+                            current_content,
+                        })
+                        .await;
+                    return Ok(());
+                }
+            }
+
+            match state.fs.write(&path, &msg.content) {
+                Ok(()) => {
+                    let stat = state.fs.stat(&path).ok();
+                    let _ = msg
+                        .tx
+                        .send(FsWriteResult {
+                            ok: true,
+                            conflict: false,
+                            mtime: stat.as_ref().and_then(|s| s.modified),
+                            size: stat.as_ref().map(|s| s.size).unwrap_or(0),
+                            current_content: None,
+                        })
+                        .await;
+                }
+                Err(e) => {
+                    tracing::warn!("FsWrite: write failed for {:?}: {}", path, e);
+                    let _ = msg
+                        .tx
+                        .send(FsWriteResult {
+                            ok: false,
+                            conflict: false,
+                            mtime: None,
+                            size: 0,
+                            current_content: None,
+                        })
+                        .await;
+                }
+            }
         }
 
         ZedraMessage::FsStat(msg) => {

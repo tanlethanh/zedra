@@ -236,13 +236,24 @@ Result types that carry `error: Option<String>`:
 `AgentResumeResult`, `LspDiagnosticsResult`.
 
 Types that use non-string status fields or enum variants instead:
-`FsWriteResult` (`ok: bool`), `GitCheckoutResult` (`ok: bool`), `FsWatchResult`/`FsUnwatchResult` (enum),
+`FsWriteResult` (`ok: bool` plus `conflict: bool`; see FsWrite optimistic concurrency), `GitCheckoutResult` (`ok: bool`), `FsWatchResult`/`FsUnwatchResult` (enum),
 `FsDocsTreeResult` (`error: Option<FsDocsTreeError>`).
 
 ### FsRead additional fields
 
 - `content`: file contents (empty on error or when `too_large`)
 - `too_large`: true when file exceeds the 500 KB limit
+- `mtime` / `size`: on-disk version at read time (mtime in seconds since epoch, byte size). Together they form the optimistic-concurrency token the client echoes on `FsWrite`. Both zero/`None` on error or when `too_large`.
+
+### FsWrite optimistic concurrency
+
+Editing reuses the stat-based external-change detection used by Vim, VS Code, and Zed (mtime + size, not content hashing).
+
+- `expected_mtime` / `expected_size`: the `(mtime, size)` the client last observed for the path (from `FsRead` or a prior successful `FsWrite`). Send both `None` to skip the check — a blind write for new files or deliberate overwrites.
+- `force`: write even when the disk version no longer matches `expected_*`.
+- The host stats the path before writing. When an `expected_*` token is present, the file exists, and its current `(mtime, size)` differs, the host rejects the write with `conflict: true` and returns the current `mtime`, `size`, and `current_content` so the client can reload or merge without another round trip.
+- On success the host returns the new `(mtime, size)`. The client must adopt it as its token before the next write, or its own subsequent write will self-conflict.
+- mtime is second-granular, so a same-size edit within the same second as the recorded version is not detected. This matches the accepted precision of stat-based editors and is sufficient for human-paced editing.
 
 ### FsList paging conventions
 
