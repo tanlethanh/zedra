@@ -590,8 +590,9 @@ or beyond.
 3. Expected: partial movements accumulate into steady scrolling; content does not bounce or translate back between remote redraws
 4. Drag quickly through about one screen of content
 5. Expected: the TUI follows the finger at roughly one terminal row per row of drag, without catching up in a burst after the drag
-6. Repeat in both directions and with the software keyboard visible
-7. Expected: scrolling remains responsive without dismissing the keyboard or changing terminal focus
+6. Expected: each remote redraw appears as one complete frame without intermediate partial-screen redraws
+7. Repeat in both directions and with the software keyboard visible
+8. Expected: scrolling remains responsive without dismissing the keyboard or changing terminal focus
 
 ## 4. Reconnect After Host Restart
 
