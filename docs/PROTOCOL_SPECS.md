@@ -275,8 +275,8 @@ Types that use non-string status fields or enum variants instead:
 - `data` carries the raw binary payload (`serde_bytes`); `extension` is the lowercase file extension without a leading dot.
 - The host, not the client, chooses the destination path — `path` in `FsUploadReq` does not exist. This makes path-jail escapes structurally impossible.
 - The host rejects payloads over `FS_UPLOAD_MAX_BYTES` (8 MiB, well under irpc's 16 MiB message cap) and extensions outside the allowlist `jpg`, `jpeg`, `png`, `webp`, `gif`.
-- Accepted uploads are written to `~/.zedra/uploads/<unix_seconds>-<uuid_v4>.<ext>` on the host, returned as an absolute path in `FsUploadResult::path`. Home-level (not workspace-scoped) keeps transient paste input out of every git repo and gives one predictable location, mirroring how coding agents cache pasted images. The tradeoff: an agent reading the absolute path may prompt once for an out-of-workspace read.
-- The host sweeps `~/.zedra/uploads/` on startup and periodically thereafter, deleting files older than a fixed grace period (~7 days).
+- Accepted uploads are written to Zedra's cache directory under `uploads/<unix_seconds>-<uuid_v4>.<ext>` and returned as an absolute path in `FsUploadResult::path`. Unix hosts use `~/.cache/zedra/uploads/`; Windows uses the local app-data cache. Host-level (not workspace-scoped) storage keeps transient paste input out of every git repo. The tradeoff: an agent reading the absolute path may prompt once for an out-of-workspace read.
+- On startup, the host runs one background sweep that deletes uploads older than a fixed grace period (~7 days). A non-blocking process lock prevents concurrent Zedra daemons from sweeping the cache together.
 - Clients treat an RPC-level decode failure against an older host as "unsupported" and stop calling `FsUpload` for that connection, same as the `FsSearch` downgrade behavior.
 
 ### FsWatch/FsUnwatch result enums

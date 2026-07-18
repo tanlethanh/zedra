@@ -1108,7 +1108,7 @@ async fn main() -> Result<()> {
                     }
                 });
             }
-            tokio::spawn(uploads::run_cleanup_loop());
+            uploads::spawn_startup_cleanup();
 
             // 1. Bind iroh endpoint with configured relay URLs.
             let endpoint_relay_urls: Vec<String> = if relay_url.is_empty() {

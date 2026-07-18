@@ -1596,7 +1596,7 @@ id in production). The trailing shows the aggregate `done/total` rollup.
 4. Expected: a native progress HUD (spinner + "Uploading image…") appears
    near the top of the screen — non-blocking, the terminal underneath stays
    scrollable/interactive — then an absolute host path like
-   `/Users/<you>/.zedra/uploads/<digits>-<uuid>.jpg` is inserted at the cursor
+   `/Users/<you>/.cache/zedra/uploads/<digits>-<uuid>.jpg` is inserted at the cursor
    with a trailing space, and the HUD disappears.
 5. While the HUD is visible, try scrolling or tapping the terminal.
 6. Expected: it responds normally — the HUD never intercepts touches.
@@ -1629,14 +1629,15 @@ id in production). The trailing shows the aggregate `done/total` rollup.
 1. Point the app at a host binary built before this feature and repeat the
    Upload flow.
 2. Expected: an alert appears telling the user to update the Zedra host; no crash.
-3. On a current host, manually age a file under `~/.zedra/uploads/` past the
+3. On a current macOS host, manually age a file under
+   `~/.cache/zedra/uploads/` past the
    cleanup grace period (or reduce the grace period locally for testing) and
    restart the host daemon.
 4. Expected: the stale file is removed on startup; recently-uploaded files are
    left alone.
 5. Run `git status` in the workspace after uploading a few images.
-6. Expected: nothing upload-related appears — uploads live in `~/.zedra/uploads/`,
-   outside every repo.
+6. Expected: nothing upload-related appears — uploads live in Zedra's cache
+   directory, outside every repo.
 
 ## 25. GPUI Devtool on iOS (shared `gpui_devtool` crate)
 
