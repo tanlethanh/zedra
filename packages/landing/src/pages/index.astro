@@ -1,4 +1,14 @@
 ---
+import { Picture } from "astro:assets";
+
+import codeEditorImg from "../assets/demo/code-editor.png";
+import fileExplorerSearchImg from "../assets/demo/file-explorer-search.png";
+import gitImg from "../assets/demo/git.png";
+import manageAgentsImg from "../assets/demo/manage-agents.png";
+import markdownImg from "../assets/demo/markdown.png";
+import remoteTerminalImg from "../assets/demo/remote-terminal.png";
+import { baseSchemas } from "../seo";
+
 // Each tab has blocks[]. Each block has lines[] and gets its own copy button.
 // Copy text = non-comment lines joined by \n.
 const installTabs = [
@@ -20,7 +30,7 @@ const installTabs = [
     label: "windows",
     icon: `<svg class="tab-icon" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><path d="M3 5.4 10.6 4.3v7.2H3V5.4Zm8.6-1.2L21 2.8v8.7h-9.4V4.2ZM3 12.5h7.6v7.2L3 18.6v-6.1Zm8.6 0H21v8.7l-9.4-1.4v-7.3Z"></path></svg>`,
     blocks: [
-      [{ text: 'powershell -c "irm zedra.dev/install.ps1 | iex"' }],
+      [{ text: "irm https://zedra.dev/install.ps1 | iex" }],
       [{ text: "# Install agent hooks for notification", comment: true }, { text: "zedra setup" }],
       [
         { text: "# Start daemon in working directory", comment: true },
@@ -71,7 +81,7 @@ const installTabs = [
 
 const storeLinks = [
   {
-    href: "https://apps.apple.com/vn/app/zedra-code-from-anywhere/id6760534630",
+    href: "https://apps.apple.com/app/zedra-code-from-anywhere/id6760534630",
     className: "store-btn",
     ariaLabel: "Get Zedra on the App Store",
     analyticsName: "ios",
@@ -80,14 +90,20 @@ const storeLinks = [
     subtitle: "iOS",
   },
   {
-    href: "https://groups.google.com/g/zedra-beta",
+    href: "https://play.google.com/store/apps/details?id=dev.zedra.app",
     className: "store-btn",
-    ariaLabel: "Join Zedra Android closed testing",
+    ariaLabel: "Get Zedra on Google Play",
     analyticsName: "android",
     icon: `<svg class="store-icon" fill="currentColor" role="img" viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg"><title>Google Play</title><path d="M22.018 13.298l-3.919 2.218-3.515-3.493 3.543-3.521 3.891 2.202a1.49 1.49 0 0 1 0 2.594zM1.337.924a1.486 1.486 0 0 0-.112.568v21.017c0 .217.045.419.124.6l11.155-11.087L1.337.924zm12.207 10.065l3.258-3.238L3.45.195a1.466 1.466 0 0 0-.946-.179l11.04 10.973zm0 2.067l-11 10.933c.298.036.612-.016.906-.183l13.324-7.54-3.23-3.21z"/></svg>`,
-    title: "Android Beta",
-    subtitle: "Closed testing",
+    title: "Google Play",
+    subtitle: "Android",
   },
+];
+
+const downloadLinks = [
+  { href: "https://github.com/tanlethanh/zedra", label: "GitHub", external: true },
+  { href: "https://discord.gg/39MmkSS8sc", label: "Discord", external: true },
+  { href: "/docs", label: "Docs" },
 ];
 
 const socialLinks = [
@@ -112,10 +128,154 @@ const socialLinks = [
 ];
 
 const demoVideo = "/zedra-demo-17-06.mp4";
+const demoImageFormats = ["webp", "avif"] as const;
+const demoImageWidths = [460, 680, 920, 1360];
+const demoImageSizes = "(max-width: 900px) min(460px, calc(100vw - 24px)), 680px";
+const demoImageQuality = 100;
+
+const supportedAgents = [
+  { name: "Claude Code", href: "/claude-code" },
+  { name: "Codex", href: "/codex" },
+  { name: "OpenCode", href: "/opencode" },
+  { name: "Pi" },
+  { name: "Hermes" },
+];
+
+// Each feature drives one demo slide in the scrolly panel.
+// Demo captions are placeholders until real device captures land.
+// Icons are inline Lucide SVGs (stroke, currentColor).
+const lucide = (paths: string) =>
+  `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">${paths}</svg>`;
+
+const features = [
+  {
+    title: "Remote terminal",
+    icon: lucide('<polyline points="4 17 10 11 4 5"/><line x1="12" x2="20" y1="19" y2="19"/>'),
+    body: "Run Claude Code, Codex, OpenCode, or any CLI in a real terminal on your machine. Type, scroll history, and answer approval prompts as they appear.",
+    demo: "terminal: agent running, approval prompt on screen",
+    demoImg: remoteTerminalImg,
+  },
+  {
+    title: "Manage agents",
+    icon: lucide(
+      '<path d="M12 8V4H8"/><rect width="16" height="12" x="4" y="8" rx="2"/><path d="M2 14h2"/><path d="M20 14h2"/><path d="M15 13v2"/><path d="M9 13v2"/>'
+    ),
+    body: "See every agent across your workspaces: what is running, what needs you, current usage, and recent sessions you can resume.",
+    demo: "agents: usage card and session history",
+    demoImg: manageAgentsImg,
+  },
+  {
+    title: "File browser & search",
+    icon: lucide(
+      '<path d="M10.7 20H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h3.9a2 2 0 0 1 1.69.9l.81 1.2a2 2 0 0 0 1.67.9H20a2 2 0 0 1 2 2v4.1"/><circle cx="17" cy="17" r="3"/><path d="m21 21-1.5-1.5"/>'
+    ),
+    body: "Browse the repo tree, search across files, and get a docs tree for quick access to the files agents reference most.",
+    demo: "file browser: repo tree, search open",
+    demoImg: fileExplorerSearchImg,
+  },
+  {
+    title: "Code editor",
+    icon: lucide('<polyline points="16 18 22 12 16 6"/><polyline points="8 6 2 12 8 18"/>'),
+    body: "Read code with highlighting, GPU scrolling, native selection, and code mentions back to agent chat.",
+    demo: "editor: the file the agent just changed",
+    demoImg: codeEditorImg,
+  },
+  {
+    title: "Git view",
+    icon: lucide(
+      '<circle cx="18" cy="18" r="3"/><circle cx="6" cy="6" r="3"/><path d="M13 6h3a2 2 0 0 1 2 2v7"/><path d="M11 18H8a2 2 0 0 1-2-2V9"/>'
+    ),
+    body: "Review the agent's changes file by file, with staged and unstaged diffs ready before you commit.",
+    demo: "git diff: staged and unstaged changes",
+    demoImg: gitImg,
+  },
+  {
+    title: "Markdown preview",
+    icon: lucide(
+      '<path d="M15 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V7Z"/><path d="M14 2v4a2 2 0 0 0 2 2h4"/><path d="M10 9H8"/><path d="M16 13H8"/><path d="M16 17H8"/>'
+    ),
+    body: "Read docs, plans, specs, and agent reports as rendered Markdown, with Mermaid diagrams, tables, and code blocks.",
+    demo: "markdown: a plan rendered for reading",
+    demoImg: markdownImg,
+  },
+];
+
+// How-it-works: name the client/server split, then demystify by negation.
+// The diagram itself is drawn on <canvas id="arch-canvas"> (see script below).
+const howRows = [
+  {
+    title: "Pair once",
+    body: "Scan a QR code once to register public keys on both devices. After that, reconnects use PKI auth without another QR.",
+  },
+  {
+    title: "Stream the workspace",
+    body: "A tailored, end-to-end encrypted protocol multiplexes terminal frames, files, diffs, and control messages on demand.",
+  },
+  {
+    title: "Reconnect anywhere",
+    body: "Leave Wi-Fi or switch networks. Zedra redials the same machine, and your sessions persist across reconnects.",
+  },
+];
+
+const techPillars = [
+  {
+    title: "Agent neutral",
+    body: "Bring any agent. Terminal agents work by default; first-class integrations add notifications, usage, history, and code mentions.",
+  },
+  {
+    title: "P2P by default",
+    body: "Direct by default over outbound-only QUIC/UDP. End-to-end encrypted, with relay fallback when networks block the path.",
+  },
+  {
+    title: "GPUI on mobile",
+    body: "Zed's GPUI on mobile, built for high-performance code editing and terminal rendering without a webview.",
+  },
+  {
+    title: "Open toolbox",
+    body: "MIT-licensed, inspectable, and customizable enough to become part of your own developer toolbox.",
+  },
+];
+
+const faqItems = [
+  {
+    q: "Which coding agents does Zedra support?",
+    a: "First-class setup exists for Claude Code, Codex, OpenCode, Pi, and Hermes. Anything that runs in a terminal also runs in Zedra.",
+  },
+  {
+    q: "Do I need a VPN or port forwarding?",
+    a: "No. Pair by QR once; Zedra connects directly when possible and uses an encrypted relay when blocked. Tailscale works too, as one extra WireGuard layer with some latency cost.",
+  },
+  {
+    q: "Is my code sent to a cloud server?",
+    a: "No. Your code and agents stay on your machine. Relays only forward encrypted packets they cannot read.",
+  },
+  {
+    q: "How is Zedra different from an SSH app?",
+    a: "SSH gives you a terminal. Zedra adds the workspace around it: files, editor, diffs, markdown preview, and push notifications. See zedra.dev/compare.",
+  },
+  {
+    q: "Is Zedra free?",
+    a: "Yes. Zedra is free and open source today. Hosted conveniences may become paid later; the core workspace stays free.",
+  },
+  {
+    q: "What happens when I lose connection?",
+    a: "Sessions live on your machine. Zedra reconnects, restores the terminal backlog, and picks up where you left off.",
+  },
+];
+
+const faqSchema = {
+  "@context": "https://schema.org",
+  "@type": "FAQPage",
+  mainEntity: faqItems.map((item) => ({
+    "@type": "Question",
+    name: item.q,
+    acceptedAnswer: { "@type": "Answer", text: item.a.replace(/`/g, "") },
+  })),
+};
 
 const pageTitle = "Zedra — Remote control for AI coding agents";
 const pageDescription =
-  "Zedra is a remote control for AI coding agents with terminal, editor, markdown, and git. Pair by QR for a direct, secure tunnel. No VPN or port forwarding.";
+  "Remote control for AI coding agents, with a dev workspace on your phone: terminal, editor, markdown, and git diff. Pair by QR for a direct encrypted tunnel. No VPN.";
 const canonicalUrl = "https://zedra.dev/";
 ---
 
@@ -153,6 +313,12 @@ const canonicalUrl = "https://zedra.dev/";
     <link rel="icon" type="image/svg+xml" href="/favicon.svg" />
     <link rel="icon" type="image/png" href="/favicon-192.png" sizes="192x192" />
     <link rel="apple-touch-icon" href="/apple-touch-icon.png" />
+    <script is:inline>
+      // Mark JS available synchronously so the scroll-reveal CSS can hide
+      // pre-reveal content before first paint, with no flash, and without
+      // risk of leaving it invisible if the late body script fails to run.
+      document.documentElement.classList.add("js");
+    </script>
     <link rel="preconnect" href="https://fonts.googleapis.com" />
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
     <script
@@ -166,9 +332,19 @@ const canonicalUrl = "https://zedra.dev/";
         applicationCategory: "DeveloperApplication",
         operatingSystem: "iOS, Android",
         offers: { "@type": "Offer", price: "0", priceCurrency: "USD" },
-        author: { "@type": "Organization", name: "Zedra", url: canonicalUrl },
+        author: { "@id": "https://zedra.dev/#organization" },
+        publisher: { "@id": "https://zedra.dev/#organization" },
+        sameAs: [
+          "https://github.com/tanlethanh/zedra",
+          "https://x.com/zedradev",
+          "https://discord.gg/39MmkSS8sc",
+          "https://apps.apple.com/app/zedra-code-from-anywhere/id6760534630",
+          "https://play.google.com/store/apps/details?id=dev.zedra.app",
+        ],
       })}
     />
+    {baseSchemas.map((schema) => <script type="application/ld+json" set:html={JSON.stringify(schema)} />)}
+    <script type="application/ld+json" set:html={JSON.stringify(faqSchema)} />
     <style>
       @import url("https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500;600&family=Lora:wght@400&display=swap");
 
@@ -183,6 +359,7 @@ const canonicalUrl = "https://zedra.dev/";
         --border: rgba(255, 255, 255, 0.08);
         --border-strong: rgba(255, 255, 255, 0.14);
         --text: #f3f4f6;
+        --text-secondary: #c2c2c8;
         --muted: #59595e;
         --green: #3dd68c;
       }
@@ -191,21 +368,64 @@ const canonicalUrl = "https://zedra.dev/";
       body {
         margin: 0;
         min-height: 100%;
-        background: var(--bg);
         color: var(--text);
         font-family: "IBM Plex Mono", "SF Mono", "Fira Code", monospace;
+      }
+
+      /* bg lives on html only: an opaque body background would paint over
+         the fixed z-index:-1 shader canvas */
+      html {
+        background: var(--bg);
       }
 
       body {
         padding: 32px 32px 0px;
       }
 
+      /* Smooth in-page anchor jumps only when the user opts into motion. */
+      @media (prefers-reduced-motion: no-preference) {
+        html {
+          scroll-behavior: smooth;
+        }
+      }
+
+      /* Scroll-reveal: blocks fade + lift in as they enter the viewport.
+         Reduced-motion users see content immediately with no transition.
+         Gated on .js (set synchronously in <head> below) so content stays
+         visible if scripts fail to load. */
+      @media (prefers-reduced-motion: no-preference) {
+        html.js [data-reveal] {
+          opacity: 0;
+          transform: translateY(16px);
+          transition:
+            opacity 0.6s cubic-bezier(0.22, 1, 0.36, 1),
+            transform 0.6s cubic-bezier(0.22, 1, 0.36, 1);
+          transition-delay: var(--reveal-delay, 0ms);
+          will-change: opacity, transform;
+        }
+
+        html.js [data-reveal].is-visible {
+          opacity: 1;
+          transform: none;
+        }
+      }
+
+      /* dim animated shader backdrop; sits behind the page content */
+      #bg-shader {
+        position: fixed;
+        inset: 0;
+        width: 100vw;
+        height: 100vh;
+        z-index: -1;
+        pointer-events: none;
+      }
+
       .page {
         max-width: 1280px;
         margin: 0 auto;
         min-height: calc(100vh - 32px);
-        display: grid;
-        grid-template-rows: 1fr auto;
+        display: flex;
+        flex-direction: column;
         gap: 32px;
       }
 
@@ -236,6 +456,610 @@ const canonicalUrl = "https://zedra.dev/";
         grid-template-columns: minmax(0, 1.05fr) minmax(360px, 0.95fr);
         gap: 32px;
         align-items: stretch;
+        min-height: calc(100vh - 96px);
+      }
+
+      /* --- content sections below the hero ---
+         Idiom: hairline rules + whitespace, no filled cards. Section
+         markers read as terminal comments; h2 uses the logo serif. */
+
+      /* sections share the hero's full content width (.page max-width) */
+      .section {
+        display: grid;
+        gap: 20px;
+        padding: 112px 0 80px;
+        border-top: 1px solid var(--border);
+        width: 100%;
+      }
+
+      .section-label {
+        margin: 0;
+        color: var(--muted);
+        font-size: 13px;
+      }
+
+      .section-label::before {
+        content: "# ";
+      }
+
+      .section h2 {
+        margin: 0;
+        font-family: "Lora", Georgia, serif;
+        font-weight: 400;
+        font-size: clamp(32px, 4vw, 44px);
+        line-height: 1.15;
+        letter-spacing: 0.01em;
+      }
+
+      .section > p,
+      .section .lede {
+        margin: 0;
+        color: var(--muted);
+        font-size: 17px;
+        line-height: 1.75;
+        max-width: 700px;
+      }
+
+      /* centered section variant (how-it-works) */
+      .section-center {
+        justify-items: center;
+        text-align: center;
+      }
+
+      .section-center > p,
+      .section-center .lede {
+        margin: 0 auto;
+      }
+
+      /* generic two-column: text | visual */
+      .two-col {
+        display: grid;
+        grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+        gap: 64px;
+        align-items: center;
+      }
+
+      .two-col .col-text {
+        display: grid;
+        gap: 20px;
+        align-content: start;
+      }
+
+      .two-col canvas {
+        display: block;
+        width: 100%;
+      }
+
+      .section a {
+        color: var(--text);
+        text-decoration: underline;
+        text-underline-offset: 3px;
+        text-decoration-color: var(--muted);
+      }
+
+      .section a:hover {
+        text-decoration-color: var(--text);
+      }
+
+      .agent-notes {
+        margin: 0;
+        padding: 0;
+        list-style: none;
+        display: grid;
+        gap: 10px;
+        max-width: 640px;
+      }
+
+      .agent-notes li {
+        position: relative;
+        padding-left: 22px;
+        color: var(--muted);
+        font-size: 14.5px;
+        line-height: 1.7;
+      }
+
+      /* lighter body copy for the agents section specifically */
+      section[aria-labelledby="agents-heading"] .lede,
+      section[aria-labelledby="agents-heading"] .agent-notes li {
+        color: var(--text-secondary);
+      }
+
+      .agent-notes li::before {
+        content: "#";
+        position: absolute;
+        left: 0;
+        color: var(--green);
+      }
+
+      .agents-row {
+        display: flex;
+        flex-wrap: wrap;
+        column-gap: 8px;
+        row-gap: 6px;
+        margin: 0;
+        padding: 0;
+        list-style: none;
+        font-size: 15px;
+      }
+
+      .agents-row li + li::before {
+        content: "/";
+        color: var(--muted);
+        margin-right: 8px;
+      }
+
+      .agents-row a {
+        text-decoration: none;
+        color: var(--text);
+        border-bottom: 1px solid var(--border-strong);
+        padding-bottom: 1px;
+      }
+
+      .agents-row a:hover {
+        border-bottom-color: var(--text);
+      }
+
+      .agents-row .agent-plain {
+        color: var(--muted);
+      }
+
+      /* scrolly: big sticky demo on the left, header + feature steps right */
+      .scrolly {
+        display: grid;
+        grid-template-columns: minmax(320px, 45%) minmax(0, 1fr);
+        gap: 64px;
+        align-items: start;
+        width: 100%;
+        margin-top: 8px;
+        /* section-center (parent) centers text; feature copy reads left.
+           (justify-items:start here would collapse the two columns below
+           to their content width instead of stretching — width:100% above
+           already neutralizes the parent's centering for .scrolly itself.) */
+        text-align: left;
+      }
+
+      /* compact header above the feature steps */
+      .ws-head {
+        display: grid;
+        gap: 10px;
+        padding: 8px 0;
+      }
+
+      .ws-head h2 {
+        font-size: clamp(28px, 3vw, 38px);
+      }
+
+      .ws-head .lede {
+        font-size: 16px;
+      }
+
+      .scrolly-steps {
+        display: grid;
+      }
+
+      .scrolly-step {
+        display: grid;
+        gap: 14px;
+        align-content: center;
+        min-height: 700px;
+        padding: 26px 0;
+        opacity: 0.3;
+        transition: opacity 0.3s;
+      }
+
+      .scrolly-step:first-child {
+        border-top: none;
+        /* small extra runway before/after first and last step */
+        margin-top: 60px;
+      }
+
+      .scrolly-step:last-child {
+        margin-bottom: 60px;
+      }
+
+      .scrolly-step.active {
+        opacity: 1;
+      }
+
+      /* Eased step activation: active steps settle in with a small lift,
+         inactive ones recede slightly. Reduced-motion keeps the original
+         opacity-only crossfade. */
+      @media (prefers-reduced-motion: no-preference) {
+        .scrolly-step {
+          transition:
+            opacity 0.45s cubic-bezier(0.22, 1, 0.36, 1),
+            transform 0.45s cubic-bezier(0.22, 1, 0.36, 1);
+          transform: translateY(10px);
+        }
+
+        .scrolly-step.active {
+          transform: none;
+        }
+
+        /* Feature text entering: each step's title and body slide + fade in
+           when the step scrolls into view (via data-reveal), not when .active
+           flips — so the first step (active from load) still animates on
+           scroll-into-view. Smaller lift than the generic reveal. */
+        html.js .scrolly-step .step-title,
+        html.js .scrolly-step > p {
+          opacity: 0;
+          transform: translateY(8px);
+          transition:
+            opacity 0.5s cubic-bezier(0.22, 1, 0.36, 1),
+            transform 0.5s cubic-bezier(0.22, 1, 0.36, 1);
+          transition-delay: var(--reveal-delay, 0ms);
+        }
+
+        html.js .scrolly-step .step-title.is-visible,
+        html.js .scrolly-step > p.is-visible {
+          opacity: 1;
+          transform: none;
+        }
+      }
+
+      .step-title {
+        display: flex;
+        align-items: center;
+        gap: 16px;
+      }
+
+      .step-title :global(svg) {
+        width: 26px;
+        height: 26px;
+        flex: none;
+        color: var(--green);
+      }
+
+      .scrolly-step h3 {
+        margin: 0;
+        font-family: "Lora", Georgia, serif;
+        font-weight: 400;
+        font-size: clamp(24px, 2.6vw, 30px);
+        letter-spacing: 0.01em;
+      }
+
+      .scrolly-step p {
+        margin: 0;
+        color: var(--text-secondary);
+        font-size: 16px;
+        line-height: 1.75;
+        max-width: 520px;
+      }
+
+      /* per-step screenshot: hidden on desktop (the sticky demo shows it);
+         revealed inline under each step on narrow screens where the sticky
+         demo column is display:none. */
+      .step-img {
+        display: none;
+      }
+
+      /* sticky at viewport center. NOTE: top:50% + translateY(-50%) looks
+         like the standard centering trick but is wrong here — the
+         translateY applies unconditionally, even before the element is
+         actually stuck (while it's still in normal flow near the top of
+         its own section), permanently dragging it up by half its own
+         height into whatever content sits above the section. Pin the box
+         to the viewport with top:0 + height:100vh instead, and center the
+         content inside it with flexbox — no transform, no premature shift. */
+      /* Fixed top offset, not a height:100vh + flex-center box. The
+         100vh-box-with-centered-content trick only looks centered-in-
+         viewport once sticky has actually pinned top:0 to the viewport
+         edge. Before that engages — while this box is still in normal
+         flow, sharing the initial viewport with the non-sticky header
+         above it — the box centers content relative to its OWN top
+         (below the header), so the phone rendered far down inside the
+         visible slice. Not a spacing bug; a mismatch between the
+         technique and having non-sticky content above it. A plain fixed
+         offset has no such transitional state. */
+      /* top is computed in JS to actually center the frame in the current
+         viewport (see scroll script below) — a fixed px looks fine on a
+         laptop screen but sits near the top with dead space below it on
+         a tall monitor; a height:100vh + flex-center box centers exactly
+         while stuck, but centers relative to its OWN top while still in
+         normal flow (before sticky engages), which — since it shares the
+         initial viewport with the non-sticky header above it — rendered
+         the phone far down with a large dead gap above it. Computing the
+         exact top offset needed for viewport-centering and applying it as
+         a plain sticky offset avoids both failure modes. This value is
+         the fallback before JS runs.
+      */
+      .scrolly-demo {
+        position: sticky;
+        top: 100px;
+      }
+
+      /* no fake device bezel — captures already carry their own chrome.
+         aspect-ratio matches the widest current capture (manage-agents-2,
+         1372x1921) so images show uncropped; widened + more flexible so it
+         scales with the column instead of pinning to a narrow phone shape. */
+      .demo-frame {
+        position: relative;
+        aspect-ratio: 1372 / 1921;
+        width: 100%;
+        max-width: 680px;
+        margin: 0 auto;
+        overflow: hidden;
+      }
+
+      .demo-slide {
+        position: absolute;
+        inset: 0;
+        display: grid;
+        align-content: center;
+        justify-items: center;
+        gap: 8px;
+        padding: 20px;
+        text-align: center;
+        opacity: 0;
+        transition: opacity 0.35s;
+      }
+
+      .demo-slide.active {
+        opacity: 1;
+      }
+
+      /* Eased slide crossfade: the active capture eases in with a faint
+         settle, inactive ones drift back. Reduced-motion falls back to the
+         plain opacity crossfade above. */
+      @media (prefers-reduced-motion: no-preference) {
+        .demo-slide {
+          transition:
+            opacity 0.45s cubic-bezier(0.22, 1, 0.36, 1),
+            transform 0.45s cubic-bezier(0.22, 1, 0.36, 1);
+          transform: scale(0.985);
+        }
+
+        .demo-slide.active {
+          transform: none;
+        }
+      }
+
+      /* real device captures fill the frame edge-to-edge, no padding.
+         align-content/justify-items:center (inherited above) sizes a grid
+         item to its own content instead of stretching it — override to
+         stretch or the image renders smaller than the frame with visible
+         gaps around it. */
+      .demo-slide.has-img {
+        padding: 0;
+        gap: 0;
+        align-content: stretch;
+        justify-items: stretch;
+      }
+
+      .demo-slide.has-img picture,
+      .demo-slide.has-img img {
+        width: 100%;
+        height: 100%;
+        display: block;
+      }
+
+      .demo-slide.has-img img {
+        /* contain, not cover: all slides share one frame box but each
+           capture has its own native aspect ratio — cover cropped whatever
+           didn't match (cut straight through the keyboard on the terminal
+           shot). Contain always shows the full image; empty space reveals
+           the cosmic background instead of clipping content. */
+        object-fit: contain;
+        object-position: center;
+      }
+
+      .demo-label {
+        font-size: 13px;
+        line-height: 1.6;
+        color: var(--text);
+      }
+
+      .demo-label::before {
+        content: "# ";
+        color: var(--green);
+      }
+
+      .demo-caption {
+        font-size: 12px;
+        color: var(--muted);
+      }
+
+      #rev-canvas {
+        display: block;
+        width: 100%;
+      }
+
+      /* how-it-works breakdown table */
+      .how-table {
+        width: 100%;
+        max-width: 720px;
+        border-collapse: collapse;
+        text-align: left;
+        margin-top: 8px;
+      }
+
+      .how-table th {
+        width: 220px;
+        padding: 12px 28px 12px 0;
+        font-size: 15px;
+        font-weight: 500;
+        vertical-align: top;
+        border-top: 1px solid var(--border);
+      }
+
+      .how-table td {
+        padding: 12px 0;
+        color: var(--muted);
+        font-size: 14.5px;
+        line-height: 1.55;
+        border-top: 1px solid var(--border);
+      }
+
+      .how-table tr:first-child th,
+      .how-table tr:first-child td {
+        border-top: none;
+      }
+
+      .section > p.how-links {
+        font-size: 14px;
+      }
+
+      .feature-list {
+        display: grid;
+      }
+
+      .feature-row {
+        display: grid;
+        grid-template-columns: 220px 1fr;
+        gap: 24px;
+        padding: 14px 0;
+        border-top: 1px solid var(--border);
+      }
+
+      .feature-row:first-child {
+        border-top: none;
+        padding-top: 0;
+      }
+
+      .feature-row h3 {
+        margin: 0;
+        font-size: 16px;
+        font-weight: 500;
+      }
+
+      .feature-row p {
+        margin: 0;
+        color: var(--muted);
+        font-size: 15px;
+        line-height: 1.7;
+        max-width: 600px;
+      }
+
+      /* how-it-works animated diagram: phone ⇄ tunnel ⇄ desktop on canvas */
+      section[aria-labelledby="how-heading"] {
+        gap: 12px;
+      }
+
+      .arch-wrap {
+        width: 100%;
+        margin: 0 0 4px;
+      }
+
+      .arch-wrap canvas {
+        display: block;
+        width: 100%;
+        color: var(--muted);
+        font-size: 14px;
+      }
+
+      .faq-list {
+        display: grid;
+        max-width: 900px;
+      }
+
+      .faq-list details {
+        border-top: 1px solid var(--border);
+      }
+
+      .faq-list details:first-child {
+        border-top: none;
+      }
+
+      .faq-list summary {
+        cursor: pointer;
+        font-size: 16px;
+        padding: 20px 0;
+        list-style: none;
+        display: flex;
+        align-items: baseline;
+        gap: 12px;
+      }
+
+      .faq-list summary::-webkit-details-marker {
+        display: none;
+      }
+
+      .faq-list summary::before {
+        content: "+";
+        color: var(--muted);
+        flex-shrink: 0;
+      }
+
+      .faq-list details[open] summary::before {
+        content: "−";
+      }
+
+      .faq-list summary:hover {
+        color: var(--green);
+      }
+
+      .faq-list p {
+        margin: 0;
+        padding: 0 0 22px 30px;
+        color: var(--muted);
+        font-size: 15px;
+        line-height: 1.75;
+        max-width: 780px;
+      }
+
+      @media (max-width: 900px) {
+        .feature-row {
+          grid-template-columns: 1fr;
+          gap: 6px;
+        }
+
+        /* no sticky demo on small screens; steps read as a plain list */
+        .scrolly {
+          grid-template-columns: 1fr;
+        }
+
+        .scrolly-demo {
+          display: none;
+        }
+
+        .scrolly-step {
+          min-height: 0;
+          padding: 20px 0;
+          opacity: 1;
+        }
+
+        /* On mobile, steps read as a plain list — the data-reveal observer
+           still fires on scroll, so text enters naturally per step. No
+           override needed; the html.js guard covers the no-JS case. */
+
+        .step-img {
+          display: block;
+          width: 100%;
+          max-width: 460px;
+          height: auto;
+          margin-top: 4px;
+          border-radius: 12px;
+        }
+
+        .ws-head {
+          padding: 0 0 8px;
+        }
+
+        .two-col {
+          grid-template-columns: 1fr;
+          gap: 32px;
+        }
+
+        .how-table th {
+          width: auto;
+          display: block;
+          padding: 18px 0 4px;
+        }
+
+        .how-table td {
+          display: block;
+          padding: 0 0 18px;
+          border-top: none;
+        }
+
+        .how-table tr {
+          display: block;
+          border-top: 1px solid var(--border);
+        }
+
+        .how-table tr:first-child {
+          border-top: none;
+        }
       }
 
       .left {
@@ -269,7 +1093,7 @@ const canonicalUrl = "https://zedra.dev/";
         margin: 0;
         max-width: 620px;
         color: var(--muted);
-        font-size: 16px;
+        font-size: 18px;
         line-height: 1.75;
       }
 
@@ -390,11 +1214,13 @@ const canonicalUrl = "https://zedra.dev/";
           color 0.15s;
       }
 
-      .install-block:hover .copy-btn {
+      .install-block:hover .copy-btn,
+      .install-block:focus-within .copy-btn {
         opacity: 1;
       }
 
-      .copy-btn:hover {
+      .copy-btn:hover,
+      .copy-btn:focus-visible {
         color: var(--text);
       }
 
@@ -432,7 +1258,7 @@ const canonicalUrl = "https://zedra.dev/";
         padding: 9px 12px;
         border-radius: 8px;
         border: 1px solid var(--border);
-        background: rgba(255, 255, 255, 0.02);
+        background: #111112;
         color: var(--text);
         text-decoration: none;
         font-weight: 500;
@@ -459,6 +1285,29 @@ const canonicalUrl = "https://zedra.dev/";
       .store-copy strong {
         font-size: 14px;
         color: var(--text);
+      }
+
+      .download-links {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 10px 18px;
+        margin-top: 12px;
+        font-size: 13px;
+      }
+
+      .download-links a {
+        color: var(--muted);
+        text-decoration: underline;
+        text-underline-offset: 4px;
+        text-decoration-color: rgba(255, 255, 255, 0.18);
+        transition:
+          color 0.18s,
+          text-decoration-color 0.18s;
+      }
+
+      .download-links a:hover {
+        color: var(--text);
+        text-decoration-color: var(--text);
       }
 
       @media (max-width: 480px) {
@@ -595,6 +1444,14 @@ const canonicalUrl = "https://zedra.dev/";
           gap: 24px;
         }
 
+        .hero {
+          min-height: auto;
+        }
+
+        .section {
+          padding: 64px 0 40px;
+        }
+
         .install-card {
           height: auto;
           min-height: 180px;
@@ -647,6 +1504,10 @@ const canonicalUrl = "https://zedra.dev/";
           justify-content: center;
         }
 
+        .download-links {
+          justify-content: center;
+        }
+
         footer {
           flex-direction: column;
           gap: 16px;
@@ -689,19 +1550,46 @@ const canonicalUrl = "https://zedra.dev/";
         }
 
         h1 {
-          font-size: clamp(35px, 12vw, 56px);
+          font-size: clamp(30px, 9.5vw, 56px);
+        }
+
+        .section h2 {
+          font-size: 26px;
+        }
+
+        .ws-head h2 {
+          font-size: 22px;
+        }
+
+        .scrolly-step h3 {
+          font-size: 20px;
+        }
+
+        .section > p,
+        .section .lede,
+        .ws-head .lede {
+          font-size: 15px;
+        }
+
+        .faq-list summary {
+          font-size: 15px;
+        }
+
+        .faq-list p {
+          font-size: 14px;
         }
       }
 
-      /* Always show copy button on touch devices (no hover) */
+      /* Touch devices have no hover; reveal the button on focus instead. */
       @media (hover: none) {
-        .copy-btn {
+        .install-block:focus-within .copy-btn {
           opacity: 1;
         }
       }
     </style>
   </head>
   <body>
+    <canvas id="bg-shader" aria-hidden="true"></canvas>
     <div class="page">
       <main class="hero">
         <section id="hero-main-content" class="left">
@@ -728,7 +1616,9 @@ const canonicalUrl = "https://zedra.dev/";
             <div class="hero-intro">
               <h1>Code from anywhere.</h1>
               <p class="description">
-                Remote control for AI coding agents with terminal, editor, markdown, and git. Pair by QR for a direct, secure tunnel. No VPN or port forwarding.
+                Remote control for AI coding agents, with a dev workspace on your phone:
+                terminal, editor, markdown, and git diff. Pair by QR for a direct encrypted
+                tunnel. No VPN or port forwarding.
               </p>
             </div>
           </div>
@@ -839,7 +1729,19 @@ const canonicalUrl = "https://zedra.dev/";
                 ))
               }
             </div>
-
+            <div class="download-links" aria-label="Project links">
+              {
+                downloadLinks.map((link) => (
+                  <a
+                    href={link.href}
+                    target={link.external ? "_blank" : undefined}
+                    rel={link.external ? "noopener noreferrer" : undefined}
+                  >
+                    {link.label}
+                  </a>
+                ))
+              }
+            </div>
 
           </section>
         </section>
@@ -852,6 +1754,212 @@ const canonicalUrl = "https://zedra.dev/";
           </div>
         </aside>
       </main>
+
+      <section class="section section-center" aria-labelledby="features-heading">
+        <div class="ws-head" data-reveal>
+          <p class="section-label">workspace</p>
+          <h2 id="features-heading">A developer workspace</h2>
+          <p class="lede">
+            Not a chat window. A workspace lets you inspect the code, review the diff, and keep
+            the agent moving.
+          </p>
+        </div>
+        <div class="scrolly">
+          <div class="scrolly-demo" aria-hidden="true">
+            <div class="demo-frame">
+              {
+                features.map((feature, i) => (
+                  <div
+                    class={`demo-slide${i === 0 ? " active" : ""}${feature.demoImg ? " has-img" : ""}`}
+                    data-slide={i}
+                  >
+                    {feature.demoImg ? (
+                      <Picture
+                        src={feature.demoImg}
+                        alt=""
+                        loading="lazy"
+                        decoding="async"
+                        formats={demoImageFormats}
+                        fallbackFormat="png"
+                        widths={demoImageWidths}
+                        sizes={demoImageSizes}
+                        quality={demoImageQuality}
+                      />
+                    ) : (
+                      <>
+                        <span class="demo-label">{feature.demo}</span>
+                        <span class="demo-caption">device capture coming soon</span>
+                      </>
+                    )}
+                  </div>
+                ))
+              }
+            </div>
+          </div>
+          <div class="scrolly-content">
+            <div class="scrolly-steps">
+              {
+                features.map((feature, i) => (
+                  <div class={`scrolly-step${i === 0 ? " active" : ""}`} data-step={i}>
+                    <div class="step-title" data-reveal>
+                      <Fragment set:html={feature.icon} />
+                      <h3>{feature.title}</h3>
+                    </div>
+                    <p data-reveal style="--reveal-delay: 100ms">{feature.body}</p>
+                    {feature.demoImg && (
+                      <Picture
+                        class="step-img"
+                        src={feature.demoImg}
+                        alt={feature.title}
+                        loading="lazy"
+                        decoding="async"
+                        formats={demoImageFormats}
+                        fallbackFormat="png"
+                        widths={demoImageWidths}
+                        sizes={demoImageSizes}
+                        quality={demoImageQuality}
+                      />
+                    )}
+                  </div>
+                ))
+              }
+            </div>
+          </div>
+        </div>
+      </section>
+
+      <section class="section" aria-labelledby="agents-heading">
+        <div class="two-col" data-reveal>
+          <div class="col-text">
+            <p class="section-label">agents</p>
+            <h2 id="agents-heading">Works with the agents you already run</h2>
+            <p class="lede">
+              Zedra connects to local agents on your machine, using your existing accounts,
+              tools, and plans. Approval requests and completion updates can appear on your
+              phone.
+            </p>
+            <p class="lede">
+              Get completion alerts, usage, resumable sessions, and code mentions in chat. More
+              integrations are on the way.
+            </p>
+            <ul class="agents-row">
+              {
+                supportedAgents.map((agent) => (
+                  <li>
+                    {agent.href ? (
+                      <a href={agent.href}>{agent.name}</a>
+                    ) : (
+                      <span class="agent-plain">{agent.name}</span>
+                    )}
+                  </li>
+                ))
+              }
+            </ul>
+            <p class="lede">
+              Missing yours? <a
+                href="https://github.com/tanlethanh/zedra/issues/new?title=Agent%20support%3A%20"
+                target="_blank"
+                rel="noopener noreferrer">Open an issue</a
+              >.
+            </p>
+          </div>
+          <div class="col-visual">
+            <canvas
+              id="agents-canvas"
+              role="img"
+              aria-label="Agents like Claude Code, Codex, and OpenCode floating alongside notification, usage, and history cards"
+            >
+              Claude Code, Codex, OpenCode, Pi, Hermes, with push notifications, usage, and
+              session history.
+            </canvas>
+          </div>
+        </div>
+      </section>
+
+      <section class="section section-center" aria-labelledby="how-heading">
+        <p class="section-label" data-reveal>how-it-works</p>
+        <h2 id="how-heading" data-reveal>How it works</h2>
+        <p data-reveal>
+          Your phone becomes the control surface for the machine where your code, terminals, and
+          agents already live.
+        </p>
+        <div class="arch-wrap" data-reveal>
+          <canvas
+            id="arch-canvas"
+            role="img"
+            aria-label="The Zedra app on your phone streams keystrokes and approvals to the zedra daemon on your desktop; terminal frames, files, and diffs stream back over a direct end-to-end encrypted tunnel. A relay forwards ciphertext only when the direct path is blocked."
+          >
+            Zedra app (the UI, on your phone) ⇄ direct encrypted tunnel (Zedra Protocol over QUIC)
+            ⇄ zedra daemon (the backend, on your desktop).
+          </canvas>
+        </div>
+        <table class="how-table" data-reveal>
+          <tbody>
+            {
+              howRows.map((row) => (
+                <tr>
+                  <th scope="row">{row.title}</th>
+                  <td>{row.body}</td>
+                </tr>
+              ))
+            }
+          </tbody>
+        </table>
+        <p class="how-links" data-reveal>
+          Details: <a href="/docs/security/">security</a>,
+          <a href="/docs/installation/">installation</a>, and
+          <a href="/compare">the comparison</a>.
+        </p>
+      </section>
+
+      <section class="section" aria-labelledby="tech-heading">
+        <p class="section-label" data-reveal>why-zedra</p>
+        <h2 id="tech-heading" data-reveal>Why Zedra?</h2>
+        <p class="lede" data-reveal>
+          Agent-neutral workflows, fast P2P networking, GPUI rendering, and mobile-native design
+          in one open developer tool.
+        </p>
+        <canvas
+          id="rev-canvas"
+          data-reveal
+          role="img"
+          aria-label="Animated waveform with the technologies behind Zedra: GPUI, Metal, wgpu, Vulkan, iroh, QUIC, TLS 1.3"
+        >
+          GPUI · Metal · wgpu · Vulkan · iroh · QUIC/UDP · TLS 1.3
+        </canvas>
+        <div class="feature-list">
+          {
+            techPillars.map((pillar, i) => (
+              <div class="feature-row" data-reveal style={`--reveal-delay: ${i * 80}ms`}>
+                <h3>{pillar.title}</h3>
+                <p>{pillar.body}</p>
+              </div>
+            ))
+          }
+        </div>
+        <p data-reveal>
+          Details in the <a href="/docs/security/">security &amp; architecture doc</a>, source on
+          <a href="https://github.com/tanlethanh/zedra" target="_blank" rel="noopener noreferrer"
+            >GitHub</a
+          >.
+        </p>
+      </section>
+
+      <section class="section" aria-labelledby="faq-heading">
+        <p class="section-label" data-reveal>faq</p>
+        <h2 id="faq-heading" data-reveal>FAQ</h2>
+        <div class="faq-list">
+          {
+            faqItems.map((item, i) => (
+              <details data-reveal style={`--reveal-delay: ${i * 60}ms`}>
+                <summary>{item.q}</summary>
+                <p set:html={item.a.replace(/`([^`]+)`/g, "<code>$1</code>")} />
+              </details>
+            ))
+          }
+        </div>
+      </section>
+
       <footer>
         <div class="social-links" aria-label="Zedra social links">
           {
@@ -872,6 +1980,11 @@ const canonicalUrl = "https://zedra.dev/";
 
         <nav aria-label="Site links">
           <a href="/docs">Docs</a>
+          <a href="/remote-code-editor-ipad">Mobile coding</a>
+          <a href="/mobile-coding-agents">Mobile agents</a>
+          <a href="/claude-code">Claude Code</a>
+          <a href="/codex">Codex</a>
+          <a href="/compare">Compare</a>
           <a href="/privacy">Privacy</a>
           <a href="/support">Support</a>
         </nav>
@@ -881,6 +1994,849 @@ const canonicalUrl = "https://zedra.dev/";
     <script>
       const CHECK_ICON = `<svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><polyline points="20 6 9 17 4 12"></polyline></svg>`;
       const COPY_ICON = `<svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="9" y="9" width="13" height="13" rx="2" ry="2"></rect><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"></path></svg>`;
+
+      // Dim galaxy background (original shader — Shadertoy classics like Star
+      // Nest are CC BY-NC-SA, so we write our own): three parallax starfield
+      // layers with slow twinkle plus a faint noise-broken milky band. All
+      // neutral white on the page bg, no color gradients. Half-resolution,
+      // 30fps cap, static frame under prefers-reduced-motion; falls back to
+      // a 2D "sand" grain field when WebGL is unavailable.
+      const bgCanvas = document.getElementById("bg-shader") as HTMLCanvasElement | null;
+      const bgReduced = window.matchMedia("(prefers-reduced-motion: reduce)").matches;
+      const bgRun = (resize: () => void, drawFrame: (t: number) => void) => {
+        resize();
+        drawFrame(20);
+        window.addEventListener("resize", () => {
+          resize();
+          drawFrame(20);
+        });
+        if (bgReduced) return;
+        let last = 0;
+        const loop = (ms: number) => {
+          requestAnimationFrame(loop);
+          if (ms - last < 33) return;
+          last = ms;
+          drawFrame(ms / 1000);
+        };
+        requestAnimationFrame(loop);
+      };
+
+      const initGalaxy = (canvas: HTMLCanvasElement): boolean => {
+        const gl = canvas.getContext("webgl", { antialias: false, depth: false, alpha: false });
+        if (!gl) return false;
+        const FS = `
+          precision highp float;
+          uniform float t;
+          uniform float rot;
+          uniform float pan;
+          uniform vec2 r;
+          vec2 rot2(vec2 p, float a) {
+            float c = cos(a), s = sin(a);
+            return vec2(c * p.x - s * p.y, s * p.x + c * p.y);
+          }
+          float h21(vec2 p) {
+            p = fract(p * vec2(123.34, 456.21));
+            p += dot(p, p + 45.32);
+            return fract(p.x * p.y);
+          }
+          // clean sci-fi stars: tight gaussian core, soft falloff halo, and
+          // diffraction spikes on the brightest ones — no noise, no fuzz
+          float stars(vec2 uv, float scale, float tws) {
+            vec2 g = uv * scale;
+            vec2 id = floor(g);
+            vec2 f = fract(g) - 0.5;
+            float n = h21(id);
+            vec2 off = vec2(h21(id + 1.7), h21(id + 3.1)) - 0.5;
+            vec2 q = (f - off * 0.7) / scale;   // screen units
+            float d = length(q);
+            float m = exp(-d * d * 90000.0) * 1.2;    // crisp core, bigger
+            m += exp(-d * d * 5000.0) * 0.18;         // clean glow
+            float sp = exp(-abs(q.y) * 700.0) * exp(-abs(q.x) * 90.0)
+              + exp(-abs(q.x) * 700.0) * exp(-abs(q.y) * 90.0);
+            m += sp * step(0.82, n) * 0.45;           // spikes: bright stars only
+            // skip the dimmest third of cells entirely: fewer, bolder stars
+            float bright = (0.3 + 0.7 * n * n) * step(0.35, n);
+            float tw = 0.78 + 0.22 * sin(t * tws * (0.5 + n) + n * 6.2831);
+            return m * bright * tw;
+          }
+          // shooting stars: several staggered instances, thin fading tails
+          float meteorOne(vec2 uv, float seed) {
+            float period = 5.0;
+            float tt = fract((t + seed * 13.7) / period);
+            float k = floor((t + seed * 13.7) / period);
+            float win = smoothstep(0.0, 0.02, tt) * (1.0 - smoothstep(0.16, 0.2, tt));
+            vec2 start = vec2(
+              mix(-0.9, 0.7, h21(vec2(k, 3.0 + seed))),
+              mix(-0.1, 0.5, h21(vec2(k, 5.0 + seed))));
+            vec2 dir = normalize(vec2(0.85, -0.4));
+            vec2 head = start + dir * tt * 3.2;
+            vec2 rel = uv - head;
+            float along = dot(rel, dir);
+            float perp = abs(dot(rel, vec2(-dir.y, dir.x)));
+            float inTail = step(-0.28, along) * step(along, 0.0);
+            float streak = inTail * exp(along * 9.0) * smoothstep(0.0022, 0.0, perp);
+            float headGlow = exp(-length(rel) * 160.0);
+            return (streak + headGlow * 0.6) * win;
+          }
+          float meteor(vec2 uv) {
+            return meteorOne(uv, 0.0) + meteorOne(uv, 1.0) + meteorOne(uv, 2.0);
+          }
+          void main() {
+            vec2 uv0 = (gl_FragCoord.xy - 0.5 * r) / r.y;
+            // horizontal rotation: the sky pans sideways like sitting on a
+            // turning platform; near layers pan faster than far ones
+            vec3 col = vec3(0.035);
+            // scrolling pans the sky down as well as sideways, per-layer parallax
+            float s = stars(uv0 + vec2(rot * 1.5, pan * 1.5), 1.0, 0.9) * 0.6
+              + stars(uv0 * 1.6 + 3.7 + vec2(rot * 1.0, pan * 1.0), 1.8, 1.3) * 0.42
+              + stars(uv0 * 2.5 + 8.1 + vec2(rot * 0.65, pan * 0.65), 2.9, 1.8) * 0.3;
+            col += vec3(0.94, 0.97, 1.0) * min(s, 0.85);
+            col += vec3(1.0) * meteor(uv0) * 0.45;
+            gl_FragColor = vec4(col, 1.0);
+          }`;
+        const sh = (type: number, src: string) => {
+          const s = gl.createShader(type);
+          if (!s) return null;
+          gl.shaderSource(s, src);
+          gl.compileShader(s);
+          return gl.getShaderParameter(s, gl.COMPILE_STATUS) ? s : null;
+        };
+        const vs = sh(gl.VERTEX_SHADER, "attribute vec2 a;void main(){gl_Position=vec4(a,0.,1.);}");
+        const fs = sh(gl.FRAGMENT_SHADER, FS);
+        if (!vs || !fs) return false;
+        const prog = gl.createProgram();
+        if (!prog) return false;
+        gl.attachShader(prog, vs);
+        gl.attachShader(prog, fs);
+        gl.linkProgram(prog);
+        if (!gl.getProgramParameter(prog, gl.LINK_STATUS)) return false;
+        gl.useProgram(prog);
+        gl.bindBuffer(gl.ARRAY_BUFFER, gl.createBuffer());
+        gl.bufferData(gl.ARRAY_BUFFER, new Float32Array([-1, -1, 3, -1, -1, 3]), gl.STATIC_DRAW);
+        const loc = gl.getAttribLocation(prog, "a");
+        gl.enableVertexAttribArray(loc);
+        gl.vertexAttribPointer(loc, 2, gl.FLOAT, false, 0, 0);
+        const uT = gl.getUniformLocation(prog, "t");
+        const uR = gl.getUniformLocation(prog, "r");
+        const uRot = gl.getUniformLocation(prog, "rot");
+        const uPan = gl.getUniformLocation(prog, "pan");
+        // scroll steers the sky: sideways rotation + downward pan, both eased
+        let rotCur = 0;
+        let rotTarget = 0;
+        let panCur = 0;
+        let panTarget = 0;
+        window.addEventListener(
+          "scroll",
+          () => {
+            rotTarget = window.scrollY * 0.00017;
+            panTarget = window.scrollY * 0.0002;
+          },
+          { passive: true },
+        );
+        bgRun(
+          () => {
+            // full resolution (capped) so star points render crisp
+            const s = Math.min(window.devicePixelRatio || 1, 2);
+            canvas.width = Math.max(1, Math.round(window.innerWidth * s));
+            canvas.height = Math.max(1, Math.round(window.innerHeight * s));
+            gl.viewport(0, 0, canvas.width, canvas.height);
+            gl.uniform2f(uR, canvas.width, canvas.height);
+          },
+          (t) => {
+            rotCur += (rotTarget - rotCur) * 0.08;
+            panCur += (panTarget - panCur) * 0.08;
+            gl.uniform1f(uT, t);
+            // constant slow spin (like sitting on a rotating dish) + scroll steer
+            gl.uniform1f(uRot, rotCur + t * 0.012);
+            gl.uniform1f(uPan, panCur);
+            gl.drawArrays(gl.TRIANGLES, 0, 3);
+          },
+        );
+        return true;
+      };
+
+      const initSand = (canvas: HTMLCanvasElement) => {
+        const ctx = canvas.getContext("2d");
+        if (!ctx) return;
+        let w = 0;
+        let h = 0;
+        type Grain = { x: number; y: number; s: number; ph: number; tw: number; drift: number };
+        let grains: Grain[] = [];
+        const bgRandom = (seed: number) => {
+          let v = seed;
+          return () => {
+            v = (v * 16807) % 2147483647;
+            return v / 2147483647;
+          };
+        };
+        bgRun(
+          () => {
+            w = Math.max(1, Math.round(window.innerWidth * 0.5));
+            h = Math.max(1, Math.round(window.innerHeight * 0.5));
+            canvas.width = w;
+            canvas.height = h;
+            const rnd = bgRandom(1337);
+            grains = Array.from({ length: Math.round((w * h) / 1600) }, () => ({
+              x: rnd() * w,
+              y: rnd() * h,
+              s: rnd() < 0.85 ? 1 : 2,
+              ph: rnd() * Math.PI * 2,
+              tw: 0.15 + rnd() * 0.5,
+              drift: 0.6 + rnd() * 1.6,
+            }));
+          },
+          (t) => {
+            ctx.fillStyle = "#090909";
+            ctx.fillRect(0, 0, w, h);
+            for (const g of grains) {
+              const x = (g.x + t * g.drift) % w;
+              const a = 0.02 + 0.09 * Math.sin(t * g.tw + g.ph) ** 2;
+              ctx.fillStyle = `rgba(255,255,255,${a})`;
+              ctx.fillRect(x, g.y, g.s, g.s);
+            }
+          },
+        );
+      };
+
+      if (bgCanvas && !initGalaxy(bgCanvas)) initSand(bgCanvas);
+
+      // Shared canvas driver: draw only while on screen, capped at ~30fps.
+      // Static frame when offscreen or under prefers-reduced-motion.
+      const runCanvasLoop = (
+        canvas: HTMLCanvasElement,
+        resize: () => void,
+        draw: (t: number) => void,
+        staticT: number,
+      ) => {
+        const reduced = window.matchMedia("(prefers-reduced-motion: reduce)").matches;
+        resize();
+        draw(staticT);
+        document.fonts.ready.then(() => draw(staticT));
+        if (!reduced) {
+          let raf = 0;
+          let last = 0;
+          const loop = (ms: number) => {
+            raf = requestAnimationFrame(loop);
+            if (ms - last < 33) return;
+            last = ms;
+            draw(ms / 1000);
+          };
+          new IntersectionObserver(([entry]) => {
+            cancelAnimationFrame(raf);
+            if (entry.isIntersecting) raf = requestAnimationFrame(loop);
+          }).observe(canvas);
+        }
+        new ResizeObserver(() => {
+          resize();
+          draw(staticT);
+        }).observe(canvas.parentElement as Element);
+      };
+
+      // How-it-works diagram: phone ⇄ desktop with packets streaming both ways
+      // over the tunnel, and a dotted relay fallback path underneath.
+      const arch = document.getElementById("arch-canvas") as HTMLCanvasElement | null;
+      const archCtx = arch?.getContext("2d");
+      if (arch && archCtx) {
+        const C = {
+          line: "rgba(255,255,255,0.22)",
+          faint: "rgba(255,255,255,0.1)",
+          text: "#f3f4f6",
+          muted: "#8a8a90",
+          dim: "#59595e",
+          green: "#3dd68c",
+          bg: "#090909",
+        };
+        const ctx = archCtx;
+        let w = 0;
+        let h = 0;
+        const mono = (px: number) => `${px}px "IBM Plex Mono", monospace`;
+
+        const resize = () => {
+          const width = arch.parentElement?.getBoundingClientRect().width ?? 0;
+          if (!width) return;
+          const dpr = Math.min(window.devicePixelRatio || 1, 2);
+          w = width;
+          h = w < 640 ? 264 : w >= 1000 ? 360 : 290;
+          arch.width = Math.round(w * dpr);
+          arch.height = Math.round(h * dpr);
+          arch.style.height = `${h}px`;
+          ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+        };
+
+        // keep caption text inside the canvas on narrow screens
+        const clampX = (x: number, text: string, px: number, maxW: number) => {
+          ctx.font = mono(px);
+          const half = ctx.measureText(text).width / 2 + 6;
+          return Math.min(Math.max(x, half), maxW - half);
+        };
+
+        const label = (
+          text: string,
+          x: number,
+          y: number,
+          px: number,
+          color: string,
+          hash = false,
+        ) => {
+          ctx.font = mono(px);
+          ctx.textAlign = "center";
+          ctx.textBaseline = "middle";
+          if (hash) {
+            const full = `# ${text}`;
+            const start = x - ctx.measureText(full).width / 2;
+            ctx.textAlign = "left";
+            ctx.fillStyle = C.green;
+            ctx.fillText("# ", start, y);
+            ctx.fillStyle = color;
+            ctx.fillText(text, start + ctx.measureText("# ").width, y);
+            ctx.textAlign = "center";
+          } else {
+            ctx.fillStyle = color;
+            ctx.fillText(text, x, y);
+          }
+        };
+
+        // stacked multi-line badge, first line bright, rest muted
+        const badge = (lines: string[], x: number, y: number, px: number) => {
+          ctx.font = mono(px);
+          const lh = px + 8;
+          const tw = Math.max(...lines.map((l) => ctx.measureText(l).width));
+          const bw = tw + 38;
+          const bh = lines.length * lh + 22;
+          ctx.fillStyle = C.bg;
+          ctx.strokeStyle = C.line;
+          ctx.lineWidth = 1;
+          ctx.beginPath();
+          ctx.roundRect(x - bw / 2, y - bh / 2, bw, bh, 14);
+          ctx.fill();
+          ctx.stroke();
+          const startY = y - ((lines.length - 1) * lh) / 2;
+          lines.forEach((line, i) => {
+            label(line, x, startY + i * lh, px, i === 0 ? C.text : C.muted);
+          });
+        };
+
+        const drawPhone = (x: number, y: number, t: number, big: boolean) => {
+          const pw = big ? 64 : 48;
+          const ph = big ? 116 : 88;
+          ctx.strokeStyle = C.line;
+          ctx.lineWidth = 1.4;
+          ctx.beginPath();
+          ctx.roundRect(x - pw / 2, y - ph / 2, pw, ph, big ? 14 : 11);
+          ctx.stroke();
+          ctx.beginPath();
+          ctx.moveTo(x - 9, y - ph / 2 + 11);
+          ctx.lineTo(x + 9, y - ph / 2 + 11);
+          ctx.stroke();
+          // "screen": prompt + streamed lines that tick with time
+          const ix = x - pw / 2 + (big ? 13 : 10);
+          ctx.fillStyle = C.green;
+          ctx.font = mono(big ? 14 : 11);
+          ctx.textAlign = "left";
+          ctx.fillText("❯", ix, y - ph / 2 + (big ? 38 : 30));
+          ctx.fillStyle = C.dim;
+          for (let i = 0; i < 4; i++) {
+            const lw = (big ? 12 : 9) + ((Math.sin(t * 1.4 + i * 2.1) + 1) / 2) * (pw - (big ? 36 : 28));
+            ctx.fillRect(ix, y - ph / 2 + (big ? 52 : 42) + i * (big ? 13 : 10), lw, big ? 2.5 : 2);
+          }
+        };
+
+        const drawDesktop = (x: number, y: number, t: number, big: boolean) => {
+          const mw = big ? 132 : 96;
+          const mh = big ? 88 : 64;
+          ctx.strokeStyle = C.line;
+          ctx.lineWidth = 1.4;
+          ctx.beginPath();
+          ctx.roundRect(x - mw / 2, y - mh / 2, mw, mh, big ? 10 : 8);
+          ctx.stroke();
+          ctx.beginPath();
+          ctx.moveTo(x, y + mh / 2);
+          ctx.lineTo(x, y + mh / 2 + (big ? 14 : 10));
+          ctx.moveTo(x - (big ? 24 : 16), y + mh / 2 + (big ? 14 : 10));
+          ctx.lineTo(x + (big ? 24 : 16), y + mh / 2 + (big ? 14 : 10));
+          ctx.stroke();
+          const ix = x - mw / 2 + (big ? 15 : 11);
+          ctx.fillStyle = C.green;
+          ctx.font = mono(big ? 14 : 11);
+          ctx.textAlign = "left";
+          ctx.fillText("❯", ix, y - mh / 2 + (big ? 27 : 20));
+          ctx.fillStyle = C.dim;
+          for (let i = 0; i < 3; i++) {
+            const lw = (big ? 24 : 16) + ((Math.sin(t * 1.7 + i * 1.3) + 1) / 2) * (mw - (big ? 62 : 44));
+            ctx.fillRect(ix, y - mh / 2 + (big ? 40 : 30) + i * (big ? 15 : 11), lw, big ? 2.5 : 2);
+          }
+        };
+
+        const draw = (t: number) => {
+          ctx.clearRect(0, 0, w, h);
+          // on wide screens, scale the whole drawing up instead of re-tuning sizes
+          const s = w >= 1000 ? 1.3 : 1;
+          ctx.save();
+          ctx.scale(s, s);
+          const vw = w / s;
+          const big = vw >= 640;
+          const vh = h / s;
+          const topOffset = big ? 58 : 44;
+          const bottomOffset = big ? 150 : 118;
+          const midY = (vh + topOffset - bottomOffset) / 2;
+          const px = big ? vw * 0.12 : vw * 0.15;
+          const dx = big ? vw * 0.88 : vw * 0.85;
+          const lineStart = px + (big ? 42 : 32);
+          const lineEnd = dx - (big ? 78 : 56);
+
+          // main tunnel line
+          ctx.strokeStyle = C.line;
+          ctx.lineWidth = 1.2;
+          ctx.setLineDash([]);
+          ctx.beginPath();
+          ctx.moveTo(lineStart, midY);
+          ctx.lineTo(lineEnd, midY);
+          ctx.stroke();
+
+          // endpoints pulse
+          const pulse = (big ? 2.8 : 2.2) + Math.sin(t * 2.4) * 0.8;
+          ctx.fillStyle = C.green;
+          for (const ex of [lineStart, lineEnd]) {
+            ctx.beginPath();
+            ctx.arc(ex, midY, pulse, 0, Math.PI * 2);
+            ctx.fill();
+          }
+
+          // packets: green → desktop (input), light ← phone (output)
+          const span = lineEnd - lineStart;
+          const packet = (p: number, color: string) => {
+            const alpha = Math.min(1, Math.min(p, 1 - p) * 10);
+            ctx.globalAlpha = alpha;
+            ctx.fillStyle = color;
+            ctx.beginPath();
+            ctx.arc(lineStart + span * p, midY, big ? 3.4 : 2.6, 0, Math.PI * 2);
+            ctx.fill();
+            ctx.globalAlpha = 1;
+          };
+          for (let i = 0; i < 3; i++) packet((t * 0.16 + i / 3) % 1, C.green);
+          for (let i = 0; i < 3; i++) packet(1 - ((t * 0.13 + i / 3 + 0.15) % 1), "#b9bac0");
+
+          // direction labels, centered in the gaps between badge and endpoints
+          const badgeLines = big
+            ? ["Zedra Protocol", "QUIC/UDP (Iroh)", "TLS 1.3 end-to-end"]
+            : ["Zedra Protocol", "QUIC · Iroh", "TLS 1.3 · E2E"];
+          const badgePx = big ? 13.5 : 11;
+          ctx.font = mono(badgePx);
+          const badgeHalf = Math.max(...badgeLines.map((l) => ctx.measureText(l).width)) / 2 + 19;
+          const center = lineStart + span / 2;
+          const cw = vw;
+          if (big) {
+            label("keystrokes · approvals →", (lineStart + center - badgeHalf) / 2, midY - 22, 13, C.muted);
+            label("← frames · files · diffs", (center + badgeHalf + lineEnd) / 2, midY + 26, 13, C.muted);
+          }
+
+          // relay fallback: dotted arc between the same endpoints, dipping
+          // below the caption band (it crosses caption height only mid-span,
+          // where no caption text sits)
+          ctx.strokeStyle = C.faint;
+          ctx.setLineDash([3, 5]);
+          ctx.beginPath();
+          ctx.moveTo(lineStart, midY + 6);
+          ctx.quadraticCurveTo(cw / 2, midY + (big ? 150 : 118), lineEnd, midY + 6);
+          ctx.stroke();
+          ctx.setLineDash([]);
+          const relayLines = ["relay", "blocked by sNAT or CGNAT", "E2E encrypted"];
+          const relayPx = big ? 12.5 : 10.5;
+          relayLines.forEach((line, i) => {
+            label(
+              line,
+              cw / 2,
+              midY + (big ? 78 : 110) + i * (relayPx + 6),
+              relayPx,
+              i === 0 ? C.muted : C.dim,
+            );
+          });
+
+          // center badge sits on top of the line so packets "enter the tunnel"
+          badge(badgeLines, center, midY, badgePx);
+
+          // nodes + captions
+          drawPhone(px, midY, t, big);
+          drawDesktop(dx, midY, t, big);
+          const capY = midY + (big ? 88 : 66);
+          const kickPx = big ? 13 : 11;
+          const titlePx = big ? 16 : 12;
+          const phoneTitle = big ? "Zedra app: the UI" : "Zedra app · UI";
+          const deskTitle = big ? "zedra daemon: the backend" : "daemon · backend";
+          label("your phone", clampX(px, "# your phone", kickPx, vw), capY, kickPx, C.muted, true);
+          label(phoneTitle, clampX(px, phoneTitle, titlePx, vw), capY + (big ? 24 : 19), titlePx, C.text);
+          label("your desktop", clampX(dx, "# your desktop", kickPx, vw), capY, kickPx, C.muted, true);
+          label(deskTitle, clampX(dx, deskTitle, titlePx, vw), capY + (big ? 24 : 19), titlePx, C.text);
+          ctx.restore();
+        };
+
+        runCanvasLoop(arch, resize, draw, 2.2);
+      }
+
+      // Agents canvas: floating agent chips + notification/usage/history cards.
+      const agents = document.getElementById("agents-canvas") as HTMLCanvasElement | null;
+      const agentsCtx = agents?.getContext("2d");
+      if (agents && agentsCtx) {
+        const ctx = agentsCtx;
+        const mono = (px: number) => `${px}px "IBM Plex Mono", monospace`;
+        let w = 0;
+        let h = 0;
+        const resize = () => {
+          const width = agents.parentElement?.getBoundingClientRect().width ?? 0;
+          if (!width) return;
+          const dpr = Math.min(window.devicePixelRatio || 1, 2);
+          w = width;
+          h = w < 560 ? 470 : 580;
+          agents.width = Math.round(w * dpr);
+          agents.height = Math.round(h * dpr);
+          agents.style.height = `${h}px`;
+          ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+        };
+        // real agent icons copied from the app (public/agents/*.svg, color baked)
+        const icons: Record<string, HTMLImageElement> = {};
+        for (const name of [
+          "claude",
+          "openai",
+          "opencode",
+          "hermesagent",
+          "pi",
+          "cursor",
+          "geminicli",
+          "githubcopilot",
+          "openclaw",
+        ]) {
+          const img = new Image();
+          img.src = `/agents/${name}.svg`;
+          icons[name] = img;
+        }
+        // aspect-fit so icons with non-square viewBoxes stay balanced
+        const drawIcon = (img: HTMLImageElement | undefined, x: number, y: number, size: number) => {
+          if (!img?.complete || !img.naturalWidth) return;
+          const r = img.naturalWidth / img.naturalHeight;
+          const dw = r >= 1 ? size : size * r;
+          const dh = r >= 1 ? size / r : size;
+          ctx.drawImage(img, x + (size - dw) / 2, y + (size - dh) / 2, dw, dh);
+        };
+        // cards cluster in the center; chips orbit the edges and may overlap
+        const chips = [
+          { name: "Claude Code", ic: "claude", x: 0.16, y: 0.06, ph: 0.4, sp: 1.0 },
+          { name: "Codex", ic: "openai", x: 0.5, y: 0.03, ph: 2.2, sp: 0.8 },
+          { name: "Gemini", ic: "geminicli", x: 0.85, y: 0.08, ph: 5.1, sp: 1.1 },
+          { name: "OpenCode", ic: "opencode", x: 0.1, y: 0.36, ph: 4.1, sp: 1.2 },
+          { name: "Cursor", ic: "cursor", x: 0.91, y: 0.33, ph: 1.2, sp: 0.9 },
+          { name: "Hermes", ic: "hermesagent", x: 0.09, y: 0.66, ph: 3.1, sp: 0.9 },
+          { name: "Pi", ic: "pi", x: 0.92, y: 0.6, ph: 1.6, sp: 1.1 },
+          { name: "Copilot", ic: "githubcopilot", x: 0.24, y: 0.88, ph: 3.7, sp: 1.0 },
+          { name: "OpenClaw", ic: "openclaw", x: 0.72, y: 0.87, ph: 2.6, sp: 0.8 },
+        ];
+        const box = (x: number, y: number, bw: number, bh: number, r: number) => {
+          ctx.fillStyle = "#111112";
+          ctx.strokeStyle = "rgba(255,255,255,0.14)";
+          ctx.lineWidth = 1;
+          ctx.beginPath();
+          ctx.roundRect(x, y, bw, bh, r);
+          ctx.fill();
+          ctx.stroke();
+        };
+        const kicker = (text: string, x: number, y: number, t: number, ph: number) => {
+          const blink = 0.5 + 0.5 * Math.sin(t * 2.6 + ph);
+          ctx.fillStyle = `rgba(61,214,140,${0.35 + 0.65 * blink})`;
+          ctx.beginPath();
+          ctx.arc(x, y, 3, 0, Math.PI * 2);
+          ctx.fill();
+          ctx.font = mono(11);
+          ctx.fillStyle = "#59595e";
+          ctx.fillText(text, x + 10, y + 0.5);
+        };
+        // mirrors the app's usage_bar_color thresholds
+        const gaugeColor = (pct: number) =>
+          pct < 60 ? "#3dd68c" : pct < 85 ? "#e0af68" : "#f7768e";
+        // app gauge row: `5h [████] 63%  1h20m`
+        const gauge = (x: number, y: number, lab: string, pct: number, reset: string) => {
+          ctx.font = mono(10.5);
+          ctx.fillStyle = "#59595e";
+          ctx.fillText(lab, x, y);
+          const bx = x + 24;
+          const bw = 66;
+          ctx.fillStyle = "rgba(255,255,255,0.12)";
+          ctx.beginPath();
+          ctx.roundRect(bx, y - 2, bw, 4, 2);
+          ctx.fill();
+          ctx.fillStyle = gaugeColor(pct);
+          ctx.beginPath();
+          ctx.roundRect(bx, y - 2, (bw * pct) / 100, 4, 2);
+          ctx.fill();
+          ctx.fillStyle = "#c9cacd";
+          ctx.fillText(`${pct}%`, bx + bw + 10, y);
+          ctx.fillStyle = "#59595e";
+          ctx.fillText(reset, bx + bw + 46, y);
+        };
+        const bob = (t: number, sp: number, ph: number) => ({
+          dx: Math.cos(t * sp * 0.5 + ph) * 6,
+          dy: Math.sin(t * sp + ph) * 7,
+        });
+        const draw = (t: number) => {
+          ctx.clearRect(0, 0, w, h);
+          // shrink the whole cluster on narrow screens: cards + chips use fixed
+          // pixel sizes, so scale the drawing down (and lay it out in a larger
+          // virtual space) instead of letting them overlap at phone widths.
+          const s = Math.max(0.7, Math.min(1, w / 560));
+          ctx.save();
+          ctx.scale(s, s);
+          const vw = w / s;
+          const vh = h / s;
+          ctx.textAlign = "left";
+          ctx.textBaseline = "middle";
+
+          // notification card — real hook format: `{agent} requires approval`
+          // as title, the session/chat title as body (agent_hook_recv.rs)
+          {
+            const { dx, dy } = bob(t, 0.7, 0.9);
+            const bw = 262;
+            let cx = 0.42 * vw - bw / 2 + dx;
+            cx = Math.min(Math.max(cx, 4), vw - bw - 4);
+            const cy = 0.15 * vh + dy;
+            box(cx, cy, bw, 78, 14);
+            kicker("notification", cx + 18, cy + 18, t, 0.9);
+            ctx.font = mono(12.5);
+            ctx.fillStyle = "#c9cacd";
+            ctx.fillText("Claude Code requires approval", cx + 16, cy + 40);
+            ctx.font = mono(11.5);
+            ctx.fillStyle = "#8a8a90";
+            ctx.fillText("Add QR pairing to onboarding", cx + 16, cy + 58);
+          }
+
+          // usage card: the app's agent card with rate-limit gauges
+          {
+            const { dx, dy } = bob(t, 0.9, 2.7);
+            const bw = 256;
+            let cx = 0.6 * vw - bw / 2 + dx;
+            cx = Math.min(Math.max(cx, 4), vw - bw - 4);
+            const cy = 0.32 * vh + dy;
+            box(cx, cy, bw, 128, 14);
+            drawIcon(icons.claude, cx + 16, cy + 14, 18);
+            ctx.font = mono(13);
+            ctx.fillStyle = "#f3f4f6";
+            ctx.fillText("Claude Code", cx + 42, cy + 23.5);
+            // plan badge next to the name, like the app's agent card
+            const nameW = ctx.measureText("Claude Code").width;
+            ctx.font = mono(10.5);
+            const planW = ctx.measureText("max").width + 12;
+            ctx.strokeStyle = "rgba(255,255,255,0.14)";
+            ctx.fillStyle = "#151517";
+            ctx.lineWidth = 1;
+            ctx.beginPath();
+            ctx.roundRect(cx + 42 + nameW + 10, cy + 14, planW, 19, 10);
+            ctx.fill();
+            ctx.stroke();
+            ctx.fillStyle = "#8a8a90";
+            ctx.fillText("max", cx + 42 + nameW + 16, cy + 24);
+            gauge(cx + 16, cy + 52, "5h", 63, "1h20m");
+            gauge(cx + 16, cy + 76, "7d", 41, "3d 2h");
+            ctx.font = mono(10.5);
+            ctx.fillStyle = "#59595e";
+            ctx.fillText("+412 / -96 lines changed", cx + 16, cy + 104);
+          }
+
+          // history card: unified session list across agents
+          {
+            const { dx, dy } = bob(t, 0.8, 4.6);
+            const bw = 292;
+            let cx = 0.44 * vw - bw / 2 + dx;
+            cx = Math.min(Math.max(cx, 4), vw - bw - 4);
+            let cy = 0.57 * vh + dy;
+            const rows = [
+              { ic: "claude", title: "Fix terminal resume race", meta: "2h ago" },
+              { ic: "openai", title: "Refactor auth flow", meta: "5h ago" },
+              { ic: "opencode", title: "Landing page SEO pass", meta: "1d ago" },
+            ];
+            const bh = 36 + rows.length * 32 + 6;
+            cy = Math.min(cy, vh - bh - 4);
+            box(cx, cy, bw, bh, 14);
+            kicker("history: tap to resume", cx + 18, cy + 18, t, 4.6);
+            rows.forEach((r, i) => {
+              const ry = cy + 48 + i * 32;
+              drawIcon(icons[r.ic], cx + 16, ry - 8, 16);
+              ctx.font = mono(12);
+              ctx.fillStyle = "#c9cacd";
+              ctx.fillText(r.title, cx + 42, ry);
+              ctx.font = mono(10.5);
+              ctx.fillStyle = "#59595e";
+              ctx.textAlign = "right";
+              ctx.fillText(r.meta, cx + bw - 14, ry);
+              ctx.textAlign = "left";
+            });
+          }
+
+          // chips last: agents float on top of the feature cards
+          for (const c of chips) {
+            ctx.font = mono(13);
+            const tw = ctx.measureText(c.name).width;
+            const bw = 16 + 28 + tw + 16;
+            const bh = 44;
+            let cx = c.x * vw - bw / 2 + Math.cos(t * c.sp * 0.6 + c.ph) * 7;
+            let cy = c.y * vh + Math.sin(t * c.sp + c.ph) * 8;
+            cx = Math.min(Math.max(cx, 4), vw - bw - 4);
+            cy = Math.min(Math.max(cy, 4), vh - bh - 4);
+            box(cx, cy, bw, bh, 22);
+            drawIcon(icons[c.ic], cx + 14, cy + bh / 2 - 10, 20);
+            ctx.font = mono(13);
+            ctx.fillStyle = "#f3f4f6";
+            ctx.fillText(c.name, cx + 42, cy + bh / 2 + 0.5);
+          }
+          ctx.restore();
+        };
+        // Repaint the static frame when each icon finishes loading, so chips/cards
+        // aren't icon-less under prefers-reduced-motion if SVGs arrive late.
+        for (const img of Object.values(icons)) img.addEventListener("load", () => draw(1.1));
+        runCanvasLoop(agents, resize, draw, 1.1);
+      }
+
+      // Revolution canvas: GPU-waveform bars + drifting tech ticker.
+      const rev = document.getElementById("rev-canvas") as HTMLCanvasElement | null;
+      const revCtx = rev?.getContext("2d");
+      if (rev && revCtx) {
+        const ctx = revCtx;
+        const mono = (px: number) => `${px}px "IBM Plex Mono", monospace`;
+        let w = 0;
+        let h = 0;
+        const resize = () => {
+          const width = rev.parentElement?.getBoundingClientRect().width ?? 0;
+          if (!width) return;
+          const dpr = Math.min(window.devicePixelRatio || 1, 2);
+          w = width;
+          h = 220;
+          rev.width = Math.round(w * dpr);
+          rev.height = Math.round(h * dpr);
+          rev.style.height = `${h}px`;
+          ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+        };
+        const words = [
+          { t: "GPUI", green: true, y: 0.2, sp: 26, off: 0 },
+          { t: "Metal", green: false, y: 0.34, sp: 20, off: 300 },
+          { t: "wgpu", green: false, y: 0.14, sp: 32, off: 620 },
+          { t: "Vulkan", green: false, y: 0.82, sp: 24, off: 150 },
+          { t: "iroh", green: true, y: 0.68, sp: 18, off: 480 },
+          { t: "QUIC/UDP", green: false, y: 0.9, sp: 28, off: 800 },
+          { t: "TLS 1.3", green: false, y: 0.26, sp: 22, off: 1040 },
+          { t: "no webview", green: true, y: 0.76, sp: 30, off: 240 },
+        ];
+        const draw = (t: number) => {
+          ctx.clearRect(0, 0, w, h);
+          const midY = h / 2;
+          for (let x = 4; x < w; x += 8) {
+            const a = Math.sin(x * 0.012 + t * 1.5) * Math.sin(x * 0.0042 - t * 0.55);
+            const amp = 8 + Math.abs(a) * (h * 0.36);
+            const isGreen = Math.floor(x / 8) % 9 === 0;
+            ctx.fillStyle = isGreen
+              ? `rgba(61,214,140,${0.25 + Math.abs(a) * 0.5})`
+              : `rgba(255,255,255,${0.08 + Math.abs(a) * 0.14})`;
+            ctx.fillRect(x, midY - amp, 3, amp * 2);
+          }
+          ctx.textAlign = "left";
+          ctx.textBaseline = "middle";
+          ctx.font = mono(12.5);
+          for (const wd of words) {
+            const tw = ctx.measureText(wd.t).width;
+            const travel = w + tw + 120;
+            const x = w + 60 - ((t * wd.sp + wd.off) % travel);
+            ctx.fillStyle = wd.green ? "rgba(61,214,140,0.75)" : "rgba(185,186,192,0.6)";
+            ctx.fillText(wd.t, x, wd.y * h);
+          }
+        };
+        runCanvasLoop(rev, resize, draw, 3.7);
+      }
+
+      // Center the sticky demo frame in the current viewport by computing
+      // its actual top offset (viewport height minus frame height, halved)
+      // instead of a fixed px or the height:100vh+flex-center trick — see
+      // the CSS comment on .scrolly-demo for why those two failed.
+      {
+        const demoWrap = document.querySelector<HTMLElement>(".scrolly-demo");
+        const frame = document.querySelector<HTMLElement>(".demo-frame");
+        if (demoWrap && frame) {
+          const recenter = () => {
+            const h = frame.getBoundingClientRect().height;
+            const top = Math.max(24, (window.innerHeight - h) / 2);
+            demoWrap.style.top = `${top}px`;
+          };
+          recenter();
+          window.addEventListener("resize", recenter, { passive: true });
+        }
+      }
+
+      // Scrolly: activate whichever step's center is nearest the sticky
+      // demo's own vertical center (not the viewport's) — the demo is the
+      // fixed reference the reader's eye stays on, so a step should focus
+      // exactly when it lines up with the demo's half-height, not some
+      // viewport-relative point that drifts as the demo's sticky offset,
+      // header height, etc. change. Falls back to viewport center on mobile
+      // where the demo is hidden (rect collapses to zero height there).
+      const steps = [...document.querySelectorAll<HTMLElement>(".scrolly-step")];
+      const slides = [...document.querySelectorAll<HTMLElement>(".demo-slide")];
+      const demoEl = document.querySelector<HTMLElement>(".scrolly-demo");
+      if (steps.length) {
+        let activeStep = -1;
+        const activate = (index: number) => {
+          if (index === activeStep) return;
+          activeStep = index;
+          steps.forEach((el, i) => el.classList.toggle("active", i === index));
+          slides.forEach((el, i) => el.classList.toggle("active", i === index));
+        };
+        const pickNearest = () => {
+          const demoRect = demoEl?.getBoundingClientRect();
+          const target =
+            demoRect && demoRect.height > 0
+              ? demoRect.top + demoRect.height / 2
+              : window.innerHeight / 2;
+          let best = 0;
+          let bestDist = Infinity;
+          steps.forEach((el, i) => {
+            const rect = el.getBoundingClientRect();
+            const dist = Math.abs(rect.top + rect.height / 2 - target);
+            if (dist < bestDist) {
+              bestDist = dist;
+              best = i;
+            }
+          });
+          activate(best);
+        };
+        let ticking = false;
+        const onScroll = () => {
+          if (ticking) return;
+          ticking = true;
+          requestAnimationFrame(() => {
+            pickNearest();
+            ticking = false;
+          });
+        };
+        window.addEventListener("scroll", onScroll, { passive: true });
+        window.addEventListener("resize", onScroll, { passive: true });
+        pickNearest();
+      }
+
+      // Scroll-reveal: add .is-visible once a [data-reveal] block enters the
+      // viewport. Trigger a touch above the bottom edge so content is already
+      // animating by the time it's visible. Reduced-motion users keep content
+      // visible via the CSS guard (no transition there), so this observer is
+      // a no-op visually for them — but we still flip the class so the state
+      // matches if they later toggle motion off mid-session.
+      {
+        const reveals = document.querySelectorAll<HTMLElement>("[data-reveal]");
+        if (reveals.length) {
+          const io = new IntersectionObserver(
+            (entries, obs) => {
+              for (const entry of entries) {
+                if (!entry.isIntersecting) continue;
+                entry.target.classList.add("is-visible");
+                obs.unobserve(entry.target);
+              }
+            },
+            { rootMargin: "0px 0px -10% 0px", threshold: 0.12 },
+          );
+          reveals.forEach((el) => io.observe(el));
+        }
+      }
 
       document.querySelectorAll(".copy-btn").forEach((btn) => {
         btn.addEventListener("click", async () => {

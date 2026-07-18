@@ -10,7 +10,7 @@ BUNDLE_ID_DEBUG="dev.zedra.app.debug"
 BUNDLE_ID_RELEASE="dev.zedra.app"
 
 usage() {
-    echo "Usage: $0 [sim|device|open] [--no-build] [--release] [--preview] [--debug] [--no-telemetry] [--device-id <UDID>] [--select-device] [--launch-url <URL>]"
+    echo "Usage: $0 [sim|device|open] [--no-build] [--release] [--preview] [--debug] [--devtool] [--no-telemetry] [--device-id <UDID>] [--select-device] [--launch-url <URL>]"
     echo ""
     echo "  sim        Build and run on iOS Simulator (default)"
     echo "  device     Build and install on connected device"
@@ -19,6 +19,7 @@ usage() {
     echo "  --no-build              Skip build, just install and launch (uses last build)"
     echo "  --release               Use release profile (default is debug)"
     echo "  --preview               Enable preview feature flag"
+    echo "  --devtool               Enable in-app HTTP devtool (127.0.0.1:9777, debug only)"
     echo "  --no-telemetry          Compile Firebase Analytics and Crashlytics out"
     echo "  --device-id <UDID>      Target a specific device by UDID (skips selection)"
     echo "  --select-device         Ignore saved device preference and re-prompt"
@@ -97,7 +98,7 @@ FORCED_DEVICE_ID=""
 SELECT_DEVICE=false
 LAUNCH_URL=""
 NO_BUILD=false
-PREF_FILE="/tmp/zedra-ios-device-$PPID"
+PREF_FILE="/tmp/zedra-ios-device"
 
 write_saved_device_pref() {
     printf '%s|%s|%s\n' "$1" "$2" "$3" > "$PREF_FILE"
@@ -191,6 +192,9 @@ while [ $i -lt ${#args[@]} ]; do
         --debug)
             BUILD_FLAGS="$BUILD_FLAGS --debug"
             REQUESTED_DEBUG=true
+            ;;
+        --devtool)
+            BUILD_FLAGS="$BUILD_FLAGS --devtool"
             ;;
         --no-telemetry)
             BUILD_FLAGS="$BUILD_FLAGS --no-telemetry"
@@ -337,7 +341,11 @@ for runtime, devices in data['devices'].items():
             DEVICE_NAME_SAVED=$(echo "$DEVICE_LINE" | sed 's/ ([^)]*) ([^)]*)$//' | sed 's/ ([^)]*)$//')
             write_saved_device_pref "dev" "$DEVICE_ID" "$DEVICE_NAME_SAVED"
         else
-            # Check session-scoped pref file (shared with ios-log.sh)
+            # Check saved pref file (one global target per repo checkout — not
+            # session-scoped by $PPID; that scoping was fragile across shell
+            # invocations and caused devtool.sh/ios-log.sh daemon to silently
+            # diverge on which device they were talking to. Shared with
+            # devtool.sh and ios-log.sh daemon.)
             if [ "$SELECT_DEVICE" = false ] && [ -f "$PREF_FILE" ]; then
                 SAVED_DEVICE_TYPE=""
                 SAVED_DEVICE_ID=""

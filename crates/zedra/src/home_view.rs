@@ -640,7 +640,7 @@ static WINDOWS_INSTALL_LINES: &[GuideLine] = &[
         comment: true,
     },
     GuideLine {
-        text: "powershell -c \"irm https://zedra.dev/install.ps1 | iex\"",
+        text: "irm https://zedra.dev/install.ps1 | iex",
         comment: false,
     },
 ];

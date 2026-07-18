@@ -40,8 +40,8 @@ git submodule update --init --recursive
 ./scripts/run-ios.sh device          # full build + install + launch
 ./scripts/run-ios.sh sim             # simulator
 ./scripts/run-ios.sh device --release  # release build
-./scripts/log-ios.sh                 # stream device logs
-./scripts/log-ios.sh --filter zedra  # filtered logs
+./scripts/ios-log.sh tail                 # stream device logs
+./scripts/ios-log.sh tail --filter zedra  # filtered logs
 ```
 
 See `docs/IOS_WORKFLOW.md` for full pipeline details.
@@ -91,7 +91,7 @@ Scan the printed QR from the app, or pass the URL during development:
 Windows support is for the host daemon, not a native desktop client.
 
 ```powershell
-powershell -c "irm https://zedra.dev/install.ps1 | iex"
+irm https://zedra.dev/install.ps1 | iex
 zedra start --workdir C:\path\to\project --detach
 zedra qr --workdir C:\path\to\project
 zedra status --workdir C:\path\to\project

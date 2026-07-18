@@ -22,7 +22,7 @@ Mobile remote editor for iOS and Android. Primary platform is iOS (`gpui_ios` + 
 
 - First-time setup: `git submodule update --init --recursive`; full prerequisites in `docs/GET_STARTED.md`.
 - Host CLI (binary is named `zedra`): `cargo run -p zedra-host -- start|status|qr|setup|agent|logs ...`. The daemon is per-workspace — a workspace lock refuses a second `start` in the same workdir; use `start --detach` for background runs.
-- iOS app: `./scripts/run-ios.sh [sim|device]`; logs via `./scripts/log-ios.sh`. Details: `docs/IOS_WORKFLOW.md`.
+- iOS app: `./scripts/run-ios.sh [sim|device]`; logs via `./scripts/ios-log.sh tail`. Details: `docs/IOS_WORKFLOW.md`.
 - Android app: `./scripts/run-android.sh` (never `adb shell am start` directly); logs via `./scripts/log-android.sh`.
 - `zedra setup` flows: verify in the throwaway sandbox — `scripts/setup-sandbox.sh zedra setup <agent>` (shimmed provider CLIs, no network, real `$HOME` untouched).
 - Icons: `bun run icons:gen` after adding an SVG.
@@ -91,7 +91,16 @@ Mobile remote editor for iOS and Android. Primary platform is iOS (`gpui_ios` + 
   - `cargo fmt --check`
   - `cargo check -p zedra-rpc -p zedra-session -p zedra-terminal -p zedra-host`
   - `cargo test -p zedra-rpc -p zedra-session -p zedra-terminal -p zedra-host -p zedra-osc -p zedra-telemetry`
+  - `cargo check -p zedra --features ios-platform --target aarch64-apple-ios` for
+    app-crate changes touching anything gated behind a real iOS dependency
+    (e.g. `gpui_ios`, which is a `[target.'cfg(target_os = "ios")'.dependencies]`
+    entry — a plain host-target `cargo check -p zedra` silently excludes it
+    from the graph, so a feature/method that only compiles with `gpui_ios`
+    present can pass a host check while failing this one; real CI runs both,
+    see `.github/workflows/ci.yml`)
   - `cargo test -p zedra --features ios-platform` for app-crate changes
+    (host target — tests must actually execute, so this one intentionally
+    doesn't cross-compile and won't catch the gap above)
   - `cargo check --manifest-path vendor/zed/Cargo.toml -p gpui_ios -p gpui` for vendored GPUI/iOS framework patches
   - `bun run check` (biome) for `packages/` changes
 - Host integration tests (`crates/zedra-host/tests/integration.rs`) spawn an in-process iroh relay — they run offline, no external network needed.
@@ -139,7 +148,7 @@ Mobile remote editor for iOS and Android. Primary platform is iOS (`gpui_ios` + 
 - `docs/GPUI_*.md` — GPUI internals playbooks: rendering model, focus/input/keyboard, animations, mobile interaction, text protocol, native presentations, Android backend
 - `docs/TELEMETRY.md` — telemetry events and privacy
 - `docs/MANUAL_TEST.md` — manual verification steps for UI and device work
-- `docs/DEVTOOL.md` — in-app HTTP devtool for agent-driven UI scripting (debug Android); wrapper at `scripts/devtool.sh`
+- `docs/DEVTOOL.md` — in-app HTTP devtool for agent-driven UI scripting (debug iOS + Android); wrapper at `scripts/devtool.sh`
 - `docs/RELAY.md` — self-hosted iroh-relay deployment
 - `docs/RELEASE.md` — how to cut a release
 - `docs/WRITING.md` — documentation style guide

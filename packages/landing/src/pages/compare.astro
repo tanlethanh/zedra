@@ -1,0 +1,284 @@
+---
+// Comparison page targeting "best iOS app for AI coding agents"-shaped queries.
+// Keep competitor claims factual and current; recheck them when editing.
+import MarketingLayout from "../layouts/MarketingLayout.astro";
+
+const title = "Mobile AI Coding Agent Apps Compared: Zedra";
+const description =
+  "Compare Zedra, Happy, Omnara, built-in apps, and SSH + tmux for controlling Claude Code, Codex, and other AI coding agents from your phone.";
+
+const rows = [
+  {
+    label: "Any CLI agent",
+    zedra: "Yes",
+    builtin: "Vendor only",
+    happy: "Claude only",
+    omnara: "Limited",
+    ssh: "Yes",
+  },
+  {
+    label: "Multiple agents",
+    zedra: "Yes",
+    builtin: "No",
+    happy: "No",
+    omnara: "Yes",
+    ssh: "Manual",
+  },
+  {
+    label: "Agent usage",
+    zedra: "Yes",
+    builtin: "Vendor",
+    happy: "Limited",
+    omnara: "Partial",
+    ssh: "No",
+  },
+  {
+    label: "Unified history",
+    zedra: "Yes",
+    builtin: "Vendor",
+    happy: "Claude only",
+    omnara: "Partial",
+    ssh: "No",
+  },
+  {
+    label: "Terminal",
+    zedra: "Yes",
+    builtin: "Limited",
+    happy: "Yes",
+    omnara: "Session UI",
+    ssh: "Yes",
+  },
+  {
+    label: "File browser",
+    zedra: "Yes",
+    builtin: "Limited",
+    happy: "No",
+    omnara: "Partial",
+    ssh: "CLI only",
+  },
+  {
+    label: "Code editor",
+    zedra: "Yes",
+    builtin: "Limited",
+    happy: "No",
+    omnara: "Partial",
+    ssh: "Terminal editor",
+  },
+  {
+    label: "Git diff",
+    zedra: "Native",
+    builtin: "Limited",
+    happy: "Terminal",
+    omnara: "Worktrees",
+    ssh: "CLI",
+  },
+  {
+    label: "Markdown",
+    zedra: "Yes",
+    builtin: "Limited",
+    happy: "No",
+    omnara: "Limited",
+    ssh: "Terminal",
+  },
+  {
+    label: "Notifications",
+    zedra: "Yes",
+    builtin: "Vendor",
+    happy: "Yes",
+    omnara: "Yes",
+    ssh: "No",
+  },
+  {
+    label: "Rendering",
+    zedra: "Native GPU",
+    builtin: "Varies",
+    happy: "JS",
+    omnara: "None",
+    ssh: "Terminal",
+  },
+  {
+    label: "Connection",
+    zedra: "P2P, relay",
+    builtin: "Cloud",
+    happy: "Relay",
+    omnara: "Cloud",
+    ssh: "VPN, port",
+  },
+  {
+    label: "Tailscale / VPN",
+    zedra: "Optional",
+    builtin: "Not needed",
+    happy: "Not needed",
+    omnara: "Not needed",
+    ssh: "Required",
+  },
+  {
+    label: "Setup",
+    zedra: "Install, QR",
+    builtin: "Built in",
+    happy: "npm + QR",
+    omnara: "CLI, account",
+    ssh: "Keys, network",
+  },
+  {
+    label: "Open source",
+    zedra: "MIT",
+    builtin: "No",
+    happy: "MIT",
+    omnara: "No",
+    ssh: "Tools vary",
+  },
+];
+
+const faq = [
+  {
+    q: "What is the best way to run Claude Code from a phone?",
+    a: "It depends on what you need. If you only steer one Claude Code session, Claude's built-in Remote Control or Happy work well. If you also want to browse files, read diffs, and run several different agents (Claude Code, Codex, OpenCode) in one place, Zedra gives you a full workspace instead of a single session view.",
+  },
+  {
+    q: "Why not just use SSH and tmux?",
+    a: "SSH + tmux works and stays fully in your control, but you assemble it yourself: VPN or tailnet, key management, tmux sessions, and a mobile terminal like Termius or Termux with its keyboard fighting a desktop TUI. Zedra keeps the agent on your machine with the same trust model, and adds pairing by QR, push notifications, and touch-native code review.",
+  },
+  {
+    q: "Does Zedra send my code to a cloud service?",
+    a: "No. Your code and agents stay on your machine. The phone connects over a direct P2P tunnel with TLS 1.3 end-to-end encryption; when a direct path is blocked, a relay forwards encrypted packets it cannot read.",
+  },
+];
+
+const faqSchema = {
+  "@context": "https://schema.org",
+  "@type": "FAQPage",
+  mainEntity: faq.map((item) => ({
+    "@type": "Question",
+    name: item.q,
+    acceptedAnswer: { "@type": "Answer", text: item.a },
+  })),
+};
+---
+
+<MarketingLayout title={title} description={description} path="/compare" jsonLd={[faqSchema]}>
+  <h1>Mobile clients for AI coding agents, compared</h1>
+  <p>
+    You can remote-control coding agents from a phone several ways: the agent's own app, a
+    dedicated client like
+    <a href="https://happy.engineering" target="_blank" rel="noopener noreferrer">Happy</a> or
+    <a href="https://omnara.com" target="_blank" rel="noopener noreferrer">Omnara</a>, a DIY SSH +
+    tmux setup through a terminal app like
+    <a href="https://termius.com" target="_blank" rel="noopener noreferrer">Termius</a> or
+    <a href="https://termux.dev" target="_blank" rel="noopener noreferrer">Termux</a>, or Zedra. The
+    difference is easiest to see feature by feature.
+  </p>
+
+  <div class="mk-table-wrap compare-table-wrap">
+    <table class="mk-table compare-table">
+      <thead>
+        <tr>
+          <th>Feature</th>
+          <th>Zedra</th>
+          <th>Built-in apps</th>
+          <th>Happy</th>
+          <th>Omnara</th>
+          <th>SSH + tmux</th>
+        </tr>
+      </thead>
+      <tbody>
+        {
+          rows.map((row) => (
+            <tr>
+              <td>{row.label}</td>
+              <td>{row.zedra}</td>
+              <td>{row.builtin}</td>
+              <td>{row.happy}</td>
+              <td>{row.omnara}</td>
+              <td>{row.ssh}</td>
+            </tr>
+          ))
+        }
+      </tbody>
+    </table>
+  </div>
+
+  <style>
+    .compare-table th:nth-child(2),
+    .compare-table td:nth-child(2) {
+      background: rgba(61, 214, 140, 0.045);
+      color: var(--text);
+    }
+
+    .compare-table th:nth-child(2) {
+      color: var(--green);
+    }
+
+    .compare-table {
+      table-layout: fixed;
+      min-width: 960px;
+    }
+
+    .compare-table th,
+    .compare-table td {
+      padding: 12px 14px;
+      overflow-wrap: anywhere;
+      word-break: normal;
+    }
+
+    .compare-table th:first-child,
+    .compare-table td:first-child {
+      width: 210px;
+      white-space: normal;
+    }
+
+    .compare-table td {
+      max-width: none;
+    }
+
+    .compare-table td:first-child {
+      font-weight: 500;
+    }
+  </style>
+
+  <h2>Best fit</h2>
+  <ul class="pick-list">
+    <li><strong>Zedra:</strong> any agent, terminal, files, editor, git diff, markdown, notifications.</li>
+    <li><strong>Built-in apps:</strong> one vendor app, zero extra setup, mostly chat or web task views.</li>
+    <li><strong>Happy:</strong> focused Claude Code control with a lightweight client.</li>
+    <li><strong>Omnara:</strong> hosted multi-agent dashboard with a cloud backend.</li>
+    <li><strong>SSH + tmux:</strong> terminal-only control if you already run the networking yourself.</li>
+  </ul>
+
+  <h2>FAQ</h2>
+  <div class="mk-faq">
+    {
+      faq.map((item) => (
+        <details>
+          <summary>{item.q}</summary>
+          <p>{item.a}</p>
+        </details>
+      ))
+    }
+  </div>
+
+  <ul>
+    <li>
+      <a
+        href="https://apps.apple.com/app/zedra-code-from-anywhere/id6760534630"
+        target="_blank"
+        rel="noopener noreferrer">Download iOS</a
+      >
+    </li>
+    <li>
+      <a
+        href="https://play.google.com/store/apps/details?id=dev.zedra.app"
+        target="_blank"
+        rel="noopener noreferrer">Download Android</a
+      >
+    </li>
+    <li><a href="/docs/installation/">Installation guide</a></li>
+  </ul>
+
+  <p>
+    Comparison last checked July 2026. Spot something outdated?
+    <a href="https://github.com/tanlethanh/zedra/issues" target="_blank" rel="noopener noreferrer"
+      >Open an issue</a
+    >.
+  </p>
+</MarketingLayout>
