@@ -275,6 +275,8 @@ pub struct OpenWebviewReq {
 struct OpenWebviewResp {
     url: String,
     session_id: String,
+    /// True if pushed to a subscribed client now; false if queued for the next one.
+    delivered: bool,
 }
 
 async fn create_terminal_handler(
@@ -391,24 +393,16 @@ async fn open_webview_handler(
             .into_response();
     };
 
-    let delivered = session
-        .push_event(HostEvent::WebViewRequested {
-            url: url.to_string(),
-        })
-        .await;
-    if !delivered {
-        return (
-            StatusCode::SERVICE_UNAVAILABLE,
-            Json(serde_json::json!({"error": "no client subscribed to receive the request"})),
-        )
-            .into_response();
-    }
+    // Deliver now if a client is subscribed; otherwise queue it to flush when one
+    // subscribes, so the host-side CLI works even with no phone attached.
+    let delivered = session.open_or_queue_webview(url.to_string()).await;
 
     (
         StatusCode::OK,
         Json(serde_json::json!(OpenWebviewResp {
             url: url.to_string(),
             session_id: session.id.clone(),
+            delivered,
         })),
     )
         .into_response()

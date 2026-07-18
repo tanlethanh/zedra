@@ -3271,6 +3271,9 @@ async fn dispatch(
                     }
                 }
             });
+            // Deliver any `zedra open` requests that arrived before this client
+            // subscribed (phone disconnected/backgrounded when the CLI ran).
+            session.flush_pending_webviews().await;
         }
 
         ZedraMessage::SubscribeHostInfo(msg) => {
