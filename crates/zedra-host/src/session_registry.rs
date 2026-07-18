@@ -41,7 +41,11 @@ pub enum PairingSlotMode {
 impl PairingSlotMode {
     pub fn expires_in_secs(self) -> Option<u64> {
         match self {
-            Self::OneTime => Some(ONE_TIME_PAIRING_SLOT_TTL_SECS),
+            Self::OneTime => Some(
+                crate::global_config::get()
+                    .network
+                    .pairing_ttl(ONE_TIME_PAIRING_SLOT_TTL_SECS),
+            ),
             Self::Static => None,
         }
     }
@@ -466,7 +470,10 @@ impl TermBacklog {
             terminal_id,
             data,
         });
-        while self.entries.len() > TERM_BACKLOG_ENTRY_LIMIT {
+        let limit = crate::global_config::get()
+            .terminal
+            .scrollback_limit(TERM_BACKLOG_ENTRY_LIMIT);
+        while self.entries.len() > limit {
             self.entries.pop_front();
         }
         seq

@@ -78,6 +78,7 @@ export default defineConfig({
         { label: "Troubleshooting", slug: "docs/troubleshooting" },
         {
           label: "Guides",
+          collapsed: true,
           items: [
             { label: "Run Claude Code from phone", slug: "docs/guides/run-claude-code-from-phone" },
             { label: "Run Codex CLI from phone", slug: "docs/guides/run-codex-cli-from-phone" },

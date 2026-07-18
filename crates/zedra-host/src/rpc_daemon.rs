@@ -120,10 +120,16 @@ struct HostEnvInfo {
 
 fn collect_host_env(workdir: &std::path::Path) -> HostEnvInfo {
     HostEnvInfo {
-        hostname: hostname::get()
-            .ok()
-            .and_then(|h| h.into_string().ok())
-            .unwrap_or_else(|| "unknown".to_string()),
+        hostname: crate::global_config::get()
+            .workspace
+            .host_label
+            .clone()
+            .unwrap_or_else(|| {
+                hostname::get()
+                    .ok()
+                    .and_then(|h| h.into_string().ok())
+                    .unwrap_or_else(|| "unknown".to_string())
+            }),
         username: current_username(),
         workdir: paths::user_path_string(workdir),
         home_dir: current_home_dir(),
@@ -2049,9 +2055,11 @@ async fn finish_auth(
             } else {
                 // No existing session — create a fresh default one.
                 let workdir = &state.workdir;
-                let name = workdir
-                    .file_name()
-                    .and_then(|n| n.to_str())
+                let name = crate::global_config::get()
+                    .workspace
+                    .name
+                    .as_deref()
+                    .or_else(|| workdir.file_name().and_then(|n| n.to_str()))
                     .unwrap_or("default");
                 let session_was_existing = registry.get_by_name(name).await.is_some();
                 let s = registry.create_named(name, workdir.to_path_buf()).await;
@@ -2135,12 +2143,15 @@ pub async fn create_terminal(
     rows: u16,
     mut opts: SpawnOptions,
 ) -> Result<String> {
-    if session.terminals.lock().await.len() >= MAX_TERMINALS_PER_SESSION {
+    let max_terminals = crate::global_config::get()
+        .terminal
+        .max_terminals_limit(MAX_TERMINALS_PER_SESSION);
+    if session.terminals.lock().await.len() >= max_terminals {
         anyhow::bail!(
             "session {} already has {} terminals (limit {})",
             session.id,
-            MAX_TERMINALS_PER_SESSION,
-            MAX_TERMINALS_PER_SESSION,
+            max_terminals,
+            max_terminals,
         );
     }
 

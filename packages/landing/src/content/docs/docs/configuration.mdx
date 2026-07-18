@@ -1,24 +1,41 @@
 ---
 title: Configuration
-description: Set daemon defaults once in a YAML config file — relays, telemetry, shell, agent session limits, and per-agent launch commands.
+description: Set daemon defaults once in a YAML config file — relays, telemetry, terminal shell and environment, agents, and update behavior.
 ---
 
 Set daemon defaults in a config file instead of passing flags on every `zedra start`. The file is optional; without it, Zedra uses its built-in defaults.
 
-Create `~/.config/zedra/config.yaml` and add the settings you want:
+Create `~/.config/zedra/config.yaml` and add the sections you want:
 
 ```yaml
 # ~/.config/zedra/config.yaml
-relay_url:
-  - https://sg1.relay.zedra.dev
-no_telemetry: true
-shell: /bin/zsh
-agent_session_limit: 12
+network:
+  relay_url:
+    - https://sg1.relay.zedra.dev
+  pairing_ttl_secs: 120
+telemetry:
+  disabled: true
+terminal:
+  shell: /bin/zsh
+  env:
+    EDITOR: nvim
+  env_passthrough:
+    - GH_TOKEN
 agents:
-  hermes:
-    launch_cmd: hermes --tui
-  claude:
-    bin: /opt/homebrew/bin/claude
+  session_limit: 12
+  disabled:
+    - pi
+  overrides:
+    hermes:
+      launch_cmd: hermes --tui
+    claude:
+      bin: /opt/homebrew/bin/claude
+workspace:
+  name: My Project
+git:
+  untracked: normal
+update:
+  restart: ask
 ```
 
 Restart the daemon to apply changes:
@@ -49,31 +66,48 @@ Settings resolve from lowest to highest priority:
 4. Environment variables
 5. `zedra start` flags
 
-A flag or environment variable always overrides both files. Each file fills in what the level below it did not set.
+A flag or environment variable always overrides both files. Each file fills in what the level below it did not set. Boolean switches and list settings (`agents.disabled`, `terminal.env_passthrough`) accumulate across the two files rather than replace.
 
-## Settings
+## `network`
 
-### `relay_url`
+- **`relay_url`** — relay servers to advertise. Default: built-in relays. Overridden by `--relay-url`.
+- **`relay_only`** — force relay-only, no hole punching. For hosts behind UDP-blocking firewalls. Also set by `--relay-only`.
+- **`pairing_ttl_secs`** — one-time QR lifetime. Clamp 30–3600, default 600.
 
-Relay servers the daemon advertises for connections. Defaults to Zedra's built-in relays. A `zedra start --relay-url` flag overrides it.
+## `telemetry`
 
-### `no_telemetry`
+- **`disabled`** — `true` turns off anonymous telemetry, like `--no-telemetry`. See [Telemetry](/docs/telemetry).
 
-Set `true` to disable anonymous telemetry for every workspace. This matches `zedra start --no-telemetry` and `ZEDRA_TELEMETRY=0`. See [Telemetry](/docs/telemetry) for what Zedra collects.
+## `terminal`
 
-### `shell`
+- **`shell`** — shell terminals launch. Wins over `$SHELL`.
+- **`env`** — variables injected into every terminal. Win over inherited and passed-through values.
+- **`env_passthrough`** — host env var names to forward. Opt-in, since terminals otherwise start with a sanitized environment to keep secrets out of a phone-controlled shell.
+- **`scrollback`** — output chunks kept per terminal for reconnect replay. Clamp 1000–500000, default 50000.
+- **`max_terminals`** — terminals per session. Clamp 1–64, default 16.
 
-Path to the shell that terminals launch. It overrides the inherited `$SHELL`, so phone terminals use the shell you name regardless of how the daemon started.
+## `agents`
 
-### `agent_session_limit`
+- **`session_limit`** — max concurrent agent sessions. Overridden by `ZEDRA_AGENT_SESSION_LIMIT`.
+- **`disabled`** — registry slugs to hide from lists and scans. Hidden agents still run if launched by hand.
+- **`usage_refresh_secs`** — usage-poll cadence; `0` disables. Overridden by `--usage-refresh-secs`, default 300.
+- **`overrides`** — per-agent launch overrides, keyed by slug (`claude`, `codex`, `opencode`, `hermes`, `pi`, `maki`):
+  - **`bin`** — executable to launch instead of the one on `PATH`.
+  - **`launch_cmd`** — full command, run verbatim. Wins over `bin`. Use it to add flags (`hermes --tui`).
 
-Maximum concurrent managed-agent sessions, clamped to a safe range. The `ZEDRA_AGENT_SESSION_LIMIT` environment variable overrides it.
+## `workspace`
 
-### `agents`
+- **`name`** — label shown on the phone instead of the folder name. Set per workspace to tell apart same-named worktrees.
+- **`host_label`** — host name shown instead of the system hostname.
 
-Per-agent overrides, keyed by the agent's registry slug (`claude`, `codex`, `opencode`, `hermes`, `pi`, `maki`). Each entry takes:
+## `git`
 
-- `bin` — the executable to launch instead of the one on your `PATH`. Use it when the agent CLI lives at a non-standard path.
-- `launch_cmd` — the full command run when starting the agent. It overrides `bin`. Use it to add flags, such as launching Hermes in its TUI with `hermes --tui`.
+- **`untracked`** — `git status` untracked reporting: `all` (default), `normal` (collapse dirs), or `no`. Use `normal`/`no` in large repos.
 
-Agents you do not list keep their default launch command.
+## `logging`
+
+- **`level`** — non-`--verbose` log filter: `error` (default), `warn`, `info`, `debug`. `--verbose` and `RUST_LOG` win. Global file only.
+
+## `update`
+
+- **`restart`** — what `zedra update` does with running daemons: `ask` (default, prompt), `always` (restart, kills terminals), `never` (print the manual command). Global file only.

@@ -115,7 +115,7 @@ pub fn agent_session_limit(limit: u32) -> usize {
     let configured = std::env::var("ZEDRA_AGENT_SESSION_LIMIT")
         .ok()
         .and_then(|value| value.parse::<u32>().ok())
-        .or_else(|| crate::global_config::get().agent_session_limit)
+        .or_else(|| crate::global_config::get().agents.session_limit)
         .unwrap_or(AGENT_SESSION_DEFAULT_LIMIT);
     let limit = if limit == 0 { configured } else { limit };
     limit.clamp(1, AGENT_SESSION_MAX_LIMIT) as usize
@@ -126,14 +126,15 @@ pub fn scan_installed_agents() -> AgentInstalledListResult {
 }
 
 pub fn scan_agent_cli_versions() -> HashMap<String, AgentCliSummary> {
-    let mut versions = HashMap::with_capacity(actors().len());
+    let enabled = enabled_actors();
+    let mut versions = HashMap::with_capacity(enabled.len());
     std::thread::scope(|scope| {
         // Only detail-view actors display a version; skip the subprocess
         // spawn for detect-only actors.
-        let handles: Vec<_> = actors()
-            .iter()
+        let handles: Vec<_> = enabled
+            .into_iter()
             .filter(|actor| actor.shows_detail())
-            .map(|actor| (*actor, scope.spawn(move || actor.cli_version_summary())))
+            .map(|actor| (actor, scope.spawn(move || actor.cli_version_summary())))
             .collect();
         for (actor, handle) in handles {
             match handle.join() {
@@ -168,14 +169,15 @@ pub fn apply_cached_cli_versions(
 }
 
 pub fn scan_agent_list(workdir: &Path) -> AgentListResult {
-    let mut agents = Vec::with_capacity(actors().len());
+    let enabled = enabled_actors();
+    let mut agents = Vec::with_capacity(enabled.len());
     std::thread::scope(|scope| {
-        let handles: Vec<_> = actors()
-            .iter()
+        let handles: Vec<_> = enabled
+            .into_iter()
             .map(|actor| {
                 (
-                    *actor,
-                    scope.spawn(move || agent_summary_scan(*actor, workdir)),
+                    actor,
+                    scope.spawn(move || agent_summary_scan(actor, workdir)),
                 )
             })
             .collect();
@@ -684,6 +686,18 @@ static ACTORS: [&dyn AgentActor; 20] = [
 
 pub(crate) fn actors() -> &'static [&'static dyn AgentActor] {
     &ACTORS
+}
+
+/// Registry actors not hidden via `agents.disabled` in the user config. Used by
+/// list/scan surfaces; slug lookup ([`actor`]) stays unfiltered so a disabled
+/// agent's hooks and resume commands still work if run manually.
+pub(crate) fn enabled_actors() -> Vec<&'static dyn AgentActor> {
+    let config = crate::global_config::get();
+    actors()
+        .iter()
+        .copied()
+        .filter(|actor| !config.agent_disabled(actor.slug()))
+        .collect()
 }
 
 fn sessions_for_actor_blocking(

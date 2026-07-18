@@ -5,8 +5,8 @@ use crate::agent;
 pub fn list_installed_agents() -> AgentInstalledListResult {
     // Probe behind catch_unwind so one panicking actor is dropped from the
     // list instead of taking down the whole scan.
-    let agents = agent::actors()
-        .iter()
+    let agents = agent::enabled_actors()
+        .into_iter()
         .filter_map(|actor| {
             std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
                 let launch_cmd =

@@ -102,9 +102,9 @@ enum Commands {
 
         /// How often (in seconds) to re-fetch live agent usage from provider APIs.
         /// Set to 0 to disable periodic refresh (initial fetch at startup still runs).
-        /// Default: 300 (5 minutes).
-        #[arg(long = "usage-refresh-secs", default_value = "300")]
-        usage_refresh_secs: u64,
+        /// Overrides `agents.usage_refresh_secs` in the config file; default 300.
+        #[arg(long = "usage-refresh-secs")]
+        usage_refresh_secs: Option<u64>,
     },
     /// Stop the daemon for this workspace
     Stop {
@@ -726,11 +726,19 @@ async fn main() -> Result<()> {
         }
         tracing_subscriber::fmt().with_env_filter(filter).init();
     } else {
+        // `global_only` (not `get`) so this pre-workspace read can't cache a
+        // global-only config and defeat per-workspace merging later.
+        let level = global_config::global_only()
+            .logging
+            .level
+            .unwrap_or_else(|| "error".to_string());
+        let filter = tracing_subscriber::EnvFilter::try_new(&level)
+            .unwrap_or_else(|_| tracing_subscriber::EnvFilter::new("error"));
         tracing_subscriber::fmt()
             .compact()
             .without_time()
             .with_target(false)
-            .with_env_filter(tracing_subscriber::EnvFilter::new("error"))
+            .with_env_filter(filter)
             .init();
     }
 
@@ -947,11 +955,15 @@ async fn main() -> Result<()> {
             global_config::init(&workdir);
             let global = global_config::get();
             let relay_url = if relay_url.is_empty() {
-                global.relay_url.clone()
+                global.network.relay_url.clone()
             } else {
                 relay_url
             };
-            let no_telemetry = no_telemetry || global.no_telemetry;
+            let no_telemetry = no_telemetry || global.telemetry.disabled;
+            let relay_only = relay_only || global.network.relay_only;
+            let usage_refresh_secs = usage_refresh_secs
+                .or(global.agents.usage_refresh_secs)
+                .unwrap_or(300);
             let pairing_mode = if static_qr {
                 session_registry::PairingSlotMode::Static
             } else {
@@ -1596,13 +1608,20 @@ async fn main() -> Result<()> {
             // binary is swapped after this process exits, so a restart here
             // would relaunch the old version.
             let restart_requested = cfg!(unix)
-                && !yes
                 && !alive.is_empty()
-                && {
-                    eprint!("Restart running daemons after update? Running terminals will be killed. [y/N] ");
-                    let mut input = String::new();
-                    std::io::stdin().read_line(&mut input)?;
-                    should_restart_daemons(&input)
+                && match global_config::get().update.restart {
+                    global_config::RestartPolicy::Always => true,
+                    global_config::RestartPolicy::Never => false,
+                    // Ask: prompt interactively; a non-interactive `--yes` can't
+                    // answer, so it keeps the safe default of not restarting.
+                    global_config::RestartPolicy::Ask => {
+                        !yes && {
+                            eprint!("Restart running daemons after update? Running terminals will be killed. [y/N] ");
+                            let mut input = String::new();
+                            std::io::stdin().read_line(&mut input)?;
+                            should_restart_daemons(&input)
+                        }
+                    }
                 };
             // Resolve the binary path now: current_exe() can dangle once the
             // update renames the running binary out of the way.
