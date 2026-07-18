@@ -12,15 +12,25 @@ buildscript {
 }
 
 def noTelemetry = project.hasProperty('noTelemetry')
+def requestedReleaseTask = gradle.startParameter.taskNames.any { it.toLowerCase().contains('release') }
+
+// google-services plugin hard-fails without google-services.json. Skip Firebase
+// wiring when the file is absent so debug builds work without push/telemetry,
+// but require it for release so shipped builds never lose Firebase silently.
+def hasGoogleServices = file('app/google-services.json').exists() ||
+        file('src/debug/google-services.json').exists()
+if (requestedReleaseTask && !hasGoogleServices) {
+    throw new GradleException('google-services.json is required for release builds')
+}
 
 apply plugin: 'com.android.application'
 apply plugin: 'org.jetbrains.kotlin.android'
-apply plugin: 'com.google.gms.google-services'
-if (!noTelemetry) {
-    apply plugin: 'com.google.firebase.crashlytics'
+if (hasGoogleServices) {
+    apply plugin: 'com.google.gms.google-services'
+    if (!noTelemetry) {
+        apply plugin: 'com.google.firebase.crashlytics'
+    }
 }
-
-def requestedReleaseTask = gradle.startParameter.taskNames.any { it.toLowerCase().contains('release') }
 
 repositories {
     google()
@@ -101,7 +111,7 @@ android {
             signingConfig = signingConfigs.release
             proguardFiles getDefaultProguardFile('proguard-android.txt'), 'app/proguard-rules.pro'
             minifyEnabled = true
-            if (!noTelemetry && requestedReleaseTask) {
+            if (hasGoogleServices && !noTelemetry && requestedReleaseTask) {
                 firebaseCrashlytics {
                     nativeSymbolUploadEnabled = true
                     unstrippedNativeLibsDir = file('build/zedra-unstripped-libs/release')
