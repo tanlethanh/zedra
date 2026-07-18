@@ -12,7 +12,6 @@ use alacritty_terminal::grid::{Dimensions, Scroll};
 use alacritty_terminal::index::{Column, Line, Point};
 use alacritty_terminal::term::Config;
 use alacritty_terminal::term::cell::{Cell, Flags as CellFlags};
-use alacritty_terminal::term::color::COUNT as ALACRITTY_COLOR_COUNT;
 use alacritty_terminal::term::{Term, TermMode};
 use alacritty_terminal::vte::ansi::{Color as AlacColor, CursorShape, NamedColor, Processor};
 use gpui::{
@@ -208,11 +207,10 @@ pub struct Terminal {
     input_tx: Option<mpsc::Sender<Vec<u8>>>,
     output_task: Option<Task<()>>,
     pending_sync_deadline: Option<Instant>,
-    synchronized_update_generation: u64,
+    synchronized_update_timeout_task: Option<Task<()>>,
     selection_range: Option<Range<usize>>,
     theme: TerminalTheme,
-    /// Last focus state reported (or observed while reporting was off); dedupes
-    /// the synchronous pre-click report against the deferred focus listener.
+    /// Last observed focus state; dedupes repeated focus callbacks.
     focus_reported: StdCell<bool>,
 }
 
@@ -249,7 +247,7 @@ impl Terminal {
             input_tx: None,
             output_task: None,
             pending_sync_deadline: None,
-            synchronized_update_generation: 0,
+            synchronized_update_timeout_task: None,
             selection_range: None,
             theme,
             focus_reported: StdCell::new(true),
@@ -288,7 +286,7 @@ impl Terminal {
         let output_task = cx.spawn(async move |this, cx| {
             while let Some(bytes) = output_rx.recv().await {
                 let _ = this.update(cx, |this, cx| {
-                    let should_present = this.advance_bytes(&bytes);
+                    let should_present = this.advance_output_bytes(&bytes);
                     this.feed_osc_bytes(&bytes);
                     this.present_output_when_ready(should_present, cx);
                 });
@@ -313,8 +311,12 @@ impl Terminal {
         self.send_bytes(text.into_bytes()).await;
     }
 
-    /// Feed PTY output into the emulator, returning whether it is ready to present.
-    pub fn advance_bytes(&mut self, bytes: &[u8]) -> bool {
+    /// Feed bytes from PTY output buffer into the terminal emulator.
+    pub fn advance_bytes(&mut self, bytes: &[u8]) {
+        self.advance_output_bytes(bytes);
+    }
+
+    fn advance_output_bytes(&mut self, bytes: &[u8]) -> bool {
         let was_alt = self.mode.contains(TermMode::ALT_SCREEN);
         let previous_display_offset = self.display_offset();
         self.processor.advance(&mut self.term, bytes);
@@ -351,10 +353,9 @@ impl Terminal {
 
     fn present_output_when_ready(&mut self, should_present: bool, cx: &mut Context<Self>) {
         if should_present {
-            if self.pending_sync_deadline.take().is_some() {
-                self.synchronized_update_generation =
-                    self.synchronized_update_generation.wrapping_add(1);
-            }
+            self.pending_sync_deadline = None;
+            // Dropping the task cancels the fallback after a normal end marker.
+            self.synchronized_update_timeout_task.take();
             cx.notify();
             return;
         }
@@ -367,26 +368,20 @@ impl Terminal {
         }
 
         self.pending_sync_deadline = Some(deadline);
-        self.synchronized_update_generation = self.synchronized_update_generation.wrapping_add(1);
-        let generation = self.synchronized_update_generation;
         let delay = deadline.saturating_duration_since(Instant::now());
-        cx.spawn(async move |this, cx| {
+        self.synchronized_update_timeout_task = Some(cx.spawn(async move |this, cx| {
             cx.background_executor().timer(delay).await;
             let _ = this.update(cx, |this, cx| {
-                // A stale timeout must not flush a later synchronized frame.
-                if this.synchronized_update_generation != generation {
+                if this.pending_sync_deadline != Some(deadline) {
                     return;
                 }
 
                 if this.stop_synchronized_update() {
                     this.pending_sync_deadline = None;
-                    this.synchronized_update_generation =
-                        this.synchronized_update_generation.wrapping_add(1);
                     cx.notify();
                 }
             });
-        })
-        .detach();
+        }));
     }
 
     fn drain_alacritty_events(&mut self) {
@@ -2649,7 +2644,6 @@ mod tests {
     use std::path::Path;
     use std::time::Duration;
 
-    use crate::TerminalTheme;
     use alacritty_terminal::index::{Column, Line, Point};
     use alacritty_terminal::term::TermMode;
     use gpui::{AppContext, TestAppContext, px};
@@ -2764,7 +2758,7 @@ mod tests {
         terminal.send_focus_report(false);
         assert_eq!(input_rx.try_recv().unwrap(), b"\x1b[O");
 
-        // Synchronous pre-click report followed by the deferred focus listener.
+        // Repeated focus callbacks emit only one report.
         terminal.send_focus_report(true);
         terminal.send_focus_report(true);
         assert_eq!(input_rx.try_recv().unwrap(), b"\x1b[I");
@@ -2790,7 +2784,7 @@ mod tests {
     fn synchronized_output_presents_only_after_end_marker() {
         let mut terminal = Terminal::new(80, 4, px(10.0), px(20.0));
 
-        assert!(!terminal.advance_bytes(b"\x1b[?2026hheld"));
+        assert!(!terminal.advance_output_bytes(b"\x1b[?2026hheld"));
         assert!(
             !terminal
                 .content()
@@ -2798,8 +2792,8 @@ mod tests {
                 .iter()
                 .any(|cell| cell.cell.c == 'h')
         );
-        assert!(!terminal.advance_bytes(b" output"));
-        assert!(terminal.advance_bytes(b"\x1b[?2026l"));
+        assert!(!terminal.advance_output_bytes(b" output"));
+        assert!(terminal.advance_output_bytes(b"\x1b[?2026l"));
 
         let text: String = terminal
             .content()
@@ -2814,10 +2808,10 @@ mod tests {
     fn synchronized_output_handles_split_markers() {
         let mut terminal = Terminal::new(80, 4, px(10.0), px(20.0));
 
-        assert!(terminal.advance_bytes(b"\x1b[?20"));
-        assert!(!terminal.advance_bytes(b"26hsplit"));
-        assert!(!terminal.advance_bytes(b"\x1b[?202"));
-        assert!(terminal.advance_bytes(b"6l"));
+        assert!(terminal.advance_output_bytes(b"\x1b[?20"));
+        assert!(!terminal.advance_output_bytes(b"26hsplit"));
+        assert!(!terminal.advance_output_bytes(b"\x1b[?202"));
+        assert!(terminal.advance_output_bytes(b"6l"));
 
         let text: String = terminal
             .content()
@@ -2832,7 +2826,7 @@ mod tests {
     fn synchronized_output_timeout_releases_buffered_content() {
         let mut terminal = Terminal::new(80, 4, px(10.0), px(20.0));
 
-        assert!(!terminal.advance_bytes(b"\x1b[?2026htimed out"));
+        assert!(!terminal.advance_output_bytes(b"\x1b[?2026htimed out"));
         assert!(terminal.stop_synchronized_update());
 
         let text: String = terminal
