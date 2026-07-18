@@ -1,4 +1,5 @@
 use std::borrow::Cow;
+use std::cell::Cell as StdCell;
 use std::cmp::min;
 use std::ops::{Index, Range};
 use std::path::{Path, PathBuf};
@@ -209,6 +210,9 @@ pub struct Terminal {
     output_task: Option<Task<()>>,
     selection_range: Option<Range<usize>>,
     theme: TerminalTheme,
+    /// Last focus state reported (or observed while reporting was off); dedupes
+    /// the synchronous pre-click report against the deferred focus listener.
+    focus_reported: StdCell<bool>,
 }
 
 impl Terminal {
@@ -245,6 +249,7 @@ impl Terminal {
             output_task: None,
             selection_range: None,
             theme,
+            focus_reported: StdCell::new(true),
         };
         terminal
     }
@@ -2014,6 +2019,11 @@ impl Terminal {
     /// Report focus gain/loss to apps that enabled mode 1004 (e.g. vim, tmux),
     /// so they can redraw or pause when the terminal moves in and out of focus.
     pub fn send_focus_report(&self, focused: bool) {
+        // Track state even when reporting is off so a later mode-1004 enable
+        // still sees the real transition.
+        if self.focus_reported.replace(focused) == focused {
+            return;
+        }
         if self.input_tx.is_none() || !self.mode.contains(TermMode::FOCUS_IN_OUT) {
             return;
         }
@@ -2674,6 +2684,38 @@ mod tests {
 
         let bytes = String::from_utf8(input_rx.try_recv().unwrap()).unwrap();
         assert_eq!(bytes, "\x1b[200~one[31mtwo\x1b[201~");
+    }
+
+    #[test]
+    fn focus_report_dedupes_repeated_state() {
+        let mut terminal = Terminal::new(80, 4, px(10.0), px(20.0));
+        let (input_tx, mut input_rx) = mpsc::channel(4);
+        terminal.input_tx = Some(input_tx);
+        terminal.mode.insert(TermMode::FOCUS_IN_OUT);
+
+        terminal.send_focus_report(false);
+        assert_eq!(input_rx.try_recv().unwrap(), b"\x1b[O");
+
+        // Synchronous pre-click report followed by the deferred focus listener.
+        terminal.send_focus_report(true);
+        terminal.send_focus_report(true);
+        assert_eq!(input_rx.try_recv().unwrap(), b"\x1b[I");
+        assert!(input_rx.try_recv().is_err(), "duplicate focus-in sent");
+    }
+
+    #[test]
+    fn focus_state_tracked_while_reporting_disabled() {
+        let mut terminal = Terminal::new(80, 4, px(10.0), px(20.0));
+        let (input_tx, mut input_rx) = mpsc::channel(4);
+        terminal.input_tx = Some(input_tx);
+
+        // Blur observed before the app enables mode 1004.
+        terminal.send_focus_report(false);
+        assert!(input_rx.try_recv().is_err());
+
+        terminal.mode.insert(TermMode::FOCUS_IN_OUT);
+        terminal.send_focus_report(true);
+        assert_eq!(input_rx.try_recv().unwrap(), b"\x1b[I");
     }
 
     #[test]

@@ -530,39 +530,38 @@ impl TerminalView {
             return;
         }
 
-        // Mouse-tracking TUIs consume the tap as a click; keep the keyboard as-is.
-        let clicked = self.terminal.update(cx, |terminal, _| {
-            terminal.send_mouse_click(position, self.grid_origin, event.modifiers())
-        });
-        if clicked {
-            window.prevent_default();
-            if !self.focus_handle.is_focused(window) {
-                self.focus_handle.focus(window, cx);
-            }
+        let is_focused = self.focus_handle.is_focused(window);
+        let keyboard_visible = window.is_soft_keyboard_visible();
+        window.prevent_default();
+
+        // Keyboard-up tap dismisses even in mouse mode, so fullscreen TUIs keep a
+        // way to hide the keyboard; clicks resume once it is down.
+        if is_focused && keyboard_visible {
+            // window.blur only blurs focus, not the keyboard — hide it explicitly.
+            window.hide_soft_keyboard();
+            window.blur();
             cx.notify();
             return;
         }
 
-        let is_focused = self.focus_handle.is_focused(window);
-        let keyboard_visible = window.is_soft_keyboard_visible();
-
-        window.prevent_default();
-
-        if is_focused && keyboard_visible {
-            // Must explicitly hide the keyboard, window.blur only blurs the focus, not the keyboard.
-            window.hide_soft_keyboard();
-            window.blur();
-            cx.notify();
-        } else if is_focused {
-            // Keyboard might not be visible when already focused.
-            // It does nothing if the keyboard is already visible.
-            window.show_soft_keyboard();
-            cx.notify();
-        } else if !is_focused {
+        // Unfocused tap raises the keyboard and focuses; it does not click, so a
+        // TUI is reached in the keyboard-down state where taps become clicks.
+        if !is_focused {
             self.focus_handle.focus(window, cx);
             window.show_soft_keyboard();
             cx.notify();
+            return;
         }
+
+        // Focused with the keyboard down: mouse-tracking TUIs consume the tap as a
+        // click; otherwise fall back to raising the keyboard.
+        let clicked = self.terminal.update(cx, |terminal, _| {
+            terminal.send_mouse_click(position, self.grid_origin, event.modifiers())
+        });
+        if !clicked {
+            window.show_soft_keyboard();
+        }
+        cx.notify();
     }
 
     fn handle_terminal_long_press(
