@@ -156,7 +156,7 @@ The tunnel is quiet on success and logs at failure, all under the `web-tunnel:` 
 - **App** (`crates/zedra/src/web_tunnel/`): `info` when an exact-port listener or the alias SOCKS proxy binds; `info` when exact-port is unavailable and the alias is offered; `warn` on setup/accept failure.
 - **Host** (`crates/zedra-host/src/rpc_daemon.rs`): `warn` when a `WebConnect` is rejected — invalid port, non-loopback destination, or the host can't reach the localhost server (the "web server isn't running" case).
 
-WebView navigation failures log under `webview: `: iOS `didFailProvisionalNavigation`/`didFail` with the `NSURLErrorDomain` code (then it renders the inline error page); Android `onReceivedError`/`onReceivedHttpError`.
+WebView navigation failures log under `webview:`: iOS `didFailProvisionalNavigation`/`didFail` with the `NSURLErrorDomain` code (then it renders the inline error page); Android `onReceivedError`/`onReceivedHttpError`.
 
 Read the logs by platform:
 
@@ -167,7 +167,7 @@ Read the logs by platform:
 Localizing a blank/broken load:
 - No app-side or webview log at all — the tap never reached the tunnel seam (check the terminal link handler).
 - A host `warn` about a rejected/unreachable `WebConnect` — the host web server isn't listening on that port (start it), or the destination isn't loopback.
-- A `webview: ` navigation failure with no host log — a platform network policy block (iOS ATS, Android cleartext) or a session/RPC transport issue; the `NSURLErrorDomain`/`ERR_CLEARTEXT_NOT_PERMITTED` code narrows it. iOS shows the inline error page here rather than blanking.
+- A `webview:` navigation failure with no host log — a platform network policy block (iOS ATS, Android cleartext) or a session/RPC transport issue; the `NSURLErrorDomain`/`ERR_CLEARTEXT_NOT_PERMITTED` code narrows it. iOS shows the inline error page here rather than blanking.
 - The page loads but stays blank — the TCP bridge is fine; inspect the page's own JS/console output.
 - The main page loads but a companion port never connects — exact-port mode: the sniffer didn't surface that `localhost:<port>` in the first 64KB (or it was HTTPS); alias mode: the page hardcoded a loopback companion (bypassed). Or the host isn't serving that port (host `warn`).
 

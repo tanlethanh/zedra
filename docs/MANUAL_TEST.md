@@ -730,7 +730,7 @@ printf '\033]8;;https://zedra.dev\033\\zedra.dev\033]8;;\033\\\n'
 
 ## 9a. Terminal Localhost Web Tunnel
 
-The tunnel routes the webview through an in-app SOCKS5 proxy on an ephemeral loopback port: the page loads the literal `http://localhost:5173` and every `localhost:*` connection it makes (documents, XHR, WebSocket, SSE, companion API/WS ports) rides the proxy — no per-port binds, no discovery step. Because there's no fixed local port to collide with, this works on the **iOS simulator** too (where the simulator shares the Mac's loopback). One rule for dev servers: address the host as `localhost`, not the IP literal `127.0.0.1` (WKWebView connects IP-literal loopback directly, bypassing the proxy).
+The default exact-port mode binds `127.0.0.1:<port>` on the device and opens the literal localhost URL. If that port is unavailable, you can opt the workspace into alias mode, which rewrites the host and routes traffic through the in-app SOCKS5 proxy. On the iOS simulator, exact-port can collide with a server using the same Mac loopback port. In alias mode, use `localhost` rather than `127.0.0.1`, which WKWebView can route outside the proxy.
 
 1. On the host, run `./examples/webview-tunnel/run.sh` (multi-port test app: page on `5173`, JSON API + SSE on `5174`, WebSocket on `5175`; see `examples/webview-tunnel/README.md`).
 2. Connect to the same workspace from iOS or Android and open a terminal.
@@ -819,7 +819,7 @@ Exercises the reusable `webview.rs` capabilities (config, JS messaging, eval, na
 
 ### Reading the logs (Android)
 
-App logs use logcat tag `zedra` with the `webview: ` prefix:
+App logs use logcat tag `zedra` with the `webview:` prefix:
 
 ```sh
 adb logcat -c                       # clear

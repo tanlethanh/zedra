@@ -16,7 +16,6 @@ enum ZedraDeeplink {
     /// Route a raw `zedra://` URL string into the Rust core.
     static func route(urlString: String) {
         guard !urlString.isEmpty else { return }
-        NSLog("deeplink: routing url %@", urlString)
         urlString.withCString { zedra_deeplink_received($0) }
     }
 
@@ -27,7 +26,6 @@ enum ZedraDeeplink {
             NSLog("deeplink: notification tap: no deeplink in userInfo")
             return
         }
-        NSLog("deeplink: notification tap: routing deeplink %@", deeplink)
         route(urlString: deeplink)
     }
 
