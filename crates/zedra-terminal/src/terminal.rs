@@ -1,5 +1,4 @@
 use std::borrow::Cow;
-use std::cell::Cell as StdCell;
 use std::cmp::min;
 use std::ops::{Index, Range};
 use std::path::{Path, PathBuf};
@@ -15,8 +14,7 @@ use alacritty_terminal::term::cell::{Cell, Flags as CellFlags};
 use alacritty_terminal::term::{Term, TermMode};
 use alacritty_terminal::vte::ansi::{Color as AlacColor, CursorShape, NamedColor, Processor};
 use gpui::{
-    Context, Keystroke, Modifiers, Pixels, Point as GpuiPoint, ScrollDelta, ScrollWheelEvent, Task,
-    px,
+    Context, Keystroke, Pixels, Point as GpuiPoint, ScrollDelta, ScrollWheelEvent, Task, px,
 };
 use tokio::sync::{broadcast, mpsc};
 use zedra_osc::{OscEvent, OscScanner};
@@ -210,8 +208,6 @@ pub struct Terminal {
     synchronized_update_timeout_task: Option<Task<()>>,
     selection_range: Option<Range<usize>>,
     theme: TerminalTheme,
-    /// Last observed focus state; dedupes repeated focus callbacks.
-    focus_reported: StdCell<bool>,
 }
 
 impl Terminal {
@@ -250,7 +246,6 @@ impl Terminal {
             synchronized_update_timeout_task: None,
             selection_range: None,
             theme,
-            focus_reported: StdCell::new(true),
         };
         terminal
     }
@@ -2053,46 +2048,6 @@ impl Terminal {
         true
     }
 
-    /// Forward a tap as a left-click (press + release) when the app requested
-    /// mouse tracking. Shift is the escape hatch that keeps taps local.
-    pub fn send_mouse_click(
-        &self,
-        position: gpui::Point<Pixels>,
-        grid_origin: Option<gpui::Point<Pixels>>,
-        modifiers: Modifiers,
-    ) -> bool {
-        if self.input_tx.is_none() || modifiers.shift {
-            return false;
-        }
-        let Some(point) = self.grid_point_at(position, grid_origin) else {
-            return false;
-        };
-        let Some(press) = mouse_report_bytes(point, 0, modifiers, false, self.mode) else {
-            return false;
-        };
-        let Some(release) = mouse_report_bytes(point, 0, modifiers, true, self.mode) else {
-            return false;
-        };
-        self.send_bytes_sync(press);
-        self.send_bytes_sync(release);
-        true
-    }
-
-    /// Report focus gain/loss to apps that enabled mode 1004 (e.g. vim, tmux),
-    /// so they can redraw or pause when the terminal moves in and out of focus.
-    pub fn send_focus_report(&self, focused: bool) {
-        // Track state even when reporting is off so a later mode-1004 enable
-        // still sees the real transition.
-        if self.focus_reported.replace(focused) == focused {
-            return;
-        }
-        if self.input_tx.is_none() || !self.mode.contains(TermMode::FOCUS_IN_OUT) {
-            return;
-        }
-        let report = if focused { b"\x1b[I" } else { b"\x1b[O" };
-        self.send_bytes_sync(report.to_vec());
-    }
-
     pub fn commit_scroll_lines(
         &mut self,
         lines: i32,
@@ -2132,50 +2087,33 @@ fn alt_scroll_bytes(lines: i32) -> Vec<u8> {
 }
 
 fn scroll_report_bytes(point: Point, event: &ScrollWheelEvent, mode: TermMode) -> Option<Vec<u8>> {
-    let button = if scroll_is_up(event) { 64 } else { 65 };
-    mouse_report_bytes(point, button, event.modifiers, false, mode)
-}
-
-/// Encode a mouse event for the PTY. `button` is the raw button code
-/// (0/1/2 = left/middle/right, 64/65 = wheel up/down); wheel events never release.
-fn mouse_report_bytes(
-    point: Point,
-    button: u8,
-    modifiers: Modifiers,
-    released: bool,
-    mode: TermMode,
-) -> Option<Vec<u8>> {
     if !mode.intersects(TermMode::MOUSE_MODE) || point.line < Line(0) {
         return None;
     }
 
-    let mut cb = button;
-    if modifiers.shift {
-        cb += 4;
+    let mut button = if scroll_is_up(event) { 64 } else { 65 };
+    if event.modifiers.shift {
+        button += 4;
     }
-    if modifiers.alt {
-        cb += 8;
+    if event.modifiers.alt {
+        button += 8;
     }
-    if modifiers.control {
-        cb += 16;
+    if event.modifiers.control {
+        button += 16;
     }
 
     if mode.contains(TermMode::SGR_MOUSE) {
-        let action = if released { 'm' } else { 'M' };
         Some(
             format!(
-                "\x1b[<{};{};{}{}",
-                cb,
+                "\x1b[<{};{};{}M",
+                button,
                 point.column.0 + 1,
-                point.line.0 + 1,
-                action
+                point.line.0 + 1
             )
             .into_bytes(),
         )
     } else {
-        // Legacy encoding can't name the released button; button 3 means release.
-        let cb = if released { 3 + (cb & !0b11) } else { cb };
-        normal_mouse_report(point, cb, mode.contains(TermMode::UTF8_MOUSE))
+        normal_mouse_scroll_report(point, button, mode.contains(TermMode::UTF8_MOUSE))
     }
 }
 
@@ -2186,7 +2124,7 @@ fn scroll_is_up(event: &ScrollWheelEvent) -> bool {
     }
 }
 
-fn normal_mouse_report(point: Point, button: u8, utf8: bool) -> Option<Vec<u8>> {
+fn normal_mouse_scroll_report(point: Point, button: u8, utf8: bool) -> Option<Vec<u8>> {
     let line = point.line.0;
     let column = point.column.0;
     let max_point = if utf8 { 2015usize } else { 223usize };
@@ -2746,38 +2684,6 @@ mod tests {
 
         let bytes = String::from_utf8(input_rx.try_recv().unwrap()).unwrap();
         assert_eq!(bytes, "\x1b[200~one[31mtwo\x1b[201~");
-    }
-
-    #[test]
-    fn focus_report_dedupes_repeated_state() {
-        let mut terminal = Terminal::new(80, 4, px(10.0), px(20.0));
-        let (input_tx, mut input_rx) = mpsc::channel(4);
-        terminal.input_tx = Some(input_tx);
-        terminal.mode.insert(TermMode::FOCUS_IN_OUT);
-
-        terminal.send_focus_report(false);
-        assert_eq!(input_rx.try_recv().unwrap(), b"\x1b[O");
-
-        // Repeated focus callbacks emit only one report.
-        terminal.send_focus_report(true);
-        terminal.send_focus_report(true);
-        assert_eq!(input_rx.try_recv().unwrap(), b"\x1b[I");
-        assert!(input_rx.try_recv().is_err(), "duplicate focus-in sent");
-    }
-
-    #[test]
-    fn focus_state_tracked_while_reporting_disabled() {
-        let mut terminal = Terminal::new(80, 4, px(10.0), px(20.0));
-        let (input_tx, mut input_rx) = mpsc::channel(4);
-        terminal.input_tx = Some(input_tx);
-
-        // Blur observed before the app enables mode 1004.
-        terminal.send_focus_report(false);
-        assert!(input_rx.try_recv().is_err());
-
-        terminal.mode.insert(TermMode::FOCUS_IN_OUT);
-        terminal.send_focus_report(true);
-        assert_eq!(input_rx.try_recv().unwrap(), b"\x1b[I");
     }
 
     #[test]
@@ -4829,45 +4735,5 @@ mod tests {
         let links = terminal.detect_plain_links();
         assert_eq!(links.len(), 1, "expected only URL match, got {:?}", links);
         assert_eq!(links[0].kind, super::DetectedLinkKind::Url);
-    }
-
-    #[test]
-    fn mouse_report_bytes_encodes_sgr_click() {
-        let point = Point::new(Line(4), Column(9));
-        let mode = TermMode::MOUSE_REPORT_CLICK | TermMode::SGR_MOUSE;
-        let mods = gpui::Modifiers::default();
-        let press = super::mouse_report_bytes(point, 0, mods, false, mode).unwrap();
-        let release = super::mouse_report_bytes(point, 0, mods, true, mode).unwrap();
-        assert_eq!(press, b"\x1b[<0;10;5M");
-        assert_eq!(release, b"\x1b[<0;10;5m");
-    }
-
-    #[test]
-    fn mouse_report_bytes_adds_modifier_bits() {
-        let point = Point::new(Line(0), Column(0));
-        let mode = TermMode::MOUSE_REPORT_CLICK | TermMode::SGR_MOUSE;
-        let mods = gpui::Modifiers {
-            control: true,
-            ..Default::default()
-        };
-        let press = super::mouse_report_bytes(point, 0, mods, false, mode).unwrap();
-        assert_eq!(press, b"\x1b[<16;1;1M");
-    }
-
-    #[test]
-    fn mouse_report_bytes_legacy_release_uses_button_three() {
-        let point = Point::new(Line(0), Column(0));
-        let mode = TermMode::MOUSE_REPORT_CLICK;
-        let mods = gpui::Modifiers::default();
-        let release = super::mouse_report_bytes(point, 0, mods, true, mode).unwrap();
-        // ESC [ M, then 32+3 (button release), 32+1+col, 32+1+line.
-        assert_eq!(release, vec![0x1b, b'[', b'M', 35, 33, 33]);
-    }
-
-    #[test]
-    fn mouse_report_bytes_none_without_mouse_mode() {
-        let point = Point::new(Line(0), Column(0));
-        let mods = gpui::Modifiers::default();
-        assert!(super::mouse_report_bytes(point, 0, mods, false, TermMode::empty()).is_none());
     }
 }

@@ -170,20 +170,10 @@ impl TerminalView {
             }
         });
 
-        let focus_handle = cx.focus_handle();
-        let subscriptions = vec![
-            cx.on_focus(&focus_handle, window, |this, _window, cx| {
-                this.terminal.read(cx).send_focus_report(true);
-            }),
-            cx.on_blur(&focus_handle, window, |this, _window, cx| {
-                this.terminal.read(cx).send_focus_report(false);
-            }),
-        ];
-
         Self {
             terminal,
             terminal_id,
-            focus_handle,
+            focus_handle: cx.focus_handle(),
             scroll_offset_px: 0.0,
             remote_scroll_offset_px: 0.0,
             keyboard_top_reveal_px: 0.0,
@@ -196,7 +186,7 @@ impl TerminalView {
             is_alt_screen: false,
             terminal_theme: TerminalTheme::dark(),
             _event_task: event_task,
-            _subscriptions: subscriptions,
+            _subscriptions: vec![],
         }
     }
 
@@ -540,8 +530,6 @@ impl TerminalView {
         let keyboard_visible = window.is_soft_keyboard_visible();
         window.prevent_default();
 
-        // Keyboard-up tap dismisses even in mouse mode, so fullscreen TUIs keep a
-        // way to hide the keyboard; clicks resume once it is down.
         if is_focused && keyboard_visible {
             // window.blur only blurs focus, not the keyboard — hide it explicitly.
             window.hide_soft_keyboard();
@@ -550,8 +538,6 @@ impl TerminalView {
             return;
         }
 
-        // Unfocused tap raises the keyboard and focuses; it does not click, so a
-        // TUI is reached in the keyboard-down state where taps become clicks.
         if !is_focused {
             self.focus_handle.focus(window, cx);
             window.show_soft_keyboard();
@@ -559,14 +545,7 @@ impl TerminalView {
             return;
         }
 
-        // Focused with the keyboard down: mouse-tracking TUIs consume the tap as a
-        // click; otherwise fall back to raising the keyboard.
-        let clicked = self.terminal.update(cx, |terminal, _| {
-            terminal.send_mouse_click(position, self.grid_origin, event.modifiers())
-        });
-        if !clicked {
-            window.show_soft_keyboard();
-        }
+        window.show_soft_keyboard();
         cx.notify();
     }
 
