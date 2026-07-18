@@ -8,9 +8,10 @@ use iroh::{
     Endpoint, EndpointAddr, NetReport, PublicKey, RelayConfig, RelayMap, RelayMode,
     address_lookup::PkarrResolver,
     endpoint::{
-        AuthenticationError as IrohAuthenticationError, ConnectError as IrohConnectError,
-        ConnectingError as IrohConnectingError, Connection, ConnectionError as IrohConnectionError,
-        PathInfo, QuicTransportConfig, TransportErrorCode,
+        AuthenticationError as IrohAuthenticationError,
+        ConnectWithOptsError as IrohConnectWithOptsError, ConnectingError as IrohConnectingError,
+        Connection, ConnectionError as IrohConnectionError, PathInfo, QuicTransportConfig,
+        TransportErrorCode,
     },
 };
 use iroh_relay::RelayQuicConfig;
@@ -51,6 +52,39 @@ pub type ConnectedResult = (
 
 const IDLE_STALE_INTERVAL_MULTIPLIER: u32 = 2;
 const TLS_ALERT_NO_APPLICATION_PROTOCOL: u8 = 0x78;
+
+/// Heartbeat cadence while the otherwise-opaque connect future is pending, so
+/// the UI can show live elapsed time and tell a stall from an in-progress connect.
+const HOLE_PUNCH_HEARTBEAT: Duration = Duration::from_secs(1);
+
+/// Event-channel slots kept free for lifecycle events. Progress heartbeats
+/// never use them, so a stalled receiver (e.g. a backgrounded app) can't fill
+/// the queue and drop AddrResolved/HolePunchComplete/auth events. Sized above
+/// the lifecycle + network-change events one connect emits (channel holds 64).
+const PROGRESS_RESERVED_SLOTS: usize = 24;
+
+/// Window after connect for a direct path to form before we report relay-only.
+const DIRECT_UPGRADE_TIMEOUT: Duration = Duration::from_secs(10);
+
+/// Sub-stage of the connect/hole-punch phase, surfaced for progress visibility.
+/// `endpoint.connect()` hides both behind a single await; we split them so the
+/// UI and telemetry can attribute slowness to discovery vs. the QUIC handshake.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum HolePunchStage {
+    /// Resolving remote addresses via pkarr/DNS discovery.
+    Resolving,
+    /// QUIC + TLS handshake over the resolved path (relay first, usually).
+    Handshake,
+}
+
+impl HolePunchStage {
+    pub fn display_name(&self) -> &'static str {
+        match self {
+            Self::Resolving => "Finding host",
+            Self::Handshake => "Handshaking",
+        }
+    }
+}
 
 /// Tracks the last confirmed transport receive progress for UI idle state.
 ///
@@ -254,10 +288,22 @@ pub enum ConnectEvent {
         binding_ms: u64,
     },
     HolePunchStarted,
+    /// Heartbeat during the connect await; carries the live sub-stage + elapsed
+    /// so the UI can show progress and flag a stall.
+    HolePunchProgress {
+        stage: HolePunchStage,
+        elapsed_ms: u64,
+    },
+    /// Remote addresses resolved (pkarr/DNS); QUIC handshake begins next.
+    AddrResolved {
+        resolve_ms: u64,
+    },
     HolePunchComplete {
         remote_node_id: String,
         alpn: String,
         hole_punch_ms: u64,
+        resolve_ms: u64,
+        handshake_ms: u64,
     },
     Registering {
         session_id: String,
@@ -304,6 +350,12 @@ pub enum ConnectEvent {
     PathUpgraded {
         prev_path: Option<PathInfo>,
         new_path: PathInfo,
+        /// Time from connection establishment to this first direct path.
+        upgrade_ms: u64,
+    },
+    /// No direct path formed within DIRECT_UPGRADE_TIMEOUT; staying on relay.
+    DirectUpgradeTimeout {
+        elapsed_ms: u64,
     },
     NoActivePath,
 
@@ -460,29 +512,87 @@ impl Connector {
         self.emit(ConnectEvent::HolePunchStarted);
         let t = Instant::now();
 
-        let conn = endpoint
-            .connect(remote_addr, &self.config.alpn)
+        // Stage A: resolve remote addresses (pkarr/DNS) then start the QUIC connect.
+        // `remote_addr` is id-only, so this always pays a discovery round-trip.
+        let connecting = self
+            .await_with_heartbeat(
+                HolePunchStage::Resolving,
+                t,
+                endpoint.connect_with_opts(remote_addr, &self.config.alpn, Default::default()),
+            )
             .await
             .map_err(|e| {
-                let err = map_iroh_connect_error(&e);
+                let err = map_connect_with_opts_error(&e);
                 self.emit(ConnectEvent::Failed { error: err.clone() });
                 err
             })?;
+        let resolve_ms = t.elapsed().as_millis() as u64;
+        self.emit(ConnectEvent::AddrResolved { resolve_ms });
 
+        // Stage B: QUIC + TLS handshake, over the relay path first in most cases.
+        let t_handshake = Instant::now();
+        let conn = self
+            .await_with_heartbeat(HolePunchStage::Handshake, t_handshake, connecting)
+            .await
+            .map_err(|e| {
+                let err = map_connecting_error(&e);
+                self.emit(ConnectEvent::Failed { error: err.clone() });
+                err
+            })?;
+        let handshake_ms = t_handshake.elapsed().as_millis() as u64;
         let hole_punch_ms = t.elapsed().as_millis() as u64;
+
         let remote_node_id = conn.remote_id().fmt_short().to_string();
         let alpn = String::from_utf8_lossy(conn.alpn()).to_string();
+        let via_relay = initial_path_is_relay(&conn);
         info!(
-            "iroh: connected to {}, alpn: {} in {}ms",
-            remote_node_id, alpn, hole_punch_ms
+            "holepunch: connected to {} alpn {} resolve {}ms handshake {}ms via_relay {}",
+            remote_node_id, alpn, resolve_ms, handshake_ms, via_relay
         );
 
         self.emit(ConnectEvent::HolePunchComplete {
             remote_node_id,
             alpn,
             hole_punch_ms,
+            resolve_ms,
+            handshake_ms,
         });
         Ok(conn)
+    }
+
+    /// Await `fut` while emitting a heartbeat every `HOLE_PUNCH_HEARTBEAT`, so the
+    /// UI gets live elapsed time during an otherwise-opaque connect stage.
+    async fn await_with_heartbeat<F, T, E>(
+        &self,
+        stage: HolePunchStage,
+        started_at: Instant,
+        fut: F,
+    ) -> Result<T, E>
+    where
+        F: std::future::Future<Output = Result<T, E>>,
+    {
+        tokio::pin!(fut);
+        let mut ticker = tokio::time::interval(HOLE_PUNCH_HEARTBEAT);
+        ticker.tick().await; // first tick is immediate; skip it
+        loop {
+            tokio::select! {
+                res = &mut fut => return res,
+                _ = ticker.tick() => self.emit_progress(stage, started_at),
+            }
+        }
+    }
+
+    /// Emit a heartbeat, but only while the channel keeps `PROGRESS_RESERVED_SLOTS`
+    /// free. Progress is latest-wins, so dropping ticks is harmless — the invariant
+    /// that matters is that periodic heartbeats never evict lifecycle events.
+    fn emit_progress(&self, stage: HolePunchStage, started_at: Instant) {
+        if self.tx.capacity() <= PROGRESS_RESERVED_SLOTS {
+            return;
+        }
+        self.emit(ConnectEvent::HolePunchProgress {
+            stage,
+            elapsed_ms: started_at.elapsed().as_millis() as u64,
+        });
     }
 
     /// Full auth flow: Register (if ticket) → Connect → Prove (if challenge).
@@ -742,15 +852,45 @@ impl Connector {
         let idle_stale_timeout = idle_check_interval * IDLE_STALE_INTERVAL_MULTIPLIER;
 
         tokio::spawn(async move {
+            let conn_established_at = Instant::now();
             let mut paths = conn.paths();
             let mut prev_path: Option<PathInfo> = None;
-            let mut prev_is_direct = false;
+            // Seed from the already-selected path: a connection that starts direct
+            // is not a relay → direct upgrade.
+            let mut prev_is_direct = paths
+                .get()
+                .iter()
+                .find(|p| p.is_selected())
+                .is_some_and(|p| p.is_ip());
+            // One-shot latch: set once a direct path forms or the relay-only
+            // timeout fires, after which the timeout branch stays dead.
+            let mut direct_decided = prev_is_direct;
             let mut idle_detector =
                 IdleDetector::with_recv_baseline(Instant::now(), conn.stats().udp_rx.bytes);
 
             loop {
                 let path_list = paths.get();
-                if let Some(path) = path_list.iter().find(|p| p.is_selected()) {
+                let selected = path_list.iter().find(|p| p.is_selected());
+
+                let since_connect = conn_established_at.elapsed();
+                // Recheck the current path first: a direct path selected right at the
+                // deadline must not emit a timeout the upgrade below then contradicts.
+                if !direct_decided
+                    && !selected.is_some_and(|p| p.is_ip())
+                    && since_connect >= DIRECT_UPGRADE_TIMEOUT
+                {
+                    direct_decided = true;
+                    let elapsed_ms = since_connect.as_millis() as u64;
+                    info!(
+                        "holepunch: no direct path after {}ms, staying on relay",
+                        elapsed_ms
+                    );
+                    let _ = tx
+                        .send(ConnectEvent::DirectUpgradeTimeout { elapsed_ms })
+                        .await;
+                }
+
+                if let Some(path) = selected {
                     let is_direct = path.is_ip();
                     let path_stats = path.stats();
                     let conn_stats = conn.stats();
@@ -768,8 +908,11 @@ impl Connector {
 
                     // Detect relay → direct upgrade
                     if !prev_is_direct && is_direct {
+                        direct_decided = true;
+                        let upgrade_ms = conn_established_at.elapsed().as_millis() as u64;
                         info!(
-                            "direct path upgrade detected: {:?} -> {:?}",
+                            "holepunch: direct path upgrade after {}ms: {:?} -> {:?}",
+                            upgrade_ms,
                             prev_path.as_ref().map(|p| p.remote_addr()),
                             path.remote_addr()
                         );
@@ -777,6 +920,7 @@ impl Connector {
                             .send(ConnectEvent::PathUpgraded {
                                 prev_path: prev_path,
                                 new_path: path.clone(),
+                                upgrade_ms,
                             })
                             .await;
                     }
@@ -973,19 +1117,28 @@ impl Connector {
     }
 }
 
-fn map_iroh_connect_error(error: &IrohConnectError) -> ConnectError {
-    if is_alpn_mismatch(error) {
+/// Initial selected path is the relay (a direct upgrade, if any, comes later).
+fn initial_path_is_relay(conn: &Connection) -> bool {
+    use iroh::Watcher;
+    conn.paths()
+        .get()
+        .iter()
+        .find(|p| p.is_selected())
+        .map(|p| !p.is_ip())
+        .unwrap_or(true)
+}
+
+/// Stage A error (discovery / QUIC setup): ALPN is not negotiated yet here.
+fn map_connect_with_opts_error(error: &IrohConnectWithOptsError) -> ConnectError {
+    ConnectError::QuicConnectFailed(error.to_string())
+}
+
+/// Stage B error (QUIC + TLS handshake): an ALPN mismatch surfaces here.
+fn map_connecting_error(error: &IrohConnectingError) -> ConnectError {
+    if is_alpn_mismatch_connecting(error) {
         ConnectError::AlpnMismatch
     } else {
         ConnectError::QuicConnectFailed(error.to_string())
-    }
-}
-
-fn is_alpn_mismatch(error: &IrohConnectError) -> bool {
-    match error {
-        IrohConnectError::Connecting { source, .. } => is_alpn_mismatch_connecting(source),
-        IrohConnectError::Connection { source, .. } => is_alpn_mismatch_connection(source),
-        _ => false,
     }
 }
 

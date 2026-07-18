@@ -20,8 +20,12 @@ pub async fn run(args: OpenArgs) -> Result<()> {
     let workdir = resolve_workdir(&args.workdir);
     let url = normalize_target(&args.target);
     let body = serde_json::json!({ "url": url });
-    let _: serde_json::Value = api_post(&workdir, "/api/webview", &body).await?;
-    println!("Opening {url} on the connected phone");
+    let resp: serde_json::Value = api_post(&workdir, "/api/webview", &body).await?;
+    if resp.get("delivered").and_then(|v| v.as_bool()) == Some(true) {
+        println!("Opening {url} on the connected phone");
+    } else {
+        println!("Queued {url} — it will open when a phone connects");
+    }
     Ok(())
 }
 

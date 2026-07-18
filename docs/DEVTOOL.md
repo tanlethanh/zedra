@@ -25,7 +25,8 @@ once while debugging, delete the registration when done.
 ```
 
 `--devtool` requires a debug build (`--release` is rejected). On start the
-app logs `devtool: listening on 127.0.0.1:9777`.
+app logs `devtool: listening on 127.0.0.1:<configured-port>`; the default is
+`9777`.
 
 ## Use
 
@@ -156,6 +157,53 @@ cx.register_devtool_action("workspace_session_phase", |_params, _window, cx| {
 - Every endpoint except `/ping` requires an `X-Devtool-Token` header
   (`devtool.sh` sends it automatically) — otherwise any local process
   could drive the app's real UI via simulated presses.
+
+## Assessment
+
+Field notes from driving the iOS app during the terminal image-upload work,
+kept honest so we invest where it pays off.
+
+**Where it earned its keep**
+
+- Reproducible navigation without touching the phone: reconnecting a
+  workspace, retrying a connect button, tapping into the terminal — scripted
+  via `/tap_xy` + `/sequence`, repeatable across rebuild cycles.
+- `/ping` as a cheap "is this build alive and listening" probe after each
+  install.
+- `/call` for reaching logic with no addressable element while debugging.
+
+**Where it fell short (biggest first)**
+
+- **`/elements` returns empty on iOS.** With no element tree, every tap is a
+  blind `/tap_xy` against remembered coordinates — brittle across layout
+  changes and the single feature that would most raise the tool's ceiling.
+  Android populates it; iOS parity is the top ask.
+- **Blind to the thing under test.** The whole image-upload flow is native
+  UIKit — `UIEditMenuInteraction` long-press menu, `PHPickerViewController`,
+  the progress HUD window, alerts. None are GPUI elements, so the devtool
+  could neither see nor drive any of it. The real progress came from
+  `devicectl` console capture + `nm` symbol inspection, not the devtool. The
+  tool positioned the app *up to* the native boundary, then went dark.
+- **On-device token friction.** The token file write fails under the app
+  sandbox, so on a physical device the token must be scraped out of the
+  console log before any authed call works — a real cold-start tax that
+  `devtool.sh` partly hides but doesn't remove.
+
+**Suggested improvements, prioritized**
+
+1. Populate `/elements` on iOS (unblocks non-blind interaction).
+2. Read-only native-presentation state: expose *whether* a native modal
+   (picker / alert / sheet / edit menu) is currently up, even if its buttons
+   stay unaddressable — enough for an agent to detect "a sheet is blocking"
+   instead of tapping into the void.
+3. A `/type` text-input endpoint (see Limits) to retire the PTY-write hack.
+4. Deliver the on-device token without console scraping (e.g. an authed
+   bootstrap read, or a sandbox-writable path both sides agree on).
+5. Screenshot-on-device path, so visual confirmation doesn't need a human.
+
+Net: strong for scripted GPUI navigation and liveness probing; currently thin
+for anything touching native presentations or needing to *observe* state,
+which is exactly where mobile bugs tend to live.
 
 ## Where the code lives
 

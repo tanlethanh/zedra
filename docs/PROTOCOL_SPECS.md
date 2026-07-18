@@ -220,6 +220,7 @@ challenge is carried by `ConnectResult::Challenge`.
 - `FsDocsTree(FsDocsTreeReq) -> FsDocsTreeResult`
 - `FsWatch(FsWatchReq) -> FsWatchResult`
 - `FsUnwatch(FsUnwatchReq) -> FsUnwatchResult`
+- `FsUpload(FsUploadReq) -> FsUploadResult`
 
 ### Error convention
 
@@ -233,7 +234,7 @@ Result types that carry `error: Option<String>`:
 `FsListResult`, `FsSearchResult`, `FsReadResult`, `FsStatResult`, `SessionSwitchResult`, `TermCreateResult`,
 `GitStatusResult`, `GitDiffResult`, `GitLogResult`, `GitCommitResult`, `GitStageResult`,
 `GitUnstageResult`, `GitBranchesResult`, `AgentListResult`, `AgentSessionsResult`,
-`AgentResumeResult`, `LspDiagnosticsResult`, `WebTunnelOutput`.
+`AgentResumeResult`, `LspDiagnosticsResult`, `FsUploadResult`, `WebTunnelOutput`.
 
 Types that use non-string status fields or enum variants instead:
 `FsWriteResult` (`ok: bool`), `GitCheckoutResult` (`ok: bool`), `FsWatchResult`/`FsUnwatchResult` (enum),
@@ -268,6 +269,15 @@ Types that use non-string status fields or enum variants instead:
 - Limits: default page size `200`, max page size `1_000`, max offset `5_000`, max visited entries per rebuild `10_000`.
 - `truncated = true` means host caps prevented proving the full docs tree was scanned.
 - The client treats `Unsupported` as a compatibility result for older hosts and should not keep showing an active build state.
+
+### FsUpload conventions
+
+- `data` carries the raw binary payload (`serde_bytes`); `extension` is the lowercase file extension without a leading dot.
+- The host, not the client, chooses the destination path — `path` in `FsUploadReq` does not exist. This makes path-jail escapes structurally impossible.
+- The host rejects payloads over `FS_UPLOAD_MAX_BYTES` (8 MiB, well under irpc's 16 MiB message cap) and extensions outside the allowlist `jpg`, `jpeg`, `png`, `webp`, `gif`.
+- Accepted uploads are written to Zedra's cache directory under `uploads/<unix_seconds>-<uuid_v4>.<ext>` and returned as an absolute path in `FsUploadResult::path`. Unix hosts use `~/.cache/zedra/uploads/`; Windows uses the local app-data cache. Host-level (not workspace-scoped) storage keeps transient paste input out of every git repo. The tradeoff: an agent reading the absolute path may prompt once for an out-of-workspace read.
+- On startup, the host runs one background sweep that deletes uploads older than a fixed grace period (~7 days). A non-blocking process lock prevents concurrent Zedra daemons from sweeping the cache together.
+- Clients treat an RPC-level decode failure against an older host as "unsupported" and stop calling `FsUpload` for that connection, same as the `FsSearch` downgrade behavior.
 
 ### FsWatch/FsUnwatch result enums
 

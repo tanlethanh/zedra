@@ -131,6 +131,14 @@ object NativePresentations {
         }
     }
 
+    // Current app-selected theme colors, for native surfaces that live outside
+    // this object (e.g. ProgressHud) but must still track the same theme.
+    fun currentOverlayColor(): Int = nativeTheme.overlay
+
+    fun currentTextPrimaryColor(): Int = nativeTheme.textPrimary
+
+    fun currentTextSecondaryColor(): Int = nativeTheme.textSecondary
+
     @JvmStatic
     fun showAlert(
         callbackId: Int,

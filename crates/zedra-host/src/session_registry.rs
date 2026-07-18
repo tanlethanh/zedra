@@ -256,6 +256,10 @@ pub struct ServerSession {
     /// Channel for pushing host-initiated events to the connected client.
     /// Installed by the Subscribe RPC handler; replaced on each new subscription.
     pub event_tx: Mutex<Option<tokio::sync::mpsc::Sender<HostEvent>>>,
+    /// Webview-open requests received (via `zedra open`) while no client was
+    /// subscribed. Flushed to the client when it subscribes, so the CLI works
+    /// even when the phone is momentarily disconnected or backgrounded.
+    pub pending_webviews: Mutex<Vec<String>>,
     /// Relative directory paths watched by the observer for this session.
     pub fs_watched_paths: Mutex<HashSet<String>>,
     /// Token bucket for FsWatch/FsUnwatch RPC rate limiting.
@@ -267,7 +271,7 @@ pub struct ServerSession {
     // ── RPC usage counters (lifetime totals, never reset) ──────────────────
     /// Total FsRead calls served.
     pub rpc_fs_reads: AtomicU64,
-    /// Total FsWrite calls served.
+    /// Total filesystem write calls served.
     pub rpc_fs_writes: AtomicU64,
     /// Total read-only git RPC calls (status, diff, log, branches, stage, unstage).
     pub rpc_git_ops: AtomicU64,
@@ -1356,6 +1360,19 @@ pub enum AttachResult {
 // ServerSession impl
 // ---------------------------------------------------------------------------
 
+/// Max queued webview-opens kept while no client is subscribed. Enough for a few
+/// dev servers; oldest is dropped past this so a long-idle daemon can't grow it.
+const MAX_PENDING_WEBVIEWS: usize = 8;
+
+/// Append `url` to the pending queue: dedupe (a repeat bumps recency) and cap to
+/// the newest [`MAX_PENDING_WEBVIEWS`], preserving open order.
+fn push_pending_webview(pending: &mut Vec<String>, url: String) {
+    pending.retain(|u| u != &url);
+    pending.push(url);
+    let overflow = pending.len().saturating_sub(MAX_PENDING_WEBVIEWS);
+    pending.drain(..overflow);
+}
+
 impl ServerSession {
     fn new(id: String, name: Option<String>, workdir: Option<PathBuf>) -> Self {
         Self {
@@ -1370,6 +1387,7 @@ impl ServerSession {
             active_client: Mutex::new(None),
             session_token: Mutex::new(None),
             event_tx: Mutex::new(None),
+            pending_webviews: Mutex::new(Vec::new()),
             fs_watched_paths: Mutex::new(HashSet::new()),
             fs_watch_rpc_limiter: Mutex::new(TokenBucket::new(
                 FS_WATCH_RPC_RATE_PER_SEC,
@@ -1566,6 +1584,29 @@ impl ServerSession {
                     .fetch_add(1, Ordering::Relaxed);
                 false
             }
+        }
+    }
+
+    /// Try to deliver a webview-open now; if no client is subscribed, queue it to
+    /// flush on the next subscribe. Returns whether it was delivered immediately.
+    pub async fn open_or_queue_webview(&self, url: String) -> bool {
+        let mut pending = self.pending_webviews.lock().await;
+        if self
+            .push_event(HostEvent::WebViewRequested { url: url.clone() })
+            .await
+        {
+            return true;
+        }
+        push_pending_webview(&mut pending, url);
+        false
+    }
+
+    /// Deliver any webview-opens queued while no client was subscribed. Called
+    /// from the Subscribe handler once `event_tx` is installed.
+    pub async fn flush_pending_webviews(&self) {
+        let pending: Vec<String> = std::mem::take(&mut *self.pending_webviews.lock().await);
+        for url in pending {
+            self.push_event(HostEvent::WebViewRequested { url }).await;
         }
     }
 
@@ -1808,6 +1849,59 @@ mod tests {
             truncated: false,
             created_at: Instant::now(),
         }
+    }
+
+    #[test]
+    fn push_pending_webview_dedupes_bumps_recency_and_caps() {
+        let mut pending = Vec::new();
+        push_pending_webview(&mut pending, "http://localhost:5173".into());
+        push_pending_webview(&mut pending, "http://localhost:8080".into());
+        assert_eq!(pending, ["http://localhost:5173", "http://localhost:8080"]);
+
+        // Re-requesting an existing url moves it to the end (most recent intent).
+        push_pending_webview(&mut pending, "http://localhost:5173".into());
+        assert_eq!(pending, ["http://localhost:8080", "http://localhost:5173"]);
+
+        // Past the cap, the oldest entries are dropped.
+        for port in 0..MAX_PENDING_WEBVIEWS {
+            push_pending_webview(&mut pending, format!("http://localhost:90{port:02}"));
+        }
+        assert_eq!(pending.len(), MAX_PENDING_WEBVIEWS);
+        assert_eq!(pending.last().unwrap(), "http://localhost:9007");
+        assert!(!pending.contains(&"http://localhost:8080".to_string()));
+    }
+
+    #[tokio::test]
+    async fn open_webview_serializes_delivery_with_subscription_handoff() {
+        let session = Arc::new(ServerSession::new("test".into(), None, None));
+        let pending = session.pending_webviews.lock().await;
+        let open_session = session.clone();
+        let open = tokio::spawn(async move {
+            open_session
+                .open_or_queue_webview("http://localhost:5173".into())
+                .await
+        });
+
+        for _ in 0..10 {
+            tokio::task::yield_now().await;
+        }
+        assert_eq!(
+            session
+                .observer_events_dropped_no_subscriber
+                .load(Ordering::Relaxed),
+            0
+        );
+
+        let (event_tx, mut event_rx) = tokio::sync::mpsc::channel(1);
+        *session.event_tx.lock().await = Some(event_tx);
+        drop(pending);
+
+        assert!(open.await.unwrap());
+        assert!(matches!(
+            event_rx.try_recv(),
+            Ok(HostEvent::WebViewRequested { url }) if url == "http://localhost:5173"
+        ));
+        assert!(session.pending_webviews.lock().await.is_empty());
     }
 
     #[test]

@@ -100,6 +100,7 @@ pub struct TerminalView {
     terminal: Entity<Terminal>,
     focus_handle: FocusHandle,
     scroll_offset_px: f32,
+    remote_scroll_offset_px: f32,
     keyboard_top_reveal_px: f32,
     last_remote_size: Option<(u16, u16)>,
     /// Top-left origin of the painted terminal grid within the window.
@@ -153,7 +154,9 @@ impl TerminalView {
                                 this.workdir = Some(cwd.clone());
                             }
                             cx.emit(event);
-                            cx.notify();
+                            if !this.terminal.read(cx).synchronized_output_pending() {
+                                cx.notify();
+                            }
                         }) {
                             error!("failed to emit terminal event: {:?}", e);
                         }
@@ -174,6 +177,7 @@ impl TerminalView {
             terminal_id,
             focus_handle: cx.focus_handle(),
             scroll_offset_px: 0.0,
+            remote_scroll_offset_px: 0.0,
             keyboard_top_reveal_px: 0.0,
             last_remote_size: None,
             grid_origin: None,
@@ -383,6 +387,7 @@ impl TerminalView {
     pub fn scroll_to_bottom(&mut self, cx: &mut Context<Self>) {
         let previous_display_offset = self.display_offset(cx);
         self.scroll_offset_px = 0.0;
+        self.remote_scroll_offset_px = 0.0;
         self.keyboard_top_reveal_px = 0.0;
         self.suppress_touch_scroll_until =
             Some(Instant::now() + TOUCH_SCROLL_SUPPRESSION_AFTER_SCROLL_TO_BOTTOM);
@@ -474,6 +479,8 @@ impl TerminalView {
 
         if matches!(event.touch_phase, TouchPhase::Started) {
             self.suppress_touch_scroll_until = None;
+            self.scroll_offset_px = 0.0;
+            self.remote_scroll_offset_px = 0.0;
             return false;
         }
 
@@ -487,6 +494,7 @@ impl TerminalView {
         }
 
         self.scroll_offset_px = 0.0;
+        self.remote_scroll_offset_px = 0.0;
         true
     }
 
@@ -508,10 +516,7 @@ impl TerminalView {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        let position = event
-            .up
-            .as_ref()
-            .map_or(event.down.position, |up| up.position);
+        let position = event.position();
 
         let hyperlink = self.terminal.read(cx).hyperlink_at(
             position,
@@ -525,24 +530,25 @@ impl TerminalView {
 
         let is_focused = self.focus_handle.is_focused(window);
         let keyboard_visible = window.is_soft_keyboard_visible();
-
         window.prevent_default();
 
         if is_focused && keyboard_visible {
-            // Must explicitly hide the keyboard, window.blur only blurs the focus, not the keyboard.
+            // window.blur only blurs focus, not the keyboard — hide it explicitly.
             window.hide_soft_keyboard();
             window.blur();
             cx.notify();
-        } else if is_focused {
-            // Keyboard might not be visible when already focused.
-            // It does nothing if the keyboard is already visible.
-            window.show_soft_keyboard();
-            cx.notify();
-        } else if !is_focused {
+            return;
+        }
+
+        if !is_focused {
             self.focus_handle.focus(window, cx);
             window.show_soft_keyboard();
             cx.notify();
+            return;
         }
+
+        window.show_soft_keyboard();
+        cx.notify();
     }
 
     fn handle_terminal_long_press(
@@ -648,6 +654,7 @@ impl Render for TerminalView {
                     ScrollDelta::Lines(l) => {
                         // Line-based scroll (e.g. mouse wheel): commit immediately
                         this.scroll_offset_px = 0.0;
+                        this.remote_scroll_offset_px = 0.0;
                         let mut lines = l.y as i32;
                         if lines < 0 {
                             let step_px =
@@ -684,7 +691,7 @@ impl Render for TerminalView {
                         if matches!(event.touch_phase, TouchPhase::Ended) {
                             let (snap, step_px) = {
                                 let t = this.terminal.read(cx);
-                                (t.should_snap_touch_release(event), t.scroll_step_px(event))
+                                (t.should_snap_touch_release(event), t.scroll_step_px())
                             };
                             if snap && this.scroll_offset_px.abs() > step_px * 0.5 {
                                 // Local scrollback benefits from snapping the partial drag
@@ -697,51 +704,65 @@ impl Render for TerminalView {
                                 });
                             }
                             this.scroll_offset_px = 0.0;
+                            this.remote_scroll_offset_px = 0.0;
                         } else {
-                            let step_px = this.terminal.read(cx).scroll_step_px(event);
+                            let (step_px, uses_remote_scroll_input) = {
+                                let terminal = this.terminal.read(cx);
+                                (
+                                    terminal.scroll_step_px(),
+                                    terminal.uses_remote_scroll_input(event),
+                                )
+                            };
                             let mut py: f32 = (pixels.y / px(1.0)) as f32;
                             if py < 0.0 {
                                 py = -this.consume_keyboard_top_reveal_px(-py);
                             }
-                            this.scroll_offset_px += py;
-
-                            // Remote terminal scroll should emit small, repeated wheel
-                            // ticks while dragging; local scrollback keeps line-based steps.
                             let grid_origin = this.grid_origin;
-                            while this.scroll_offset_px >= step_px {
-                                let moved = this.terminal.update(cx, |terminal, _| {
-                                    terminal.commit_scroll_lines(1, event, grid_origin)
-                                });
-                                if !moved {
-                                    // Keep the keyboard lift scrollable at the top boundary so
-                                    // the oldest rows can be revealed instead of clipped.
-                                    break;
+                            if uses_remote_scroll_input {
+                                // The remote TUI redraws in response to wheel reports. Keep its
+                                // fractional input separate from the local paint translation.
+                                this.scroll_offset_px = 0.0;
+                                this.remote_scroll_offset_px += py;
+                                let lines = (this.remote_scroll_offset_px / step_px).trunc() as i32;
+                                if lines != 0 {
+                                    this.terminal.update(cx, |terminal, _| {
+                                        terminal.commit_scroll_lines(lines, event, grid_origin)
+                                    });
+                                    this.remote_scroll_offset_px -= lines as f32 * step_px;
                                 }
-                                this.scroll_offset_px -= step_px;
-                            }
-                            while this.scroll_offset_px <= -step_px {
-                                let moved = this.terminal.update(cx, |terminal, _| {
-                                    terminal.commit_scroll_lines(-1, event, grid_origin)
-                                });
-                                if !moved {
-                                    // Hit bottom of scrollback — clamp offset
-                                    this.scroll_offset_px = 0.0;
-                                    break;
+                            } else {
+                                this.remote_scroll_offset_px = 0.0;
+                                this.scroll_offset_px += py;
+                                while this.scroll_offset_px >= step_px {
+                                    let moved = this.terminal.update(cx, |terminal, _| {
+                                        terminal.commit_scroll_lines(1, event, grid_origin)
+                                    });
+                                    if !moved {
+                                        // Keep the keyboard lift scrollable at the top boundary so
+                                        // the oldest rows can be revealed instead of clipped.
+                                        break;
+                                    }
+                                    this.scroll_offset_px -= step_px;
                                 }
-                                this.scroll_offset_px += step_px;
+                                while this.scroll_offset_px <= -step_px {
+                                    let moved = this.terminal.update(cx, |terminal, _| {
+                                        terminal.commit_scroll_lines(-1, event, grid_origin)
+                                    });
+                                    if !moved {
+                                        // Hit bottom of scrollback — clamp offset
+                                        this.scroll_offset_px = 0.0;
+                                        break;
+                                    }
+                                    this.scroll_offset_px += step_px;
+                                }
                             }
 
-                            // Local scrollback clamps at the history bounds, but alt-screen
-                            // scroll should keep producing cursor-up/down bytes for the PTY.
-                            let (alt_scroll, offset, history) = {
-                                let t = this.terminal.read(cx);
-                                (
-                                    t.should_send_alt_scroll(event),
-                                    t.display_offset(),
-                                    t.history_size(),
-                                )
-                            };
-                            if !alt_scroll {
+                            // Local scrollback clamps its visual offset at the history bounds.
+                            if !uses_remote_scroll_input {
+                                let (offset, history) = {
+                                    let t = this.terminal.read(cx);
+                                    (t.display_offset(), t.history_size())
+                                };
                                 if offset == 0 && history == 0 && this.scroll_offset_px > 0.0 {
                                     // With no real scrollback, top and bottom are the same boundary;
                                     // keep touch overscroll from creating fake empty history.
@@ -792,11 +813,38 @@ mod tests {
         PointerMoveEvent, PointerUpEvent, TestAppContext, TouchPhase, VisualTestContext,
         WindowHandle, point, px, size,
     };
+    use tokio::sync::mpsc;
 
     fn open_terminal_window(cx: &mut TestAppContext) -> WindowHandle<TerminalView> {
         cx.open_window(size(px(320.0), px(240.0)), |window, cx| {
             TerminalView::new("term-1".to_string(), window, size(px(320.0), px(240.0)), cx)
         })
+    }
+
+    fn attach_terminal_channel(
+        window: WindowHandle<TerminalView>,
+        cx: &mut TestAppContext,
+    ) -> (mpsc::Receiver<Vec<u8>>, mpsc::Sender<Vec<u8>>) {
+        let (input_tx, input_rx) = mpsc::channel(256);
+        let (output_tx, output_rx) = mpsc::channel(4);
+        window
+            .update(cx, |terminal_view, _window, cx| {
+                terminal_view.attach_channel(input_tx, output_rx, cx);
+            })
+            .unwrap();
+        (input_rx, output_tx)
+    }
+
+    fn attach_mouse_tracking_channel(
+        window: WindowHandle<TerminalView>,
+        cx: &mut TestAppContext,
+    ) -> mpsc::Receiver<Vec<u8>> {
+        let (input_rx, output_tx) = attach_terminal_channel(window, cx);
+        output_tx
+            .try_send(b"\x1b[?1049h\x1b[?1003h\x1b[?1006h".to_vec())
+            .unwrap();
+        cx.run_until_parked();
+        input_rx
     }
 
     fn tap_terminal(window: WindowHandle<TerminalView>, cx: &mut TestAppContext) {
@@ -1006,6 +1054,47 @@ mod tests {
             },
             event => panic!("expected hyperlink event, got {event:?}"),
         }
+        cx.quit();
+    }
+
+    #[test]
+    fn synchronized_osc_event_does_not_notify_before_frame_end() {
+        let mut cx = TestAppContext::single();
+        let window = open_terminal_window(&mut cx);
+        let root = window.root(&mut cx).unwrap();
+        let mut notifications = cx.notifications(&root);
+        let (_input_rx, output_tx) = attach_terminal_channel(window, &mut cx);
+
+        root.update(&mut cx, |_, cx| cx.notify());
+        cx.run_until_parked();
+        assert!(notifications.next().now_or_never().flatten().is_some());
+
+        output_tx
+            .try_send(b"\x1b[?2026h\x1b]7;file:///repo\x1b\\held".to_vec())
+            .unwrap();
+        cx.run_until_parked();
+        window
+            .update(&mut cx, |terminal_view, _window, _cx| {
+                assert_eq!(terminal_view.workdir.as_deref(), Some("/repo"));
+            })
+            .unwrap();
+        assert!(notifications.next().now_or_never().is_none());
+
+        output_tx.try_send(b"\x1b[?2026l".to_vec()).unwrap();
+        cx.run_until_parked();
+        assert!(
+            window
+                .update(&mut cx, |terminal_view, _window, cx| {
+                    terminal_view
+                        .terminal
+                        .read(cx)
+                        .content()
+                        .cells
+                        .iter()
+                        .any(|cell| cell.cell.c == 'h')
+                })
+                .unwrap()
+        );
         cx.quit();
     }
 
@@ -1264,6 +1353,97 @@ mod tests {
                 assert!(window.is_soft_keyboard_visible());
             })
             .unwrap();
+        cx.quit();
+    }
+
+    #[test]
+    fn remote_touch_scroll_batches_ticks_per_event() {
+        let mut cx = TestAppContext::single();
+        let window = open_terminal_window(&mut cx);
+        let mut input_rx = attach_mouse_tracking_channel(window, &mut cx);
+
+        scroll_terminal_touch_delta(window, &mut cx, px(120.0), TouchPhase::Moved);
+
+        let bytes = input_rx.try_recv().expect("expected remote scroll input");
+        assert_eq!(
+            bytes
+                .windows(b"\x1b[<64;".len())
+                .filter(|window| *window == b"\x1b[<64;")
+                .count(),
+            7
+        );
+        assert!(input_rx.try_recv().is_err(), "scroll input was not batched");
+        cx.quit();
+    }
+
+    #[test]
+    fn remote_touch_scroll_accumulates_partial_ticks() {
+        let mut cx = TestAppContext::single();
+        let window = open_terminal_window(&mut cx);
+        let mut input_rx = attach_mouse_tracking_channel(window, &mut cx);
+
+        scroll_terminal_touch_delta(window, &mut cx, px(8.0), TouchPhase::Moved);
+        assert!(input_rx.try_recv().is_err());
+        window
+            .update(&mut cx, |terminal_view, _window, _cx| {
+                assert_eq!(terminal_view.scroll_offset_px, 0.0);
+                assert_eq!(terminal_view.remote_scroll_offset_px, 8.0);
+            })
+            .unwrap();
+        scroll_terminal_touch_delta(window, &mut cx, px(8.0), TouchPhase::Moved);
+
+        let bytes = input_rx
+            .try_recv()
+            .expect("expected accumulated scroll input");
+        assert_eq!(
+            bytes
+                .windows(b"\x1b[<64;".len())
+                .filter(|window| *window == b"\x1b[<64;")
+                .count(),
+            1
+        );
+        assert!(input_rx.try_recv().is_err());
+        window
+            .update(&mut cx, |terminal_view, _window, _cx| {
+                assert_eq!(terminal_view.scroll_offset_px, 0.0);
+                assert_eq!(terminal_view.remote_scroll_offset_px, 0.0);
+            })
+            .unwrap();
+        cx.quit();
+    }
+
+    #[test]
+    fn rejected_remote_touch_scroll_does_not_accumulate_debt() {
+        let mut cx = TestAppContext::single();
+        let window = open_terminal_window(&mut cx);
+        let (mut input_rx, output_tx) = attach_terminal_channel(window, &mut cx);
+        output_tx
+            .try_send(b"\x1b[?1003h\x1b[?1006h".to_vec())
+            .unwrap();
+        cx.run_until_parked();
+
+        window
+            .update(&mut cx, |terminal_view, _window, cx| {
+                terminal_view.terminal.update(cx, |terminal, _| {
+                    for line in 0..40 {
+                        terminal.advance_bytes(format!("line {line}\r\n").as_bytes());
+                    }
+                    terminal.scroll(100);
+                });
+                let terminal = terminal_view.terminal.read(cx);
+                assert!(terminal.display_offset() > terminal.size().rows / 2);
+            })
+            .unwrap();
+
+        scroll_terminal_touch_delta(window, &mut cx, px(120.0), TouchPhase::Moved);
+
+        window
+            .update(&mut cx, |terminal_view, _window, cx| {
+                let step_px = terminal_view.terminal.read(cx).scroll_step_px();
+                assert!(terminal_view.remote_scroll_offset_px.abs() < step_px);
+            })
+            .unwrap();
+        assert!(input_rx.try_recv().is_err());
         cx.quit();
     }
 

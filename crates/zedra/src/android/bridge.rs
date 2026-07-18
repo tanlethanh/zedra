@@ -3,9 +3,9 @@
 /// Delegates every call to the corresponding function in `super::jni`.
 use crate::android::jni;
 use crate::platform_bridge::{
-    AlertButton, CustomSheetOptions, HapticFeedback, ListPickerItem, NativeDictationPreviewOptions,
-    NativeEditMenuItem, NativeFloatingButtonOptions, NativeNotificationOptions, PlatformBridge,
-    SoundEffect, SystemTheme,
+    AlertButton, CustomSheetOptions, HapticFeedback, ImageAcquireSource, ListPickerItem,
+    NativeDictationPreviewOptions, NativeEditMenuItem, NativeFloatingButtonOptions,
+    NativeNotificationOptions, PlatformBridge, SoundEffect, SystemTheme,
 };
 
 pub struct AndroidBridge;
@@ -145,6 +145,14 @@ impl PlatformBridge for AndroidBridge {
         jni::hide_native_dictation_preview(id);
     }
 
+    fn present_native_progress(&self, id: u32, message: &str) {
+        jni::present_native_progress(id, message);
+    }
+
+    fn dismiss_native_progress(&self, id: u32) {
+        jni::dismiss_native_progress(id);
+    }
+
     fn present_native_notification(&self, id: u32, options: &NativeNotificationOptions) {
         jni::present_native_notification(id, options);
     }
@@ -167,5 +175,13 @@ impl PlatformBridge for AndroidBridge {
 
     fn start_delta_google_sign_in(&self, id: u32) {
         jni::start_delta_google_sign_in(id);
+    }
+
+    fn acquire_image(&self, id: u32, source: ImageAcquireSource) {
+        jni::acquire_image(id, source.to_i32());
+    }
+
+    fn clipboard_has_image(&self) -> bool {
+        jni::clipboard_has_image()
     }
 }

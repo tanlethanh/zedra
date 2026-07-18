@@ -67,6 +67,7 @@ tempfile = "3"
 
 # Filesystem
 directories = "5"
+fs2 = "0.4.3"
 ignore = "0.4"
 nucleo-matcher = "0.3.1"
 

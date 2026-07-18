@@ -20,7 +20,7 @@
 
 use std::collections::HashMap;
 use std::sync::atomic::{AtomicU32, Ordering};
-use std::sync::{Mutex, OnceLock};
+use std::sync::{Arc, Mutex, OnceLock};
 
 use serde::Serialize;
 
@@ -39,8 +39,8 @@ pub enum NavigationPolicy {
 /// `window.webkit.messageHandlers.zedra` (iOS) or `window.zedra` (Android).
 pub const MESSAGE_HANDLER_NAME: &str = "zedra";
 
-type MessageHandler = Box<dyn Fn(String) + Send + Sync>;
-type NavigationHandler = Box<dyn Fn(&str) -> NavigationPolicy + Send + Sync>;
+type MessageHandler = Arc<dyn Fn(String) + Send + Sync>;
+type NavigationHandler = Arc<dyn Fn(&str) -> NavigationPolicy + Send + Sync>;
 type DismissHandler = Box<dyn FnOnce() + Send>;
 
 struct Handlers {
@@ -121,7 +121,7 @@ impl WebviewConfig {
     /// Receive messages the page posts through the JS bridge named
     /// [`MESSAGE_HANDLER_NAME`].
     pub fn on_message(mut self, handler: impl Fn(String) + Send + Sync + 'static) -> Self {
-        self.on_message = Some(Box::new(handler));
+        self.on_message = Some(Arc::new(handler));
         self
     }
 
@@ -131,7 +131,7 @@ impl WebviewConfig {
         mut self,
         handler: impl Fn(&str) -> NavigationPolicy + Send + Sync + 'static,
     ) -> Self {
-        self.on_navigate = Some(Box::new(handler));
+        self.on_navigate = Some(Arc::new(handler));
         self
     }
 
@@ -201,8 +201,12 @@ pub fn eval_js(js: &str) {
 /// Deliver a message the page posted through the JS bridge. Called by the
 /// native layer.
 pub fn dispatch_message(id: u32, message: String) {
-    let guard = handlers().lock().unwrap();
-    if let Some(handler) = guard.get(&id).and_then(|h| h.on_message.as_ref()) {
+    let handler = handlers()
+        .lock()
+        .unwrap()
+        .get(&id)
+        .and_then(|handlers| handlers.on_message.clone());
+    if let Some(handler) = handler {
         handler(message);
     }
 }
@@ -211,8 +215,12 @@ pub fn dispatch_message(id: u32, message: String) {
 /// layer synchronously; returns `true` to allow. Allows by default when no
 /// handler is registered.
 pub fn dispatch_navigate(id: u32, url: &str) -> bool {
-    let guard = handlers().lock().unwrap();
-    match guard.get(&id).and_then(|h| h.on_navigate.as_ref()) {
+    let handler = handlers()
+        .lock()
+        .unwrap()
+        .get(&id)
+        .and_then(|handlers| handlers.on_navigate.clone());
+    match handler {
         Some(handler) => handler(url) == NavigationPolicy::Allow,
         None => true,
     }
@@ -224,5 +232,32 @@ pub fn dispatch_dismiss(id: u32) {
     let entry = handlers().lock().unwrap().remove(&id);
     if let Some(handler) = entry.and_then(|h| h.on_dismiss) {
         handler();
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn dispatch_callbacks_run_without_holding_the_registry_lock() {
+        let id = NEXT_ID.fetch_add(1, Ordering::Relaxed);
+        handlers().lock().unwrap().insert(
+            id,
+            Handlers {
+                on_message: Some(Arc::new(|_| {
+                    assert!(handlers().try_lock().is_ok());
+                })),
+                on_navigate: Some(Arc::new(|_| {
+                    assert!(handlers().try_lock().is_ok());
+                    NavigationPolicy::Allow
+                })),
+                on_dismiss: None,
+            },
+        );
+
+        dispatch_message(id, String::new());
+        assert!(dispatch_navigate(id, "https://example.com"));
+        handlers().lock().unwrap().remove(&id);
     }
 }
