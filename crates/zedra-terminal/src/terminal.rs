@@ -21,8 +21,6 @@ use gpui::{
 use tokio::sync::{broadcast, mpsc};
 use zedra_osc::{OscEvent, OscScanner};
 
-const REMOTE_TOUCH_SCROLL_STEP_PX: f32 = 12.0;
-
 use crate::keys::to_esc_str;
 use crate::theme::TerminalTheme;
 /// Events emitted by the terminal to observers.
@@ -507,16 +505,16 @@ impl Terminal {
             .contains(TermMode::ALT_SCREEN | TermMode::ALTERNATE_SCROLL)
     }
 
-    pub fn scroll_step_px(&self, event: &ScrollWheelEvent) -> f32 {
-        if self.mouse_mode(event) || self.should_send_alt_scroll(event) {
-            REMOTE_TOUCH_SCROLL_STEP_PX
-        } else {
-            (self.size.line_height / px(1.0)) as f32
-        }
+    pub(crate) fn uses_remote_scroll_input(&self, event: &ScrollWheelEvent) -> bool {
+        self.mouse_mode(event) || self.should_send_alt_scroll(event)
+    }
+
+    pub fn scroll_step_px(&self) -> f32 {
+        (self.size.line_height / px(1.0)) as f32
     }
 
     pub fn should_snap_touch_release(&self, event: &ScrollWheelEvent) -> bool {
-        !self.mouse_mode(event) && !self.should_send_alt_scroll(event)
+        !self.uses_remote_scroll_input(event)
     }
 
     fn scroll_point(
@@ -1984,9 +1982,11 @@ impl Terminal {
             return false;
         };
 
+        let mut bytes = Vec::new();
         for _ in 0..lines.unsigned_abs() {
-            self.send_bytes_sync(report.clone());
+            bytes.extend_from_slice(&report);
         }
+        self.send_bytes_sync(bytes);
 
         true
     }
