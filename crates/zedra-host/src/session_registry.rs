@@ -1590,13 +1590,13 @@ impl ServerSession {
     /// Try to deliver a webview-open now; if no client is subscribed, queue it to
     /// flush on the next subscribe. Returns whether it was delivered immediately.
     pub async fn open_or_queue_webview(&self, url: String) -> bool {
+        let mut pending = self.pending_webviews.lock().await;
         if self
             .push_event(HostEvent::WebViewRequested { url: url.clone() })
             .await
         {
             return true;
         }
-        let mut pending = self.pending_webviews.lock().await;
         push_pending_webview(&mut pending, url);
         false
     }
@@ -1869,6 +1869,39 @@ mod tests {
         assert_eq!(pending.len(), MAX_PENDING_WEBVIEWS);
         assert_eq!(pending.last().unwrap(), "http://localhost:9007");
         assert!(!pending.contains(&"http://localhost:8080".to_string()));
+    }
+
+    #[tokio::test]
+    async fn open_webview_serializes_delivery_with_subscription_handoff() {
+        let session = Arc::new(ServerSession::new("test".into(), None, None));
+        let pending = session.pending_webviews.lock().await;
+        let open_session = session.clone();
+        let open = tokio::spawn(async move {
+            open_session
+                .open_or_queue_webview("http://localhost:5173".into())
+                .await
+        });
+
+        for _ in 0..10 {
+            tokio::task::yield_now().await;
+        }
+        assert_eq!(
+            session
+                .observer_events_dropped_no_subscriber
+                .load(Ordering::Relaxed),
+            0
+        );
+
+        let (event_tx, mut event_rx) = tokio::sync::mpsc::channel(1);
+        *session.event_tx.lock().await = Some(event_tx);
+        drop(pending);
+
+        assert!(open.await.unwrap());
+        assert!(matches!(
+            event_rx.try_recv(),
+            Ok(HostEvent::WebViewRequested { url }) if url == "http://localhost:5173"
+        ));
+        assert!(session.pending_webviews.lock().await.is_empty());
     }
 
     #[test]
