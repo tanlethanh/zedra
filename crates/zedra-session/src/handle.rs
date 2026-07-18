@@ -35,6 +35,7 @@ struct SessionHandleInner {
     observer_rpc_supported: AtomicBool,
     docs_tree_rpc_supported: AtomicBool,
     fs_search_rpc_supported: AtomicBool,
+    fs_upload_rpc_supported: AtomicBool,
     set_app_state_rpc_supported: AtomicBool,
     /// Runtime the terminal pump tasks spawn onto. Set by `Session::new` so
     /// `attach_remote` works even when a method is awaited from the GPUI thread.
@@ -74,6 +75,7 @@ impl SessionHandle {
             observer_rpc_supported: AtomicBool::new(true),
             docs_tree_rpc_supported: AtomicBool::new(true),
             fs_search_rpc_supported: AtomicBool::new(true),
+            fs_upload_rpc_supported: AtomicBool::new(true),
             set_app_state_rpc_supported: AtomicBool::new(true),
             runtime: Mutex::new(None),
         }))
@@ -413,6 +415,37 @@ impl SessionHandle {
         Ok(())
     }
 
+    /// Uploads image bytes to the host, which stores them under a
+    /// workspace-relative uploads directory and returns that path.
+    pub async fn fs_upload(&self, data: Vec<u8>, extension: &str) -> Result<String> {
+        if !self.0.fs_upload_rpc_supported.load(Ordering::Acquire) {
+            return Err(anyhow::anyhow!(
+                "image upload not supported by host; update the Zedra host"
+            ));
+        }
+        let result: FsUploadResult = match self
+            .call(FsUploadReq {
+                data,
+                extension: extension.to_string(),
+            })
+            .await
+        {
+            Ok(result) => result,
+            Err(error) => {
+                if self.downgrade_fs_upload_rpc(&error.to_string()) {
+                    return Err(anyhow::anyhow!(
+                        "image upload not supported by host; update the Zedra host"
+                    ));
+                }
+                return Err(error);
+            }
+        };
+        if let Some(e) = result.error {
+            return Err(anyhow::anyhow!(e));
+        }
+        Ok(result.path)
+    }
+
     pub async fn fs_stat(&self, path: &str) -> Result<FsStatResult> {
         let result = self
             .call(FsStatReq {
@@ -509,64 +542,43 @@ impl SessionHandle {
             .map_err(map_rpc_error)
     }
 
-    fn downgrade_observer_rpc(&self, err: &str) -> bool {
+    /// True when `err` looks like an older host rejecting an RPC it doesn't know about.
+    fn is_rpc_incompatible(err: &str) -> bool {
         let msg = err.to_lowercase();
-        let incompatible = msg.contains("unknown variant")
+        msg.contains("unknown variant")
             || msg.contains("deserialize")
             || msg.contains("decode")
-            || msg.contains("invalid type");
+            || msg.contains("invalid type")
+    }
+
+    /// Disables `flag` and logs once `err` indicates the host doesn't support this RPC.
+    fn downgrade_rpc(&self, flag: &AtomicBool, label: &str, err: &str) -> bool {
+        let incompatible = Self::is_rpc_incompatible(err);
         if incompatible {
-            self.0
-                .observer_rpc_supported
-                .store(false, Ordering::Release);
-            tracing::warn!("observer RPC unsupported, disabling: {}", err);
+            flag.store(false, Ordering::Release);
+            tracing::warn!("{label} RPC unsupported, disabling: {}", err);
         }
         incompatible
+    }
+
+    fn downgrade_observer_rpc(&self, err: &str) -> bool {
+        self.downgrade_rpc(&self.0.observer_rpc_supported, "observer", err)
     }
 
     fn downgrade_docs_tree_rpc(&self, err: &str) -> bool {
-        let msg = err.to_lowercase();
-        let incompatible = msg.contains("unknown variant")
-            || msg.contains("deserialize")
-            || msg.contains("decode")
-            || msg.contains("invalid type");
-        if incompatible {
-            self.0
-                .docs_tree_rpc_supported
-                .store(false, Ordering::Release);
-            tracing::warn!("docs tree RPC unsupported, disabling: {}", err);
-        }
-        incompatible
+        self.downgrade_rpc(&self.0.docs_tree_rpc_supported, "docs tree", err)
     }
 
     fn downgrade_fs_search_rpc(&self, err: &str) -> bool {
-        let msg = err.to_lowercase();
-        let incompatible = msg.contains("unknown variant")
-            || msg.contains("deserialize")
-            || msg.contains("decode")
-            || msg.contains("invalid type");
-        if incompatible {
-            self.0
-                .fs_search_rpc_supported
-                .store(false, Ordering::Release);
-            tracing::warn!("file search RPC unsupported, disabling: {}", err);
-        }
-        incompatible
+        self.downgrade_rpc(&self.0.fs_search_rpc_supported, "file search", err)
+    }
+
+    fn downgrade_fs_upload_rpc(&self, err: &str) -> bool {
+        self.downgrade_rpc(&self.0.fs_upload_rpc_supported, "image upload", err)
     }
 
     fn downgrade_set_app_state_rpc(&self, err: &str) -> bool {
-        let msg = err.to_lowercase();
-        let incompatible = msg.contains("unknown variant")
-            || msg.contains("deserialize")
-            || msg.contains("decode")
-            || msg.contains("invalid type");
-        if incompatible {
-            self.0
-                .set_app_state_rpc_supported
-                .store(false, Ordering::Release);
-            tracing::warn!("SetAppState RPC unsupported, disabling: {}", err);
-        }
-        incompatible
+        self.downgrade_rpc(&self.0.set_app_state_rpc_supported, "SetAppState", err)
     }
 
     // ─── RPC: git ────────────────────────────────────────────────────────────

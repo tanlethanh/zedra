@@ -43,6 +43,8 @@ Main mobile app crate. Owns GPUI application flow, workspace orchestration, plat
 - iOS custom sheet hosting relies on the ownership split in `src/ios/app.rs` and `src/platform_bridge.rs`. Preserve that flow instead of inventing a parallel presentation path.
 - Android app lifecycle and surface management are main-thread-sensitive. Be conservative when changing `src/android/entry.rs`, `src/android/jni.rs`, or the command queue.
 - New `extern "C"` Rust→Swift call: add a weak stub in `src/ios_stub.c` matching the function signature or the iOS staticlib link fails with undefined symbol.
+- New Swift file under `ios/Zedra/` needs an xcodegen regen or it's left out of the build — the weak `ios_stub.c` stub then satisfies the symbol, so the native call silently no-ops (no crash, no log). `run-ios.sh` only regens when `ios/project.yml` changed; force with `ZEDRA_FORCE_XCODEGEN=1 ./scripts/run-ios.sh ...`.
+- Every xcodegen regen drops the CocoaPods xcconfigs — always follow with `cd ios && pod install` (build the `.xcworkspace`, not `.xcodeproj`), or the build can't resolve `FirebaseCore`/`GoogleSignIn`.
 
 ## Workspace And Terminal Integration
 

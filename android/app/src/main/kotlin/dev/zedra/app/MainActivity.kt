@@ -68,6 +68,17 @@ class MainActivity : AppCompatActivity() {
                 nativeDeltaPushTokenError(callbackId, "Notification permission was denied")
             }
         }
+    private var pendingImageAcquireCallbackId: Int? = null
+    private val pickImageLauncher =
+        registerForActivityResult(ActivityResultContracts.PickVisualMedia()) { uri ->
+            val callbackId = pendingImageAcquireCallbackId ?: return@registerForActivityResult
+            pendingImageAcquireCallbackId = null
+            if (uri == null) {
+                nativeImageAcquireCancel(callbackId)
+            } else {
+                ImageAcquire.processUri(this, uri, callbackId)
+            }
+        }
 
     override fun onCreate(savedInstanceState: Bundle?) {
         // Apply the persisted theme before super.onCreate so AppCompat picks up
@@ -162,6 +173,7 @@ class MainActivity : AppCompatActivity() {
             keyboardAccessoryBar.stopRepeating()
         }
         NativePresentations.unregister()
+        ProgressHud.clear()
         sSurfaceView = null
         sActivity = null
         runtime.onDestroy()
@@ -217,6 +229,31 @@ class MainActivity : AppCompatActivity() {
             rootCause.message ?: "FCM token fetch failed (${rootCause.javaClass.simpleName})"
         }
         nativeDeltaPushTokenError(callbackId, message)
+    }
+
+    private fun acquireImageOnMain(callbackId: Int, source: Int) {
+        when (source) {
+            0 -> { // PhotoLibrary
+                pendingImageAcquireCallbackId = callbackId
+                pickImageLauncher.launch(
+                    androidx.activity.result.PickVisualMediaRequest(
+                        ActivityResultContracts.PickVisualMedia.ImageOnly,
+                    ),
+                )
+            }
+            1 -> { // Clipboard
+                val clipboard =
+                    getSystemService(Context.CLIPBOARD_SERVICE) as android.content.ClipboardManager
+                val clip = clipboard.primaryClip
+                val uri = clip?.takeIf { it.itemCount > 0 }?.getItemAt(0)?.uri
+                if (uri == null) {
+                    nativeImageAcquireCancel(callbackId)
+                } else {
+                    ImageAcquire.processUri(this, uri, callbackId)
+                }
+            }
+            else -> nativeImageAcquireError(callbackId, "unknown image source: $source")
+        }
     }
 
     // dispatchKeyEvent runs before the view hierarchy, so it intercepts KEYCODE_BACK before
@@ -384,7 +421,35 @@ class MainActivity : AppCompatActivity() {
 
         @JvmStatic external fun nativeDeltaGoogleSignInError(callbackId: Int, message: String)
 
+        @JvmStatic external fun nativeImageAcquireResult(callbackId: Int, data: ByteArray, extension: String)
+
+        @JvmStatic external fun nativeImageAcquireCancel(callbackId: Int)
+
+        @JvmStatic external fun nativeImageAcquireError(callbackId: Int, message: String)
+
         // ===== Rust → Java callbacks =====
+
+        @JvmStatic
+        fun acquireImage(callbackId: Int, source: Int) {
+            val activity = sActivity as? MainActivity ?: run {
+                nativeImageAcquireError(callbackId, "Activity not available")
+                return
+            }
+            activity.runOnUiThread {
+                activity.acquireImageOnMain(callbackId, source)
+            }
+        }
+
+        @JvmStatic
+        fun clipboardHasImage(): Boolean {
+            val activity = sActivity ?: return false
+            val clipboard =
+                activity.getSystemService(Context.CLIPBOARD_SERVICE) as android.content.ClipboardManager
+            val description = clipboard.primaryClipDescription ?: return false
+            return (0 until description.mimeTypeCount).any { i ->
+                description.getMimeType(i).startsWith("image/")
+            }
+        }
 
         @JvmStatic
         fun requestDeltaPushToken(callbackId: Int) {
@@ -630,6 +695,18 @@ class MainActivity : AppCompatActivity() {
         @JvmStatic
         fun hideNativeDictationPreview(id: Int) {
             NativePresentations.hideNativeDictationPreview(id)
+        }
+
+        @JvmStatic
+        fun presentNativeProgress(id: Int, message: String) {
+            val activity = sActivity as? MainActivity ?: return
+            activity.runOnUiThread { ProgressHud.show(activity, id, message) }
+        }
+
+        @JvmStatic
+        fun dismissNativeProgress(id: Int) {
+            val activity = sActivity as? MainActivity ?: return
+            activity.runOnUiThread { ProgressHud.dismiss(id) }
         }
 
         @JvmStatic

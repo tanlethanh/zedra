@@ -1692,7 +1692,69 @@ id in production). The trailing shows the aggregate `done/total` rollup.
 2. Expected: no crash, no stale grab artifacts; the droplet keeps rendering at its
    logical position and refraction stays sharp after the size change.
 
-## 24. GPUI Devtool on iOS (shared `gpui_devtool` crate)
+## 24. Terminal Image Upload (iOS + Android)
+
+### Long-press menu contents
+1. Long-press an empty area of a terminal.
+2. Expected: a native edit menu appears with `Paste` and `Upload`.
+3. Copy an image to the system clipboard (screenshot, or copy a photo from the
+   Photos/Gallery app), then long-press the terminal again.
+4. Expected: the menu now also shows `Paste Image` between `Paste` and `Upload`.
+5. Copy plain text instead and long-press again.
+6. Expected: `Paste Image` is gone; only `Paste` and `Upload` remain.
+
+### Upload from photo library
+1. Long-press the terminal and tap `Upload`.
+2. Expected: the native photo picker (iOS: Photos picker; Android: photo picker)
+   opens directly — no intermediate action sheet.
+3. Pick a large photo (e.g. a full-resolution camera shot).
+4. Expected: a native progress HUD (spinner + "Uploading image…") appears
+   near the top of the screen — non-blocking, the terminal underneath stays
+   scrollable/interactive — then an absolute host path like
+   `/Users/<you>/.cache/zedra/uploads/<digits>-<uuid>.jpg` is inserted at the cursor
+   with a trailing space, and the HUD disappears.
+5. While the HUD is visible, try scrolling or tapping the terminal.
+6. Expected: it responds normally — the HUD never intercepts touches.
+7. Submit the line to an agent (e.g. Claude Code) with a prompt like
+   "describe this image".
+8. Expected: the agent reads the file and describes it correctly (confirms the
+   uploaded bytes are a valid, correctly-oriented image).
+9. On an Android 7 device, upload a portrait camera photo whose pixels are
+   landscape and whose EXIF orientation rotates or mirrors it.
+10. Expected: the uploaded JPEG matches the orientation shown in the picker.
+11. Dismiss the picker without selecting anything.
+12. Expected: no HUD, no alert, no text inserted — silent no-op.
+13. Toggle the app's theme (light/dark) and repeat an upload in each mode.
+14. Expected: the HUD's colors match the current theme (light card in light
+    mode, dark card in dark mode) — not a fixed dark pill regardless of theme.
+
+### Paste image from clipboard
+1. Copy a screenshot to the clipboard, long-press the terminal, tap `Paste Image`.
+2. Expected: same upload/HUD/path-insertion behavior as the photo-library flow.
+
+### Size handling
+1. Upload a very large (e.g. >20MP) photo.
+2. Expected: no error — the image is silently downscaled/re-encoded on-device
+   before upload; the pasted path resolves to a file a few MB or smaller.
+3. Attempt to upload a corrupt or non-image file, if reachable through the picker.
+4. Expected: an alert appears ("Couldn't read image" / "Upload failed"); no
+   path is inserted.
+
+### Host compatibility and cleanup
+1. Point the app at a host binary built before this feature and repeat the
+   Upload flow.
+2. Expected: an alert appears telling the user to update the Zedra host; no crash.
+3. On a current macOS host, manually age a file under
+   `~/.cache/zedra/uploads/` past the
+   cleanup grace period (or reduce the grace period locally for testing) and
+   restart the host daemon.
+4. Expected: the stale file is removed on startup; recently-uploaded files are
+   left alone.
+5. Run `git status` in the workspace after uploading a few images.
+6. Expected: nothing upload-related appears — uploads live in Zedra's cache
+   directory, outside every repo.
+
+## 25. GPUI Devtool on iOS (shared `gpui_devtool` crate)
 
 Verifies the iOS devtool backend added alongside the pre-existing Android one — same
 HTTP surface, same shared `gpui_devtool` crate, different platform-side tap dispatch.
@@ -1717,7 +1779,7 @@ HTTP surface, same shared `gpui_devtool` crate, different platform-side tap disp
    is rejected by `build-ios.sh` with "release builds cannot enable ... --devtool"; confirm
    `./scripts/build-android.sh --devtool` (no `--debug`) is rejected the same way.
 
-## 24a. Devtool — Default Gestures
+## 25a. Devtool — Default Gestures
 
 Verifies press/long-press work on any `.id(...)`'d element with no declaration.
 
@@ -1734,7 +1796,7 @@ Verifies press/long-press work on any `.id(...)`'d element with no declaration.
    `{"ok":false,"error":"element not found"}` is printed (not swallowed) and the command
    exits non-zero.
 
-## 24a2. `/sequence` — Batched Multi-Step Operations
+## 25a2. `/sequence` — Batched Multi-Step Operations
 
 Verifies `POST /sequence` runs steps in order, in one round trip, and stops at
 the first step that can't resolve.
@@ -1751,7 +1813,7 @@ the first step that can't resolve.
 4. Malformed JSON body or `[]` (empty steps array) — expected: `400 Bad
    Request` with a clear `"error"` field, not a partial/empty 200.
 
-## 24b. iOS Log Daemon (fixed location + simulator/device capture)
+## 25b. iOS Log Daemon (fixed location + simulator/device capture)
 
 1. `./scripts/ios-log.sh daemon start`, then immediately `./scripts/ios-log.sh daemon stop`
    (same shell) — expected: stop reports the daemon's pgid and actually terminates it; confirm

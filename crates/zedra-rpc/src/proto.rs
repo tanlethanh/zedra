@@ -220,6 +220,12 @@ pub enum ZedraProto {
     #[rpc(tx = oneshot::Sender<ClearClientDeltaInfoResult>)]
     ClearClientDeltaInfo(ClearClientDeltaInfoReq),
 
+    /// Upload binary image bytes into the workspace uploads directory.
+    /// The host names the file; the client never controls the destination path.
+    /// Kept at enum tail because protocol variants are append-only.
+    #[rpc(tx = oneshot::Sender<FsUploadResult>)]
+    FsUpload(FsUploadReq),
+
     /// Connect one app-local web proxy stream to a host-side loopback TCP port.
     /// Kept at enum tail because protocol variants are append-only.
     #[rpc(rx = mpsc::Receiver<WebTunnelInput>, tx = mpsc::Sender<WebTunnelOutput>)]
@@ -231,6 +237,9 @@ pub enum ZedraProto {
 // ---------------------------------------------------------------------------
 
 pub const ZEDRA_ALPN: &[u8] = b"zedra/rpc/4";
+
+/// Maximum accepted `FsUpload` payload size, well under irpc's 16 MiB message cap.
+pub const FS_UPLOAD_MAX_BYTES: usize = 8 * 1024 * 1024;
 
 /// Default page size for `FsList` requests (host uses this when `limit == 0`).
 pub const FS_LIST_DEFAULT_LIMIT: u32 = 50;
@@ -721,6 +730,21 @@ pub struct FsWriteReq {
 #[derive(Debug, Serialize, Deserialize)]
 pub struct FsWriteResult {
     pub ok: bool,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+pub struct FsUploadReq {
+    #[serde(with = "serde_bytes")]
+    pub data: Vec<u8>,
+    /// Lowercase extension without a leading dot (e.g. "jpg", "png").
+    pub extension: String,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+pub struct FsUploadResult {
+    /// Workspace-relative path of the stored file. Empty when `error` is set.
+    pub path: String,
+    pub error: Option<String>,
 }
 
 #[derive(Debug, Serialize, Deserialize)]

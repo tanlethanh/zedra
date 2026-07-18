@@ -99,6 +99,10 @@ __attribute__((weak)) void ios_present_text_input(
     const char *initial_value) {}
 __attribute__((weak)) int ios_system_prefers_dark_theme(void) { return -1; }
 __attribute__((weak)) void ios_set_keyboard_accessory_theme(_Bool is_dark) {}
+__attribute__((weak)) void ios_acquire_image(unsigned int callback_id, int source) {}
+__attribute__((weak)) _Bool ios_clipboard_has_image(void) { return 0; }
+__attribute__((weak)) void ios_present_native_progress(unsigned int id, const char *message) {}
+__attribute__((weak)) void ios_dismiss_native_progress(unsigned int id) {}
 
 // Firebase Analytics + Crashlytics stubs.
 // Real implementations live in ios/Zedra/ZedraFirebase.m and override at Xcode link time.

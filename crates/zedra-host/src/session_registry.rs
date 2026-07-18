@@ -271,7 +271,7 @@ pub struct ServerSession {
     // ── RPC usage counters (lifetime totals, never reset) ──────────────────
     /// Total FsRead calls served.
     pub rpc_fs_reads: AtomicU64,
-    /// Total FsWrite calls served.
+    /// Total filesystem write calls served.
     pub rpc_fs_writes: AtomicU64,
     /// Total read-only git RPC calls (status, diff, log, branches, stage, unstage).
     pub rpc_git_ops: AtomicU64,
