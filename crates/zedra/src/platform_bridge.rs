@@ -246,6 +246,32 @@ impl NativeFloatingButtonIconWeight {
     }
 }
 
+/// Where a picked/pasted image comes from.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ImageAcquireSource {
+    /// Native photo library picker (PHPickerViewController / PickVisualMedia).
+    PhotoLibrary,
+    /// System clipboard image.
+    Clipboard,
+}
+
+impl ImageAcquireSource {
+    pub fn to_i32(self) -> i32 {
+        match self {
+            ImageAcquireSource::PhotoLibrary => 0,
+            ImageAcquireSource::Clipboard => 1,
+        }
+    }
+}
+
+/// A ready-to-upload image after native downscale/re-encode.
+#[derive(Debug)]
+pub struct PickedImage {
+    pub data: Vec<u8>,
+    /// Lowercase extension without a leading dot (e.g. "jpg", "png").
+    pub extension: String,
+}
+
 static NEXT_ALERT_ID: AtomicU32 = AtomicU32::new(1);
 static ALERT_CALLBACKS: OnceLock<Mutex<HashMap<u32, Box<dyn FnOnce(Option<usize>) + Send>>>> =
     OnceLock::new();
@@ -256,12 +282,17 @@ static NEXT_TEXT_INPUT_ID: AtomicU32 = AtomicU32::new(1);
 static TEXT_INPUT_CALLBACKS: OnceLock<Mutex<HashMap<u32, Box<dyn FnOnce(Option<String>) + Send>>>> =
     OnceLock::new();
 static NEXT_NATIVE_FLOATING_BUTTON_ID: AtomicU32 = AtomicU32::new(1);
+static NEXT_NATIVE_PROGRESS_ID: AtomicU32 = AtomicU32::new(1);
 static NEXT_NATIVE_DICTATION_PREVIEW_ID: AtomicU32 = AtomicU32::new(1);
 static NEXT_NATIVE_NOTIFICATION_ID: AtomicU32 = AtomicU32::new(1);
 static NEXT_NATIVE_EDIT_MENU_ID: AtomicU32 = AtomicU32::new(1);
 static NEXT_DELTA_GOOGLE_SIGN_IN_ID: AtomicU32 = AtomicU32::new(1);
 static NEXT_DELTA_APPLE_SIGN_IN_ID: AtomicU32 = AtomicU32::new(1);
 static NEXT_DELTA_PUSH_TOKEN_ID: AtomicU32 = AtomicU32::new(1);
+static NEXT_IMAGE_ACQUIRE_ID: AtomicU32 = AtomicU32::new(1);
+static IMAGE_ACQUIRE_CALLBACKS: OnceLock<
+    Mutex<HashMap<u32, Box<dyn FnOnce(Option<Result<PickedImage, String>>) + Send>>>,
+> = OnceLock::new();
 static NATIVE_NOTIFICATION_CALLBACKS: OnceLock<Mutex<HashMap<u32, Box<dyn FnOnce() + Send>>>> =
     OnceLock::new();
 static DELTA_GOOGLE_SIGN_IN_CALLBACKS: OnceLock<
@@ -309,6 +340,11 @@ fn delta_push_token_callbacks()
 
 fn text_input_callbacks() -> &'static Mutex<HashMap<u32, Box<dyn FnOnce(Option<String>) + Send>>> {
     TEXT_INPUT_CALLBACKS.get_or_init(|| Mutex::new(HashMap::new()))
+}
+
+fn image_acquire_callbacks()
+-> &'static Mutex<HashMap<u32, Box<dyn FnOnce(Option<Result<PickedImage, String>>) + Send>>> {
+    IMAGE_ACQUIRE_CALLBACKS.get_or_init(|| Mutex::new(HashMap::new()))
 }
 
 /// Present a native alert dialog with the given title, message, and buttons.
@@ -402,6 +438,56 @@ pub fn dispatch_text_input_dismiss(callback_id: u32) {
     }
 }
 
+/// Start native image acquisition (photo picker or clipboard read + downscale).
+/// `on_result` fires once, off the GPUI thread: `None` = cancelled, `Some(Ok)` = image,
+/// `Some(Err)` = failure.
+pub fn acquire_image(
+    source: ImageAcquireSource,
+    on_result: impl FnOnce(Option<Result<PickedImage, String>>) + Send + 'static,
+) {
+    let id = NEXT_IMAGE_ACQUIRE_ID.fetch_add(1, Ordering::Relaxed);
+    image_acquire_callbacks()
+        .lock()
+        .unwrap()
+        .insert(id, Box::new(on_result));
+    bridge().acquire_image(id, source);
+}
+
+/// Called by platform code with a processed image ready to upload.
+pub fn dispatch_image_acquire_result(callback_id: u32, image: PickedImage) {
+    let cb = image_acquire_callbacks()
+        .lock()
+        .unwrap()
+        .remove(&callback_id);
+    if let Some(cb) = cb {
+        cb(Some(Ok(image)));
+    }
+}
+
+/// Called by platform code when the user cancels the picker, or the
+/// clipboard held no image.
+pub fn dispatch_image_acquire_cancel(callback_id: u32) {
+    let cb = image_acquire_callbacks()
+        .lock()
+        .unwrap()
+        .remove(&callback_id);
+    if let Some(cb) = cb {
+        cb(None);
+    }
+}
+
+/// Called by platform code when acquisition fails (corrupt/undecodable image,
+/// platform error).
+pub fn dispatch_image_acquire_error(callback_id: u32, message: String) {
+    let cb = image_acquire_callbacks()
+        .lock()
+        .unwrap()
+        .remove(&callback_id);
+    if let Some(cb) = cb {
+        cb(Some(Err(message)));
+    }
+}
+
 /// Present a configurable native custom sheet.
 ///
 /// The native platform owns sheet gestures and animation. The sheet body itself
@@ -481,6 +567,21 @@ pub(crate) fn remove_native_dictation_preview(id: u32) {
         callbacks.borrow_mut().remove(&id);
     });
     hide_native_dictation_preview(id);
+}
+
+/// Allocates an id for a native progress HUD; reuse it for show then hide.
+pub fn allocate_native_progress_id() -> u32 {
+    NEXT_NATIVE_PROGRESS_ID.fetch_add(1, Ordering::Relaxed)
+}
+
+/// Show (or update the message of) a native progress HUD for `id`.
+pub fn show_native_progress(id: u32, message: &str) {
+    bridge().present_native_progress(id, message);
+}
+
+/// Hide the native progress HUD for `id`. No-op if it isn't showing.
+pub fn hide_native_progress(id: u32) {
+    bridge().dismiss_native_progress(id);
 }
 
 pub fn show_native_notification(options: NativeNotificationOptions) {
@@ -947,6 +1048,10 @@ pub trait PlatformBridge: Send + Sync + 'static {
     fn update_native_dictation_preview(&self, _id: u32, _options: &NativeDictationPreviewOptions) {}
     /// Hide a native dictation preview overlay.
     fn hide_native_dictation_preview(&self, _id: u32) {}
+    /// Show (or retarget) a native, non-interactive spinner + message HUD.
+    fn present_native_progress(&self, _id: u32, _message: &str) {}
+    /// Hide the native progress HUD for `id`.
+    fn dismiss_native_progress(&self, _id: u32) {}
     /// Display a native in-app notification banner.
     fn present_native_notification(&self, _id: u32, _options: &NativeNotificationOptions) {}
     /// Start the platform Google Sign-In flow for Delta account auth.
@@ -990,6 +1095,20 @@ pub trait PlatformBridge: Send + Sync + 'static {
     }
     /// Sync native platform chrome with the selected app appearance.
     fn set_native_theme(&self, _is_dark: bool) {}
+    /// Launch native image acquisition (photo picker or clipboard image read).
+    /// The platform must deliver exactly one of
+    /// `dispatch_image_acquire_{result,cancel,error}(id, ..)`.
+    fn acquire_image(&self, id: u32, _source: ImageAcquireSource) {
+        dispatch_image_acquire_error(
+            id,
+            "image acquisition not supported on this platform".into(),
+        );
+    }
+    /// Cheap synchronous check: does the system clipboard currently hold an
+    /// image? Used to decide whether to show the "Paste Image" edit-menu item.
+    fn clipboard_has_image(&self) -> bool {
+        false
+    }
 }
 
 static BRIDGE: OnceLock<Box<dyn PlatformBridge>> = OnceLock::new();
