@@ -48,6 +48,7 @@ pub mod transport_badge;
 pub mod workspace;
 pub mod workspace_action;
 pub mod workspace_connecting;
+pub mod workspace_connection_banner;
 pub mod workspace_drawer;
 pub mod workspace_editor;
 pub mod workspace_gitdiff;

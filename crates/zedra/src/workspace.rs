@@ -40,6 +40,7 @@ use crate::workspace_action::{
     SpawnAgentTerminal, ToggleDrawer,
 };
 use crate::workspace_connecting::WorkspaceConnecting;
+use crate::workspace_connection_banner::{BannerEvent, ConnectionBanner};
 use crate::workspace_drawer::WorkspaceDrawer;
 use crate::workspace_editor::{EditorSelection, WorkspaceEditor};
 use crate::workspace_gitdiff::{GitdiffHeaderChanged, WorkspaceGitdiff};
@@ -533,6 +534,8 @@ fn record_connect_telemetry(
                 total_ms: *total_ms,
                 binding_ms: snap.binding_ms.unwrap_or(0),
                 hole_punch_ms: snap.hole_punch_ms.unwrap_or(0),
+                resolve_ms: snap.resolve_ms.unwrap_or(0),
+                handshake_ms: snap.handshake_ms.unwrap_or(0),
                 auth_ms: snap.auth_ms.unwrap_or(0),
                 fetch_ms: snap.sync_ms.unwrap_or(0),
                 path: path_label(snap),
@@ -589,6 +592,8 @@ fn record_connect_telemetry(
                 reason,
                 binding_ms: snap.binding_ms.unwrap_or(0),
                 hole_punch_ms: snap.hole_punch_ms.unwrap_or(0),
+                resolve_ms: snap.resolve_ms.unwrap_or(0),
+                handshake_ms: snap.handshake_ms.unwrap_or(0),
                 auth_ms: snap.auth_ms.unwrap_or(0),
                 fetch_ms: snap.sync_ms.unwrap_or(0),
                 path: path_label(snap),
@@ -622,6 +627,7 @@ fn record_connect_telemetry(
         ConnectEvent::PathUpgraded {
             prev_path,
             new_path,
+            upgrade_ms,
         } => {
             zedra_telemetry::send(zedra_telemetry::Event::PathUpgraded {
                 network: path_network_label(new_path),
@@ -630,6 +636,15 @@ fn record_connect_telemetry(
                     .as_ref()
                     .and_then(path_relay_label)
                     .unwrap_or_else(|| relay_label(snap)),
+                upgrade_ms: *upgrade_ms,
+            });
+        }
+        ConnectEvent::DirectUpgradeTimeout { elapsed_ms } => {
+            zedra_telemetry::send(zedra_telemetry::Event::DirectUpgradeTimeout {
+                elapsed_ms: *elapsed_ms,
+                relay: relay_label(snap),
+                network: network_label(snap),
+                symmetric_nat: snap.mapping_varies.unwrap_or(false),
             });
         }
         ConnectEvent::PathReport { .. } => record_latency_sample(state, latency_sampler),
@@ -739,12 +754,14 @@ impl Workspace {
         let editor = cx.new(|cx| WorkspaceEditor::new(session.handle().clone(), cx));
         let gitdiff = cx.new(|cx| WorkspaceGitdiff::new(session.handle().clone(), cx));
 
+        let connection_banner = cx.new(|cx| ConnectionBanner::new(session_state.clone(), cx));
         let content = cx.new(|cx| {
             WorkspaceContent::new(
                 workspace_state.clone(),
                 terminal_state.clone(),
                 session_state.clone(),
                 session.handle().clone(),
+                connection_banner.clone(),
                 cx,
             )
         });
@@ -811,6 +828,8 @@ impl Workspace {
                 });
             },
         );
+        let connection_banner_subscription =
+            cx.subscribe(&connection_banner, Self::handle_banner_event);
 
         let mut host_event_rx = session.subscribe_host_events();
         let host_event_listener = cx.spawn(async move |workspace, cx| {
@@ -1002,7 +1021,7 @@ impl Workspace {
                                     if ws.session_handle().user_disconnect() {
                                         return;
                                     }
-                                    ws.restart_connection(cx);
+                                    ws.restart_connection(true, cx);
                                 })
                                 .ok();
                             }
@@ -1119,6 +1138,7 @@ impl Workspace {
                 delta_state_subscription,
                 gitdiff_subscription,
                 file_search_subscription,
+                connection_banner_subscription,
             ],
         }
     }
@@ -1507,7 +1527,9 @@ impl Workspace {
         .detach();
     }
 
-    pub fn restart_connection(&mut self, cx: &mut Context<Self>) {
+    /// `reveal_detail` opens the connecting screen to show reconnect progress.
+    /// The banner refresh passes `false` so it reconnects in place.
+    pub fn restart_connection(&mut self, reveal_detail: bool, cx: &mut Context<Self>) {
         let Some(mut request) = self.connection_request.clone() else {
             warn!("restart connection requested without a connection request");
             return;
@@ -1527,7 +1549,9 @@ impl Workspace {
         self.active_reconnect_reason = None;
         self.latency_sampler.reset();
         self.start_connection(request);
-        self.content.update(cx, |c, cx| c.show_connecting_view(cx));
+        if reveal_detail {
+            self.content.update(cx, |c, cx| c.show_connecting_view(cx));
+        }
         self.record_current_view(cx);
     }
 
@@ -1858,7 +1882,24 @@ impl Workspace {
     ) {
         info!("handle RestartConnection from workspace");
         window.hide_soft_keyboard();
-        self.restart_connection(cx);
+        self.restart_connection(true, cx);
+    }
+
+    /// Banner taps arrive as entity events (not dispatched actions) so they work
+    /// regardless of where focus currently sits.
+    fn handle_banner_event(
+        &mut self,
+        _banner: Entity<ConnectionBanner>,
+        event: &BannerEvent,
+        cx: &mut Context<Self>,
+    ) {
+        match event {
+            BannerEvent::OpenDetail => {
+                self.content.update(cx, |c, cx| c.show_connecting_view(cx));
+                self.record_current_view(cx);
+            }
+            BannerEvent::Refresh => self.restart_connection(false, cx),
+        }
     }
 
     fn handle_open_file(&mut self, action: &OpenFile, window: &mut Window, cx: &mut Context<Self>) {
@@ -3566,6 +3607,7 @@ pub struct WorkspaceContent {
     focus_handle: FocusHandle,
     show_connecting: bool,
     connecting_view: Entity<WorkspaceConnecting>,
+    connection_banner: Entity<ConnectionBanner>,
     mainview_bounds: Option<Bounds<Pixels>>,
     _subscriptions: Vec<Subscription>,
 }
@@ -3652,6 +3694,7 @@ impl WorkspaceContent {
         terminal_state: Entity<TerminalState>,
         session_state: Entity<SessionState>,
         session_handle: SessionHandle,
+        connection_banner: Entity<ConnectionBanner>,
         cx: &mut Context<Self>,
     ) -> Self {
         let empty_view = cx.new(|_cx| Empty);
@@ -3669,6 +3712,7 @@ impl WorkspaceContent {
             terminal_state,
             show_connecting: false,
             connecting_view: connecting,
+            connection_banner,
             mainview_bounds: None,
             _subscriptions: vec![terminal_state_sub, workspace_state_sub],
         }
@@ -3737,8 +3781,11 @@ impl WorkspaceContent {
         self.show_connecting
     }
 
-    fn open_connecting_view(&self, window: &mut Window, cx: &mut Context<Self>) {
-        window.dispatch_action(workspace_action::ShowConnecting.boxed_clone(), cx);
+    /// Show the connection detail directly. Not via `ShowConnecting` dispatch:
+    /// that action only reaches the workspace handler when a workspace element
+    /// holds focus, so it navigated only intermittently.
+    fn open_connecting_view(&mut self, cx: &mut Context<Self>) {
+        self.show_connecting_view(cx);
     }
 
     fn render_subtitle(&self, default_subtitle: &str, cx: &mut Context<Self>) -> AnyElement {
@@ -3883,8 +3930,8 @@ impl Render for WorkspaceContent {
                                                 )
                                                 .size(6.0)
                                                 .on_press(cx.listener(
-                                                    |this, _event, window, cx| {
-                                                        this.open_connecting_view(window, cx);
+                                                    |this, _event, _window, cx| {
+                                                        this.open_connecting_view(cx);
                                                     },
                                                 )),
                                             )
@@ -3932,12 +3979,20 @@ impl Render for WorkspaceContent {
                     .min_h_0()
                     .min_w_0()
                     .w_full()
+                    // Clip the overlaid banner at the header edge so it tucks under
+                    // the header on slide-out instead of painting over it.
+                    .overflow_hidden()
                     .child(mainview_measure)
                     .when_else(
                         self.show_connecting,
                         |d: Div| d.child(self.connecting_view.clone()),
                         |d: Div| d.child(self.main_view.clone()),
-                    ),
+                    )
+                    // Overlay the connection banner on top of the main view only —
+                    // the connecting detail already conveys full connection status.
+                    .when(!self.show_connecting, |d| {
+                        d.child(self.connection_banner.clone())
+                    }),
             )
     }
 }

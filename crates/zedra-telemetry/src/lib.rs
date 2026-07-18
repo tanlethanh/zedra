@@ -71,6 +71,10 @@ pub enum Event {
         total_ms: u64,
         binding_ms: u64,
         hole_punch_ms: u64,
+        /// Sub-timing of hole_punch_ms: pkarr/DNS discovery to resolve the host.
+        resolve_ms: u64,
+        /// Sub-timing of hole_punch_ms: QUIC + TLS handshake after resolve.
+        handshake_ms: u64,
         auth_ms: u64,
         fetch_ms: u64,
         // Transport context
@@ -127,6 +131,8 @@ pub enum Event {
         // Phase timings (ms) for the successful attempt
         binding_ms: u64,
         hole_punch_ms: u64,
+        resolve_ms: u64,
+        handshake_ms: u64,
         auth_ms: u64,
         fetch_ms: u64,
         // Transport context
@@ -159,6 +165,17 @@ pub enum Event {
         rtt_ms: u64,
         /// Relay hostname the connection upgraded from.
         from_relay: String,
+        /// Time from connection establishment to the first direct path.
+        upgrade_ms: u64,
+    },
+    /// No direct path formed within the upgrade window; connection stays on relay.
+    /// The relay-only outcome we want to aggregate to find hole-punch failures.
+    DirectUpgradeTimeout {
+        elapsed_ms: u64,
+        relay: String,
+        /// "LAN", "Tailscale", "Internet", "unknown"
+        network: &'static str,
+        symmetric_nat: bool,
     },
     /// Periodic selected-path latency sample.
     ConnectionLatencySample {
@@ -361,6 +378,7 @@ impl Event {
             Self::ReconnectSuccess { .. } => "reconnect_success",
             Self::ReconnectExhausted { .. } => "reconnect_exhausted",
             Self::PathUpgraded { .. } => "path_upgraded",
+            Self::DirectUpgradeTimeout { .. } => "direct_upgrade_timeout",
             Self::ConnectionLatencySample { .. } => "connection_latency_sample",
             Self::TerminalOpened { .. } => "terminal_opened",
             Self::TerminalClosed { .. } => "terminal_closed",
@@ -410,6 +428,8 @@ impl Event {
                 total_ms,
                 binding_ms,
                 hole_punch_ms,
+                resolve_ms,
+                handshake_ms,
                 auth_ms,
                 fetch_ms,
                 path,
@@ -426,6 +446,8 @@ impl Event {
                 ("total_ms", total_ms.to_string()),
                 ("binding_ms", binding_ms.to_string()),
                 ("hole_punch_ms", hole_punch_ms.to_string()),
+                ("resolve_ms", resolve_ms.to_string()),
+                ("handshake_ms", handshake_ms.to_string()),
                 ("auth_ms", auth_ms.to_string()),
                 ("fetch_ms", fetch_ms.to_string()),
                 ("path", path.to_string()),
@@ -472,6 +494,8 @@ impl Event {
                 reason,
                 binding_ms,
                 hole_punch_ms,
+                resolve_ms,
+                handshake_ms,
                 auth_ms,
                 fetch_ms,
                 path,
@@ -487,6 +511,8 @@ impl Event {
                 ("reason", reason.to_string()),
                 ("binding_ms", binding_ms.to_string()),
                 ("hole_punch_ms", hole_punch_ms.to_string()),
+                ("resolve_ms", resolve_ms.to_string()),
+                ("handshake_ms", handshake_ms.to_string()),
                 ("auth_ms", auth_ms.to_string()),
                 ("fetch_ms", fetch_ms.to_string()),
                 ("path", path.to_string()),
@@ -517,10 +543,23 @@ impl Event {
                 network,
                 rtt_ms,
                 from_relay,
+                upgrade_ms,
             } => vec![
                 ("network", network.to_string()),
                 ("rtt_ms", rtt_ms.to_string()),
                 ("from_relay", from_relay.clone()),
+                ("upgrade_ms", upgrade_ms.to_string()),
+            ],
+            Self::DirectUpgradeTimeout {
+                elapsed_ms,
+                relay,
+                network,
+                symmetric_nat,
+            } => vec![
+                ("elapsed_ms", elapsed_ms.to_string()),
+                ("relay", relay.clone()),
+                ("network", network.to_string()),
+                ("symmetric_nat", bool_str(*symmetric_nat)),
             ],
             Self::ConnectionLatencySample {
                 source,
