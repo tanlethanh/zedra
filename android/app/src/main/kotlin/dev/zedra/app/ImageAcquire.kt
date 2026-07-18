@@ -4,8 +4,10 @@ import android.content.Context
 import android.graphics.Bitmap
 import android.graphics.BitmapFactory
 import android.graphics.ImageDecoder
+import android.graphics.Matrix
 import android.net.Uri
 import android.os.Build
+import androidx.exifinterface.media.ExifInterface
 import java.io.ByteArrayOutputStream
 
 /** Decodes, downscales, and re-encodes a picked/pasted image off the main thread. */
@@ -20,23 +22,14 @@ object ImageAcquire {
     fun processUri(context: Context, uri: Uri, callbackId: Int) {
         Thread {
             try {
-                val original: Bitmap = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.P) {
+                val original = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.P) {
                     val source = ImageDecoder.createSource(context.contentResolver, uri)
                     ImageDecoder.decodeBitmap(source) { decoder, info, _ ->
                         val longEdge = maxOf(info.size.width, info.size.height)
                         decoder.setTargetSampleSize(sampleSizeFor(longEdge))
                     }
                 } else {
-                    val bounds = BitmapFactory.Options().apply { inJustDecodeBounds = true }
-                    context.contentResolver.openInputStream(uri).use {
-                        BitmapFactory.decodeStream(it, null, bounds)
-                    }
-                    val longEdge = maxOf(bounds.outWidth, bounds.outHeight)
-                    val decodeOptions =
-                        BitmapFactory.Options().apply { inSampleSize = sampleSizeFor(longEdge) }
-                    context.contentResolver.openInputStream(uri)?.use {
-                        BitmapFactory.decodeStream(it, null, decodeOptions)
-                    } ?: throw IllegalStateException("could not decode bitmap")
+                    decodeLegacyBitmap(context, uri)
                 }
 
                 val longEdge = maxOf(original.width, original.height)
@@ -60,5 +53,29 @@ object ImageAcquire {
                 MainActivity.nativeImageAcquireError(callbackId, error.message ?: "image processing failed")
             }
         }.start()
+    }
+
+    private fun decodeLegacyBitmap(context: Context, uri: Uri): Bitmap {
+        val bounds = BitmapFactory.Options().apply { inJustDecodeBounds = true }
+        context.contentResolver.openInputStream(uri).use {
+            BitmapFactory.decodeStream(it, null, bounds)
+        }
+        val longEdge = maxOf(bounds.outWidth, bounds.outHeight)
+        val decodeOptions = BitmapFactory.Options().apply { inSampleSize = sampleSizeFor(longEdge) }
+        val bitmap = context.contentResolver.openInputStream(uri)?.use {
+            BitmapFactory.decodeStream(it, null, decodeOptions)
+        } ?: throw IllegalStateException("could not decode bitmap")
+        val exif = context.contentResolver.openInputStream(uri)?.use { ExifInterface(it) }
+            ?: return bitmap
+        val transform = Matrix().apply {
+            if (exif.isFlipped) postScale(-1f, 1f)
+            if (exif.rotationDegrees != 0) postRotate(exif.rotationDegrees.toFloat())
+            val decodedLongEdge = maxOf(bitmap.width, bitmap.height)
+            if (decodedLongEdge > MAX_DIMENSION) {
+                val scale = MAX_DIMENSION.toFloat() / decodedLongEdge
+                postScale(scale, scale)
+            }
+        }
+        return Bitmap.createBitmap(bitmap, 0, 0, bitmap.width, bitmap.height, transform, true)
     }
 }

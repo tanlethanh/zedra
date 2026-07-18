@@ -2811,6 +2811,7 @@ async fn dispatch(
         }
 
         ZedraMessage::FsUpload(msg) => {
+            session.rpc_fs_writes.fetch_add(1, Ordering::Relaxed);
             if msg.data.len() > FS_UPLOAD_MAX_BYTES {
                 tracing::warn!(
                     "FsUpload: rejected {} byte payload (max {})",
@@ -2826,7 +2827,14 @@ async fn dispatch(
                     .await;
                 return Ok(());
             }
-            match uploads::store_upload(&msg.data, &msg.extension) {
+            let data = msg.inner.data;
+            let extension = msg.inner.extension;
+            let store_result =
+                tokio::task::spawn_blocking(move || uploads::store_upload(&data, &extension))
+                    .await
+                    .map_err(|error| anyhow::anyhow!("upload task failed: {error}"))
+                    .and_then(|result| result);
+            match store_result {
                 Ok(path) => {
                     let _ = msg.tx.send(FsUploadResult { path, error: None }).await;
                 }

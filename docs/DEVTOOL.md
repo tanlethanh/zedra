@@ -25,7 +25,8 @@ once while debugging, delete the registration when done.
 ```
 
 `--devtool` requires a debug build (`--release` is rejected). On start the
-app logs `devtool: listening on 127.0.0.1:9777`.
+app logs `devtool: listening on 127.0.0.1:<configured-port>`; the default is
+`9777`.
 
 ## Use
 

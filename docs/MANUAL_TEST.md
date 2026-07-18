@@ -1604,10 +1604,13 @@ id in production). The trailing shows the aggregate `done/total` rollup.
    "describe this image".
 8. Expected: the agent reads the file and describes it correctly (confirms the
    uploaded bytes are a valid, correctly-oriented image).
-9. Dismiss the picker without selecting anything.
-10. Expected: no HUD, no alert, no text inserted — silent no-op.
-11. Toggle the app's theme (light/dark) and repeat an upload in each mode.
-12. Expected: the HUD's colors match the current theme (light card in light
+9. On an Android 7 device, upload a portrait camera photo whose pixels are
+   landscape and whose EXIF orientation rotates or mirrors it.
+10. Expected: the uploaded JPEG matches the orientation shown in the picker.
+11. Dismiss the picker without selecting anything.
+12. Expected: no HUD, no alert, no text inserted — silent no-op.
+13. Toggle the app's theme (light/dark) and repeat an upload in each mode.
+14. Expected: the HUD's colors match the current theme (light card in light
     mode, dark card in dark mode) — not a fixed dark pill regardless of theme.
 
 ### Paste image from clipboard

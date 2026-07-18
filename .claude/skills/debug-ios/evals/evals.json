@@ -4,7 +4,7 @@
     {
       "id": 1,
       "prompt": "hey the workspace card for 'zedra-acp' just spins forever on 'Connecting...' even though the host is definitely up and reachable via ssh - can you dig into why the phone side isn't completing the handshake",
-      "expected_output": "A Phase 0-3 run: verifies device/devtool/log daemon first, forms a hypothesis grounded in reading the actual connect/handshake code path, drives the workspace card via devtool (tap or the 'open' action) rather than asking the human to reproduce it, captures timestamped logs around the connect attempt, and reports a root cause with re-observed evidence or explicitly stops to ask when it can't reproduce/verify — not a guess-and-ship fix.",
+      "expected_output": "A Phase 0-3 run: verifies device/devtool/log daemon first, forms a hypothesis grounded in reading the actual connect/handshake code path, drives the workspace card via devtool `press` (or an explicitly registered `/call` action) rather than asking the human to reproduce it, captures timestamped logs around the connect attempt, and reports a root cause with re-observed evidence or explicitly stops to ask when it can't reproduce/verify — not a guess-and-ship fix.",
       "files": []
     },
     {
