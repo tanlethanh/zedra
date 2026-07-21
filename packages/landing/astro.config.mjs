@@ -73,8 +73,13 @@ export default defineConfig({
       sidebar: [
         { label: "Why Zedra?", slug: "docs" },
         { label: "Installation", slug: "docs/installation" },
+        { label: "Security & architecture", slug: "docs/security" },
+        { label: "Web tunnel", slug: "docs/web-tunnel" },
+        { label: "Configuration", slug: "docs/configuration" },
+        { label: "Troubleshooting", slug: "docs/troubleshooting" },
         {
           label: "Guides",
+          collapsed: true,
           items: [
             { label: "Run Claude Code from phone", slug: "docs/guides/run-claude-code-from-phone" },
             { label: "Run Codex CLI from phone", slug: "docs/guides/run-codex-cli-from-phone" },
@@ -84,9 +89,6 @@ export default defineConfig({
             },
           ],
         },
-        { label: "Web tunnel", slug: "docs/web-tunnel" },
-        { label: "Security & architecture", slug: "docs/security" },
-        { label: "Troubleshooting", slug: "docs/troubleshooting" },
         {
           label: "References",
           items: [

@@ -50,6 +50,8 @@ base64-url.workspace = true
 percent-encoding.workspace = true
 serde.workspace = true
 serde_json = { workspace = true, features = ["std"] }
+serde_yaml.workspace = true
+serde_ignored.workspace = true
 data-encoding.workspace = true
 chrono.workspace = true
 

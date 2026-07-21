@@ -497,6 +497,22 @@ app still builds, but push registration reports an error instead of a token.
 23. Open a new PowerShell window and run `zedra --version`
 24. Expected: the command prints the release version
 
+## 1e. Update Restarts Running Daemons (Unix)
+
+1. Start a daemon: `zedra start --workdir <repo> --detach`, connect the app, and open a terminal
+2. Run `zedra update --version <current-release-tag>` from another directory
+3. Expected: the warning lists the running daemon, and after `Proceed with update? [Y/n]` a second prompt asks `Restart running daemons after update? Running terminals will be killed. [y/N]`
+4. Answer `n` (or press Enter)
+5. Expected: the update completes and prints the manual `zedra stop ... && zedra start ...` note; the daemon keeps running on the old version
+6. Repeat the update and answer `y`
+7. Expected: each daemon is stopped and relaunched detached; `zedra status --workdir <repo>` shows a new PID, the app reconnects, and the previous terminal is gone (killed with the old daemon)
+8. Start a daemon with custom flags, e.g. `zedra start --workdir <repo> --detach --no-telemetry --usage-refresh-secs 60`, then update and answer `y`
+9. Expected: `launch.yaml` exists next to `daemon.lock` under `~/.config/zedra/workspaces/`, and the restarted daemon keeps the flags (verify via `zedra logs` / `launch.yaml` contents)
+10. From a Zedra terminal opened in the app (shell has `ZEDRA_HOST_PID` set), run the update and answer `y`
+11. Expected: the daemon owning that terminal is skipped with a warning and a manual `zedra stop ... && zedra start --detach ...` command; other daemons still restart
+12. Run `zedra update --version <current-release-tag> --yes` with a daemon running
+13. Expected: no restart prompt appears and the daemon is left running with the manual restart note
+
 ## 2. QR Already Consumed
 
 1. Start host: `zedra start --workdir .`

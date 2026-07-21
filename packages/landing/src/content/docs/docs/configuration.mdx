@@ -1,0 +1,113 @@
+---
+title: Configuration
+description: Set daemon defaults once in a YAML config file — relays, telemetry, terminal shell and environment, agents, and update behavior.
+---
+
+Set daemon defaults in a config file instead of passing flags on every `zedra start`. The file is optional; without it, Zedra uses its built-in defaults.
+
+Create `~/.config/zedra/config.yaml` and add the sections you want:
+
+```yaml
+# ~/.config/zedra/config.yaml
+network:
+  relay_url:
+    - https://sg1.relay.zedra.dev
+  pairing_ttl_secs: 120
+telemetry:
+  disabled: true
+terminal:
+  shell: /bin/zsh
+  env:
+    EDITOR: nvim
+  env_passthrough:
+    - GH_TOKEN
+agents:
+  session_limit: 12
+  disabled:
+    - pi
+  overrides:
+    hermes:
+      launch_cmd: hermes --tui
+    claude:
+      bin: /opt/homebrew/bin/claude
+workspace:
+  name: My Project
+git:
+  untracked: normal
+update:
+  restart: ask
+```
+
+Restart the daemon to apply changes:
+
+```sh
+zedra stop
+zedra start
+```
+
+The daemon reads the file at startup. If the YAML is malformed, Zedra logs a warning and falls back to defaults, so a typo never blocks startup.
+
+## File locations
+
+Zedra reads config from two files:
+
+- **Global** — `~/.config/zedra/config.yaml` (`%APPDATA%\zedra\config.yaml` on Windows). Defaults for every workspace. Only you can edit it.
+- **Per-workspace** — `.zedra/config.yaml` in the workspace directory you serve. Settings here apply only to that workspace and override the global file. You can commit it to share project defaults with your team.
+
+Because a per-workspace file can arrive with a cloned repository, Zedra ignores the settings that can run code or expose secrets when they appear there — **`terminal.shell`**, **`terminal.env`**, **`terminal.env_passthrough`**, and **`agents.overrides`**. Set those in the global file only; a workspace file that sets them is ignored with a warning in the daemon log. Every other setting works in either file.
+
+## Precedence
+
+Settings resolve from lowest to highest priority:
+
+1. Built-in defaults
+2. Global `~/.config/zedra/config.yaml`
+3. Per-workspace `.zedra/config.yaml`
+4. Environment variables
+5. `zedra start` flags
+
+A flag or environment variable always overrides both files. Each file fills in what the level below it did not set. Boolean switches and the `agents.disabled` list accumulate across the two files rather than replace.
+
+## `network`
+
+- **`relay_url`** — relay servers to advertise. Default: built-in relays. Overridden by `--relay-url`.
+- **`relay_only`** — force relay-only, no hole punching. For hosts behind UDP-blocking firewalls. Also set by `--relay-only`.
+- **`pairing_ttl_secs`** — one-time QR lifetime. Clamp 30–3600, default 600.
+
+## `telemetry`
+
+- **`disabled`** — `true` turns off anonymous telemetry, like `--no-telemetry`. See [Telemetry](/docs/telemetry).
+
+## `terminal`
+
+- **`shell`** — shell terminals launch. Wins over `$SHELL`. Global file only.
+- **`env`** — variables injected into every terminal. Win over inherited and passed-through values. Global file only.
+- **`env_passthrough`** — host env var names to forward. Opt-in, since terminals otherwise start with a sanitized environment to keep secrets out of a phone-controlled shell. Global file only.
+- **`scrollback`** — output chunks kept per terminal for reconnect replay. Clamp 1000–500000, default 50000.
+- **`max_terminals`** — terminals per session. Clamp 1–64, default 16.
+
+## `agents`
+
+- **`session_limit`** — max concurrent agent sessions. Overridden by `ZEDRA_AGENT_SESSION_LIMIT`.
+- **`disabled`** — registry slugs to hide from lists and scans. Hidden agents still run if launched by hand.
+- **`usage_refresh_secs`** — usage-poll cadence; `0` disables. Overridden by `--usage-refresh-secs`, default 300.
+- **`overrides`** — per-agent launch overrides, keyed by slug (`claude`, `codex`, `opencode`, `hermes`, `pi`, `maki`). Global file only:
+  - **`bin`** — executable to launch instead of the one on `PATH`.
+  - **`launch_cmd`** — full command, run verbatim. Wins over `bin`. Use it to add flags (`hermes --tui`).
+
+## `workspace`
+
+- **`name`** — label shown on the phone instead of the folder name. Set per workspace to tell apart same-named worktrees.
+- **`host_label`** — host name shown instead of the system hostname.
+
+## `git`
+
+- **`untracked`** — `git status` untracked reporting: `all` (default), `normal` (collapse dirs), or `no`. Use `normal`/`no` in large repos.
+
+## `logging`
+
+- **`level`** — non-`--verbose` log filter: `error` (default), `warn`, `info`, `debug`. `--verbose` and `RUST_LOG` win. Global file only.
+
+## `update`
+
+- **`restart`** — what `zedra update` does with running daemons: `ask` (default, prompt), `always` (restart, kills terminals), `never` (print the manual command). Global file only.

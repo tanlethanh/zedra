@@ -903,9 +903,12 @@ fn daemon_api(workdir: &Path) -> Result<(String, String)> {
 }
 
 fn resolve_workdir(raw: &str) -> PathBuf {
-    PathBuf::from(raw)
+    let workdir = PathBuf::from(raw)
         .canonicalize()
-        .unwrap_or_else(|_| PathBuf::from(raw))
+        .unwrap_or_else(|_| PathBuf::from(raw));
+    // Layer this workspace's `.zedra/config.yaml` for locally-run agent scans.
+    crate::global_config::init(&workdir);
+    workdir
 }
 
 fn render_installed_agents(result: &AgentInstalledListResult) -> String {

@@ -12,6 +12,7 @@ pub mod ga4;
 #[path = "ga4_stub.rs"]
 pub mod ga4;
 pub mod git;
+pub mod global_config;
 pub mod host_info;
 pub mod identity;
 pub mod iroh_listener;
@@ -23,6 +24,7 @@ pub mod qr;
 pub mod rpc_daemon;
 pub mod session_registry;
 pub mod sqlite_readonly;
+pub mod start_config;
 pub mod telemetry;
 pub mod uploads;
 pub mod utils;
