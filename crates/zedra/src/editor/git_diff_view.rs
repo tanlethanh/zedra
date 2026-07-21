@@ -1,17 +1,4 @@
-//! GitDiffView - Standalone diff viewer for a single file
-//!
-//! Pushed onto the StackNavigator when a git file is selected from GitSidebar.
-//! Also contains unified-diff data structures and parser.
-
-use std::ops::Range;
-use std::rc::Rc;
-
-use gpui::*;
-use tracing::info;
-
-use super::syntax_highlighter::Highlighter;
-use crate::platform_bridge;
-use crate::theme::{self, EditorTheme};
+//! Unified-diff data structures and parser, shared by `combined_diff_view`.
 
 // ── Diff data types ─────────────────────────────────────────────────────────
 
@@ -70,11 +57,14 @@ impl FileDiff {
     }
 
     pub fn display_path(&self) -> String {
-        if self.old_path.is_empty() {
+        let old_empty = self.old_path.is_empty() || self.old_path == "/dev/null";
+        let new_empty = self.new_path.is_empty() || self.new_path == "/dev/null";
+
+        if old_empty {
             return self.new_path.clone();
         }
 
-        if self.new_path.is_empty() || self.old_path == self.new_path {
+        if new_empty || self.old_path == self.new_path {
             self.old_path.clone()
         } else {
             format!("{} -> {}", self.old_path, self.new_path)
@@ -93,7 +83,16 @@ pub fn parse_unified_diff(text: &str) -> Vec<FileDiff> {
     let mut new_line: usize = 0;
 
     for raw_line in text.lines() {
-        if let Some(path) = raw_line.strip_prefix("--- ") {
+        if raw_line.starts_with("diff --git ") {
+            // Per-file preamble in a multi-file diff (`diff --git a/x b/x`,
+            // `index ..`, mode changes, ...) — close out the previous file's
+            // trailing hunk so these lines don't get swept in as unchanged
+            // content, then fall through and ignore them until `--- ` starts
+            // the next file.
+            if let (Some(diff), Some(hunk)) = (&mut current_diff, current_hunk.take()) {
+                diff.hunks.push(hunk);
+            }
+        } else if let Some(path) = raw_line.strip_prefix("--- ") {
             if let (Some(diff), Some(hunk)) = (&mut current_diff, current_hunk.take()) {
                 diff.hunks.push(hunk);
             }
@@ -189,352 +188,49 @@ fn parse_range(s: &str) -> (usize, usize) {
     }
 }
 
-/// Return sample `FileDiff` entries for offline/demo use.
-pub fn sample_diffs() -> Vec<FileDiff> {
-    vec![FileDiff {
-        old_path: "src/lib.rs".to_string(),
-        new_path: "src/lib.rs".to_string(),
-        hunks: Vec::new(),
-    }]
-}
+#[cfg(test)]
+mod tests {
+    use super::*;
 
-// ── GitDiffView ─────────────────────────────────────────────────────────────
+    #[test]
+    fn multi_file_diff_does_not_leak_preamble_into_previous_file_hunk() {
+        // Plain `git diff` (no path filter) prefixes each file with
+        // `diff --git a/x b/x` + `index ..` *between* files, i.e. right
+        // after the previous file's last hunk line — regression test for
+        // those leaking in as trailing "unchanged" content.
+        let text = "\
+diff --git a/src/a.rs b/src/a.rs
+index 1111111..2222222 100644
+--- a/src/a.rs
++++ b/src/a.rs
+@@ -1,1 +1,1 @@
+-old_a
++new_a
+diff --git a/src/b.rs b/src/b.rs
+index 3333333..4444444 100644
+--- a/src/b.rs
++++ b/src/b.rs
+@@ -1,1 +1,1 @@
+-old_b
++new_b
+";
+        let diffs = parse_unified_diff(text);
+        assert_eq!(diffs.len(), 2);
 
-const LINE_HEIGHT: f32 = theme::EDITOR_LINE_HEIGHT;
-const GUTTER_WIDTH: f32 = theme::EDITOR_GUTTER_WIDTH;
-const FONT_SIZE: f32 = theme::EDITOR_FONT_SIZE;
-const GUTTER_FONT_SIZE: f32 = theme::EDITOR_GUTTER_FONT_SIZE;
-const BOTTOM_INSET_MIN: f32 = 100.0;
-
-struct CachedDiffLine {
-    line: Option<DiffLine>,
-    highlights: Vec<(Range<usize>, HighlightStyle)>,
-    /// Length in chars (used to cap horizontal scroll).
-    char_len: usize,
-}
-
-pub struct GitDiffView {
-    diff: FileDiff,
-    highlighter: Highlighter,
-    editor_theme: EditorTheme,
-    scroll_handle: UniformListScrollHandle,
-    focus_handle: FocusHandle,
-    cached_lines: Rc<Vec<CachedDiffLine>>,
-    lines_dirty: bool,
-    h_scroll_offset: f32,
-    max_line_chars: usize,
-    h_scroll_active: bool,
-}
-
-impl GitDiffView {
-    pub fn new(cx: &mut App) -> Self {
-        Self::build(
-            FileDiff {
-                old_path: String::new(),
-                new_path: String::new(),
-                hunks: Vec::new(),
-            },
-            String::new(),
-            cx,
-        )
-    }
-
-    pub fn build(diff: FileDiff, file_path: String, cx: &mut App) -> Self {
-        let highlighter = Highlighter::from_filename(&file_path);
-        Self {
-            diff,
-            highlighter,
-            editor_theme: EditorTheme::dark(),
-            scroll_handle: UniformListScrollHandle::new(),
-            focus_handle: cx.focus_handle(),
-            cached_lines: Rc::new(Vec::new()),
-            lines_dirty: true,
-            h_scroll_offset: 0.0,
-            max_line_chars: 0,
-            h_scroll_active: false,
-        }
-    }
-
-    /// Set the diff content for the view.
-    /// The language is detected from the filename.
-    pub fn set_diff(&mut self, filename: String, diff: FileDiff, cx: &mut Context<Self>) {
-        self.diff = diff;
-        self.highlighter = Highlighter::from_filename(&filename);
-        self.rebuild_line_cache();
-        cx.notify();
-    }
-
-    fn sync_editor_theme(&mut self, editor_theme: &EditorTheme) {
-        if self.editor_theme == *editor_theme {
-            return;
-        }
-        self.editor_theme = editor_theme.clone();
-        self.lines_dirty = true;
-    }
-
-    fn rebuild_line_cache(&mut self) {
-        let line_count = self.total_lines();
-        let lines: Vec<CachedDiffLine> = (0..line_count)
-            .map(|i| {
-                let line = self.get_line(i);
-                let (highlights, char_len) = match &line {
-                    Some(l) if l.kind != DiffLineKind::Header => {
-                        let h = self.line_highlights(&l.content);
-                        let len = l.content.chars().count();
-                        (h, len)
-                    }
-                    Some(l) => (Vec::new(), l.content.chars().count()),
-                    None => (Vec::new(), 0),
-                };
-                CachedDiffLine {
-                    line,
-                    highlights,
-                    char_len,
-                }
-            })
+        assert_eq!(diffs[0].new_path, "src/a.rs");
+        let a_lines: Vec<&str> = diffs[0].hunks[0]
+            .lines
+            .iter()
+            .map(|l| l.content.as_str())
             .collect();
-        self.max_line_chars = lines.iter().map(|l| l.char_len).max().unwrap_or(0);
-        self.cached_lines = Rc::new(lines);
-        self.lines_dirty = false;
-    }
+        assert_eq!(a_lines, ["old_a", "new_a"]);
 
-    fn total_lines(&self) -> usize {
-        let mut count = 1; // file header
-        for hunk in &self.diff.hunks {
-            count += hunk.lines.len();
-        }
-        count
-    }
-
-    fn get_line(&self, index: usize) -> Option<DiffLine> {
-        let mut current = 0;
-
-        if index == current {
-            return Some(DiffLine {
-                kind: DiffLineKind::Header,
-                old_line_num: None,
-                new_line_num: None,
-                content: self.diff.display_path(),
-            });
-        }
-        current += 1;
-
-        for hunk in &self.diff.hunks {
-            for line in &hunk.lines {
-                if index == current {
-                    return Some(line.clone());
-                }
-                current += 1;
-            }
-        }
-        None
-    }
-
-    fn line_highlights(&mut self, content: &str) -> Vec<(Range<usize>, HighlightStyle)> {
-        if content.is_empty() {
-            return Vec::new();
-        }
-
-        let content_len = content.len();
-        self.highlighter.parse_fresh(content);
-        let raw_highlights = self.highlighter.highlights(content, 0..content_len);
-        let mut result: Vec<(Range<usize>, HighlightStyle)> = Vec::new();
-
-        for (span_range, capture_name) in &raw_highlights {
-            if let Some(style) = self.editor_theme.syntax.get(capture_name) {
-                let start = span_range.start.min(content_len);
-                let end = span_range.end.min(content_len);
-                if start < end {
-                    result.push((start..end, style));
-                }
-            }
-        }
-
-        super::merge_highlights(result)
-    }
-}
-
-impl EventEmitter<()> for GitDiffView {}
-
-impl Focusable for GitDiffView {
-    fn focus_handle(&self, _cx: &App) -> FocusHandle {
-        self.focus_handle.clone()
-    }
-}
-
-impl Render for GitDiffView {
-    fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        self.sync_editor_theme(&theme::bundle(cx).editor);
-
-        if self.lines_dirty {
-            info!("rebuilding gitdiff line cache by lines_dirty flag");
-            self.rebuild_line_cache();
-        }
-
-        let line_count = self.cached_lines.len();
-        let cached_lines = self.cached_lines.clone();
-        let bottom_inset = f32::max(platform_bridge::home_indicator_inset(), BOTTOM_INSET_MIN);
-        let extra_items = (bottom_inset / LINE_HEIGHT).ceil() as usize;
-        let h_scroll_offset = self.h_scroll_offset;
-        let scroll_y_lock = self.scroll_handle.0.borrow().base_handle.offset().y;
-
-        let editor_theme = self.editor_theme.clone();
-        let diff = editor_theme.diff.clone();
-        let text_style = {
-            let mut style = window.text_style();
-            style.color = rgb(diff.body_text).into();
-            style.font_size = px(FONT_SIZE).into();
-            style
-        };
-
-        div()
-            .flex()
-            .flex_col()
-            .size_full()
-            .bg(rgb(editor_theme.background))
-            .track_focus(&self.focus_handle)
-            .on_scroll_wheel(
-                cx.listener(move |this, event: &ScrollWheelEvent, _window, cx| {
-                    let (delta_x, delta_y) = match event.delta {
-                        ScrollDelta::Pixels(p) => (f32::from(p.x), f32::from(p.y)),
-                        ScrollDelta::Lines(l) => (l.x * 20.0, l.y * 20.0),
-                    };
-                    if delta_y.abs() > delta_x.abs() * 3.0 {
-                        this.h_scroll_active = false;
-                    } else if delta_x.abs() > delta_y.abs() * 2.5 && delta_x.abs() > 5.0 {
-                        this.h_scroll_active = true;
-                    }
-                    if this.h_scroll_active && delta_x.abs() > 0.1 {
-                        let char_width = FONT_SIZE * 0.6;
-                        let max_offset = (this.max_line_chars as f32 * char_width).max(0.0);
-                        this.h_scroll_offset =
-                            (this.h_scroll_offset - delta_x).clamp(0.0, max_offset);
-                        this.scroll_handle
-                            .0
-                            .borrow()
-                            .base_handle
-                            .set_offset(point(px(0.0), scroll_y_lock));
-                        cx.notify();
-                    }
-                }),
-            )
-            .child(
-                uniform_list("git-diff-view-lines", line_count + extra_items, {
-                    let text_style = text_style.clone();
-                    let diff = diff.clone();
-                    let editor_theme = editor_theme.clone();
-                    move |range: Range<usize>, _window: &mut Window, _cx: &mut App| {
-                        range
-                            .map(|i| {
-                                if i >= line_count {
-                                    return div().h(px(LINE_HEIGHT)).into_any_element();
-                                }
-
-                                let cached = &cached_lines[i];
-                                let Some(line) = &cached.line else {
-                                    return div().h(px(LINE_HEIGHT)).into_any_element();
-                                };
-
-                                let (bg_color, gutter_text) = match line.kind {
-                                    DiffLineKind::Header => (rgb(diff.header_bg), "".to_string()),
-                                    DiffLineKind::Added => {
-                                        let num = line
-                                            .new_line_num
-                                            .map(|n| format!("{:>3}", n))
-                                            .unwrap_or_default();
-                                        (rgb(diff.added_bg), num)
-                                    }
-                                    DiffLineKind::Removed => {
-                                        let num = line
-                                            .old_line_num
-                                            .map(|n| format!("{:>3}", n))
-                                            .unwrap_or_default();
-                                        (rgb(diff.removed_bg), num)
-                                    }
-                                    DiffLineKind::Unchanged => {
-                                        let num = line
-                                            .new_line_num
-                                            .map(|n| format!("{:>3}", n))
-                                            .unwrap_or_default();
-                                        (rgb(editor_theme.background), num)
-                                    }
-                                };
-
-                                let content = &line.content;
-
-                                if line.kind == DiffLineKind::Header {
-                                    return div()
-                                        .w_full()
-                                        .flex()
-                                        .flex_row()
-                                        .h(px(LINE_HEIGHT))
-                                        .bg(bg_color)
-                                        .px_2()
-                                        .items_center()
-                                        .child(
-                                            div()
-                                                .text_color(rgb(diff.header_text))
-                                                .text_size(px(FONT_SIZE))
-                                                .child(content.clone()),
-                                        )
-                                        .into_any_element();
-                                }
-
-                                let styled_text = if content.is_empty() {
-                                    StyledText::new(" ")
-                                        .with_default_highlights(&text_style, Vec::new())
-                                } else {
-                                    StyledText::new(content.clone()).with_default_highlights(
-                                        &text_style,
-                                        cached.highlights.clone(),
-                                    )
-                                };
-
-                                div()
-                                    .w_full()
-                                    .flex()
-                                    .flex_row()
-                                    .h(px(LINE_HEIGHT))
-                                    .bg(bg_color)
-                                    .child(
-                                        div()
-                                            .w(px(GUTTER_WIDTH))
-                                            .h(px(LINE_HEIGHT))
-                                            .flex()
-                                            .items_center()
-                                            .justify_end()
-                                            .pr_2()
-                                            .text_color(rgb(diff.gutter_text))
-                                            .text_size(px(GUTTER_FONT_SIZE))
-                                            .child(gutter_text),
-                                    )
-                                    .child(
-                                        div()
-                                            .flex_1()
-                                            .h(px(LINE_HEIGHT))
-                                            .overflow_hidden()
-                                            .relative()
-                                            .child(
-                                                div()
-                                                    .absolute()
-                                                    .top(px(0.0))
-                                                    .left(px(-h_scroll_offset))
-                                                    .h(px(LINE_HEIGHT))
-                                                    .flex()
-                                                    .items_center()
-                                                    .text_size(px(FONT_SIZE))
-                                                    .relative()
-                                                    .child(styled_text),
-                                            ),
-                                    )
-                                    .into_any_element()
-                            })
-                            .collect()
-                    }
-                })
-                .track_scroll(&self.scroll_handle)
-                .w_full()
-                .flex_1(),
-            )
+        assert_eq!(diffs[1].new_path, "src/b.rs");
+        let b_lines: Vec<&str> = diffs[1].hunks[0]
+            .lines
+            .iter()
+            .map(|l| l.content.as_str())
+            .collect();
+        assert_eq!(b_lines, ["old_b", "new_b"]);
     }
 }

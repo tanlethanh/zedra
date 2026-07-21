@@ -1858,7 +1858,7 @@ the first step that can't resolve.
    `bridge-ios` — expected: `/ping`'s `pid` matches the simulator's process, and no stray
    `iproxy` remains (`ps aux | grep iproxy`).
 
-## 25. Connection Banner (workspace, not-connected states)
+## 26. Connection Banner (workspace, not-connected states)
 
 Covers the animated status banner overlaid at the top of the workspace main view
 (`workspace_connection_banner.rs`).
@@ -1880,6 +1880,60 @@ Covers the animated status banner overlaid at the top of the workspace main view
    state.
 7. Toggle appearance (Settings → Appearance) while the banner is visible. Expected:
    banner surface, border, text, and accent dot recolor with the theme.
+
+## 27. Combined Diff View + Selection Mention/Comment
+
+Verifies the unified multi-file diff buffer (`CombinedDiffView`) and the
+diff-view-only "Mention"/"Comment" native selection actions.
+
+1. In a workspace with staged, unstaged, and untracked changes across at
+   least two files, open the git drawer and tap any changed file — expected:
+   one scrolling diff screen opens showing all changed files as a single
+   buffer, grouped Staged → Changes → Untracked with a section label before
+   each group's first file, and a bold file-header row (path + `+ins/-del`)
+   before each file's hunks; the view auto-scrolls so the tapped file's
+   header is at the top.
+2. Tap a different file back in the git drawer while the diff screen is
+   still open — expected: the same combined buffer scrolls to that file
+   instead of pushing a new screen.
+3. Select a range of lines inside a diff hunk — expected: the native
+   selection menu shows **Mention** and **Comment** (not "Add to Chat").
+   Confirm "Add to Chat" still appears, and Mention/Comment do *not*, when
+   selecting text in the regular code editor or a markdown file.
+4. Tap **Mention** on a selection — expected: the existing "Choose an
+   AI-agent terminal" picker appears; picking one pastes `@path#Lx-Ly` into
+   that terminal, same as today's Add to Chat.
+5. Tap **Comment** on a selection — expected: a bottom sheet opens with a
+   multi-line input and two actions, **Comment** and **Submit**.
+   - **Comment**: sheet dismisses, no agent picker appears, and a banner
+     reading "1 comment pending" with **Send All** and **×** appears
+     directly below the workspace header. Repeat on another selection —
+     expected: the banner count increments ("2 comments pending").
+   - **Submit**: sheet dismisses and the agent-target picker appears
+     immediately; picking a terminal pastes a single formatted block
+     (mention + fenced code + `comment: <text>`) without touching the
+     pending banner.
+6. With 2+ comments pending, tap **Send All** — expected: the picker appears
+   once; picking a terminal pastes one formatted block per pending comment
+   into that terminal, then the banner disappears.
+7. With comments pending, tap the banner's **×** — expected: the banner
+   disappears immediately and nothing is pasted anywhere.
+8. **Send All, then cancel the picker** — with 2+ comments pending, tap
+   **Send All** and dismiss the agent picker without choosing a terminal.
+   Expected: the pending comments and the banner count survive intact
+   (nothing lost); tapping Send All again still offers all of them.
+9. **Partially-staged file navigation** — stage part of a file so it appears
+   in both **Staged** and **Changes**. Tap the **unstaged** sidebar row.
+   Expected: the diff scrolls to that file's *unstaged* block, not the staged
+   one above it.
+10. **Stale list after staging** — with the combined diff open, stage/unstage
+   a file (or commit) from the git drawer, then tap a sidebar entry again.
+   Expected: the diff reflects the new git state (moved sections, updated
+   hunks, new files present) rather than the pre-change list.
+11. **Failed / oversized diff** — open a diff where one file is over ~200 KB
+   (or force an RPC error). Expected: that file shows **"Diff unavailable ·
+   tap to retry"** instead of spinning on "Loading diff…" forever; the host
+   isn't hit repeatedly. Tapping the row re-attempts the fetch.
 
 ## Agent web client (opencode)
 
