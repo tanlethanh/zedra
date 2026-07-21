@@ -102,6 +102,7 @@ unsafe extern "C" {
         labels: *const *const std::ffi::c_char,
         subtitles: *const *const std::ffi::c_char,
         image_names: *const *const std::ffi::c_char,
+        trailing_image_names: *const *const std::ffi::c_char,
     );
     /// Present a native edit menu anchored at a window coordinate.
     fn ios_present_native_edit_menu(
@@ -128,6 +129,13 @@ unsafe extern "C" {
     fn ios_dismiss_custom_sheet();
     /// Open a URL in the system browser via UIApplication.
     fn ios_open_url(url: *const std::ffi::c_char);
+    /// Present a native in-app WKWebView. `config_json` is the serialized
+    /// `webview::WebviewConfig`; `callback_id` keys the Rust handlers.
+    fn ios_open_webview(callback_id: u32, config_json: *const std::ffi::c_char);
+    /// Dismiss the currently presented webview.
+    fn ios_close_webview();
+    /// Evaluate JavaScript in the currently presented webview.
+    fn ios_eval_webview_js(js: *const std::ffi::c_char);
     /// Trigger a UIKit haptic feedback generator.
     /// kind encoding matches HapticFeedback::to_i32().
     fn ios_trigger_haptic(kind: i32);
@@ -293,6 +301,25 @@ impl PlatformBridge for IosBridge {
         }
     }
 
+    fn open_webview(&self, callback_id: u32, _url: &str, config_json: &str) {
+        use std::ffi::CString;
+        let Ok(c_config) = CString::new(config_json) else {
+            return;
+        };
+        unsafe { ios_open_webview(callback_id, c_config.as_ptr()) };
+    }
+
+    fn close_webview(&self) {
+        unsafe { ios_close_webview() };
+    }
+
+    fn eval_webview_js(&self, js: &str) {
+        use std::ffi::CString;
+        if let Ok(c_js) = CString::new(js) {
+            unsafe { ios_eval_webview_js(c_js.as_ptr()) };
+        }
+    }
+
     fn trigger_haptic(&self, feedback: HapticFeedback) {
         unsafe { ios_trigger_haptic(feedback.to_i32()) };
     }
@@ -407,6 +434,15 @@ impl PlatformBridge for IosBridge {
             .collect();
         let image_name_ptrs: Vec<*const std::ffi::c_char> =
             c_image_names.iter().map(|name| name.as_ptr()).collect();
+        let c_trailing_names: Vec<CString> = items
+            .iter()
+            .map(|item| {
+                CString::new(item.trailing_icon.as_deref().unwrap_or(""))
+                    .unwrap_or_else(|_| CString::new("").unwrap())
+            })
+            .collect();
+        let trailing_name_ptrs: Vec<*const std::ffi::c_char> =
+            c_trailing_names.iter().map(|name| name.as_ptr()).collect();
         unsafe {
             ios_present_list_picker(
                 id,
@@ -416,6 +452,7 @@ impl PlatformBridge for IosBridge {
                 label_ptrs.as_ptr(),
                 subtitle_ptrs.as_ptr(),
                 image_name_ptrs.as_ptr(),
+                trailing_name_ptrs.as_ptr(),
             );
         }
     }
@@ -659,6 +696,41 @@ pub extern "C" fn zedra_ios_text_input_result(callback_id: u32, value: *const st
 #[unsafe(no_mangle)]
 pub extern "C" fn zedra_ios_text_input_dismiss(callback_id: u32) {
     platform_bridge::dispatch_text_input_dismiss(callback_id);
+}
+
+/// Deliver a message the webview page posted through its JS bridge.
+#[unsafe(no_mangle)]
+pub extern "C" fn zedra_ios_webview_message(callback_id: u32, message: *const std::ffi::c_char) {
+    if message.is_null() {
+        return;
+    }
+    let message = unsafe { std::ffi::CStr::from_ptr(message) }
+        .to_str()
+        .unwrap_or("")
+        .to_string();
+    crate::webview::dispatch_message(callback_id, message);
+}
+
+/// Ask Rust whether a webview navigation should proceed. Returns `true` to
+/// allow. Called synchronously on the UI thread.
+#[unsafe(no_mangle)]
+pub extern "C" fn zedra_ios_webview_navigate(
+    callback_id: u32,
+    url: *const std::ffi::c_char,
+) -> bool {
+    if url.is_null() {
+        return true;
+    }
+    let url = unsafe { std::ffi::CStr::from_ptr(url) }
+        .to_str()
+        .unwrap_or("");
+    crate::webview::dispatch_navigate(callback_id, url)
+}
+
+/// Called when the webview is dismissed.
+#[unsafe(no_mangle)]
+pub extern "C" fn zedra_ios_webview_dismiss(callback_id: u32) {
+    crate::webview::dispatch_dismiss(callback_id);
 }
 
 /// Called by Swift with the processed image bytes ready to upload.

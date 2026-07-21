@@ -7,7 +7,8 @@ use tokio::task::JoinHandle;
 use tokio_util::sync::CancellationToken;
 use zedra_rpc::ZedraPairingTicket;
 use zedra_rpc::proto::{
-    HostEvent, HostInfoSnapshot, SubscribeHostInfoReq, SubscribeReq, ZedraProto,
+    HostEvent, HostInfoSnapshot, SubscribeHostInfoReq, SubscribeReq, WebClientUpdate,
+    WebClientWatchReq, ZedraProto,
 };
 
 use crate::RemoteTerminal;
@@ -28,6 +29,8 @@ pub struct Session {
     host_event_tx: broadcast::Sender<HostEvent>,
     /// The host info broadcast sender for periodic resource snapshots.
     host_info_tx: broadcast::Sender<HostInfoSnapshot>,
+    /// Live title/state updates for host-managed web-client servers.
+    web_client_tx: broadcast::Sender<WebClientUpdate>,
     /// Signal to abort the session from external sources.
     abort_signal: Arc<Mutex<CancellationToken>>,
     /// Notify when the session connection is closed.
@@ -51,6 +54,7 @@ impl Session {
         let closed_notify = Arc::new(Notify::new());
         let (host_event_tx, _) = broadcast::channel(64);
         let (host_info_tx, _) = broadcast::channel(16);
+        let (web_client_tx, _) = broadcast::channel(64);
 
         Self {
             handle,
@@ -61,6 +65,7 @@ impl Session {
             closed_notify,
             host_event_tx,
             host_info_tx,
+            web_client_tx,
             connect_task: Arc::new(Mutex::new(None)),
             runtime,
         }
@@ -95,6 +100,12 @@ impl Session {
         self.host_info_tx.subscribe()
     }
 
+    /// Live title/state updates for host-managed web-client servers. The host
+    /// seeds the current snapshot on subscribe, then streams changes.
+    pub fn subscribe_web_clients(&self) -> broadcast::Receiver<WebClientUpdate> {
+        self.web_client_tx.subscribe()
+    }
+
     /// Start connection. Returns immediately; progress via `state()`.
     ///
     /// `on_connected` is called on the session runtime after successful connection,
@@ -116,6 +127,7 @@ impl Session {
         let on_connected = Arc::new(on_connected);
         let host_event_tx = self.host_event_tx.clone();
         let host_info_tx = self.host_info_tx.clone();
+        let web_client_tx = self.web_client_tx.clone();
 
         // Store credentials on handle
         handle.set_signer(signer.clone());
@@ -286,6 +298,47 @@ impl Session {
                             });
                         }
 
+                        {
+                            let subscribe_client = client.clone();
+                            let subscribe_abort = abort_signal.clone();
+                            let subscribe_closed = closed_notify.clone();
+                            let subscribe_web = web_client_tx.clone();
+
+                            tokio::spawn(async move {
+                                let mut updates = match subscribe_client
+                                    .server_streaming(WebClientWatchReq {}, 32)
+                                    .await
+                                {
+                                    Ok(rx) => rx,
+                                    Err(e) => {
+                                        warn!("web client subscribe failed: {}", e);
+                                        return;
+                                    }
+                                };
+
+                                loop {
+                                    tokio::select! {
+                                        _ = subscribe_abort.cancelled() => break,
+                                        _ = subscribe_closed.notified() => break,
+                                        update = updates.recv() => {
+                                            let update = match update {
+                                                Ok(Some(update)) => update,
+                                                Ok(None) => {
+                                                    warn!("web client recv channel closed");
+                                                    break;
+                                                },
+                                                Err(e) => {
+                                                    warn!("web client recv failed: {}", e);
+                                                    break;
+                                                }
+                                            };
+                                            let _ = subscribe_web.send(update);
+                                        }
+                                    }
+                                }
+                            });
+                        }
+
                         ticket = None;
                         session_id = handle.session_id();
                         session_token = handle.session_token();
@@ -438,6 +491,9 @@ impl Session {
                     agent_slug = ?agent_slug,
                     "HostEvent: terminal agent changed"
                 );
+            }
+            HostEvent::WebViewRequested { url } => {
+                info!(url = %url, "HostEvent: webview requested");
             }
         }
 

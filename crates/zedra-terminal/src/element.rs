@@ -174,6 +174,7 @@ pub struct TerminalElementLayout {
     font_size: Pixels,
     cell_width: Pixels,
     line_height: Pixels,
+    hitbox: Hitbox,
 }
 
 pub struct TerminalElement {
@@ -587,11 +588,14 @@ impl Element for TerminalElement {
         &mut self,
         _id: Option<&GlobalElementId>,
         _inspector_id: Option<&InspectorElementId>,
-        _bounds: Bounds<Pixels>,
+        bounds: Bounds<Pixels>,
         _request_layout: &mut Self::RequestLayoutState,
         window: &mut Window,
         _cx: &mut App,
     ) -> Self::PrepaintState {
+        // Surface identity for native-selection occlusion checks; Normal
+        // behavior so it never blocks other elements.
+        let hitbox = window.insert_hitbox(bounds, HitboxBehavior::Normal);
         // Use JetBrains Mono NL - embedded monospace font (loaded once at app init)
         let font = Font {
             family: MONO_FONT_FAMILY.into(),
@@ -626,6 +630,7 @@ impl Element for TerminalElement {
             font_size,
             cell_width,
             line_height,
+            hitbox,
         }
     }
 
@@ -664,6 +669,7 @@ impl Element for TerminalElement {
             cell_width,
             line_height,
             selection_enabled,
+            Some(layout.hitbox.id),
         );
         window.handle_input(&self.focus_handle, input_handler, cx);
 

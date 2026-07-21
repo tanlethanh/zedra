@@ -9,7 +9,7 @@ use std::{
 use anyhow::Result;
 use irpc::{
     Channels, RpcMessage, Service, WithChannels,
-    channel::{none::NoReceiver, oneshot},
+    channel::{mpsc, none::NoReceiver, oneshot},
 };
 use zedra_rpc::proto::*;
 
@@ -24,7 +24,6 @@ pub struct SessionHandle(Arc<SessionHandleInner>);
 struct SessionHandleInner {
     sid: Mutex<Option<String>>,
     endpoint_addr: Mutex<Option<iroh::EndpointAddr>>,
-    endpoint_id: Mutex<Option<iroh::PublicKey>>,
     signer: Mutex<Option<Arc<dyn ClientSigner>>>,
     session_token: Mutex<Option<[u8; 32]>>,
     pending_ticket: Mutex<Option<zedra_rpc::ZedraPairingTicket>>,
@@ -65,7 +64,6 @@ impl SessionHandle {
         Self(Arc::new(SessionHandleInner {
             sid: Mutex::new(None),
             endpoint_addr: Mutex::new(None),
-            endpoint_id: Mutex::new(None),
             signer: Mutex::new(None),
             session_token: Mutex::new(None),
             pending_ticket: Mutex::new(None),
@@ -87,9 +85,9 @@ impl SessionHandle {
         *self.0.runtime.lock().unwrap() = Some(runtime);
     }
 
-    /// Runtime for terminal pump tasks. Errors if the handle was built outside
-    /// `Session::new` (e.g. a bare test handle) and never given a runtime.
-    fn runtime(&self) -> Result<tokio::runtime::Handle> {
+    /// The session's Tokio runtime handle (from `Session::new`). Errors for a
+    /// bare test handle that was never given one.
+    pub fn runtime(&self) -> Result<tokio::runtime::Handle> {
         self.0
             .runtime
             .lock()
@@ -108,12 +106,15 @@ impl SessionHandle {
         self.0.signer.lock().ok()?.clone()
     }
 
-    pub fn set_endpoint_id(&self, id: iroh::PublicKey) {
-        *self.0.endpoint_id.lock().unwrap() = Some(id);
-    }
-
+    /// The host's stable endpoint id, derived from `endpoint_addr` (its sole
+    /// source) so the two can never drift.
     pub fn endpoint_id(&self) -> Option<iroh::PublicKey> {
-        self.0.endpoint_id.lock().ok()?.clone()
+        self.0
+            .endpoint_addr
+            .lock()
+            .ok()?
+            .as_ref()
+            .map(|addr| addr.id)
     }
 
     pub fn set_endpoint_addr(&self, addr: iroh::EndpointAddr) {
@@ -528,6 +529,19 @@ impl SessionHandle {
         }
     }
 
+    pub async fn web_connect(
+        &self,
+        req: WebConnectReq,
+    ) -> Result<(
+        mpsc::Sender<WebTunnelInput>,
+        mpsc::Receiver<WebTunnelOutput>,
+    )> {
+        self.client()?
+            .bidi_streaming::<WebConnectReq, WebTunnelInput, WebTunnelOutput>(req, 64, 64)
+            .await
+            .map_err(map_rpc_error)
+    }
+
     /// True when `err` looks like an older host rejecting an RPC it doesn't know about.
     fn is_rpc_incompatible(err: &str) -> bool {
         let msg = err.to_lowercase();
@@ -719,6 +733,41 @@ impl SessionHandle {
             return Err(anyhow::anyhow!(e));
         }
         Ok(result.files)
+    }
+
+    /// Start the host-managed web-client server for `slug` (e.g. `opencode
+    /// serve`). Returns `(id, loopback port, first path)` once it is listening.
+    pub async fn web_client_start(&self, slug: String) -> Result<(String, u16, String)> {
+        let result: WebClientStartResult = self.call(WebClientStartReq { slug }).await?;
+        if let Some(e) = result.error {
+            return Err(anyhow::anyhow!(e));
+        }
+        Ok((result.id, result.port, result.path))
+    }
+
+    /// Stop a host-managed web-client server by id.
+    pub async fn web_client_stop(&self, id: String) -> Result<()> {
+        let result: WebClientStopResult = self.call(WebClientStopReq { id }).await?;
+        if let Some(e) = result.error {
+            return Err(anyhow::anyhow!(e));
+        }
+        Ok(())
+    }
+
+    /// Record where the user navigated inside a web client's UI, so reopening
+    /// the card returns to that view. The host holds it across reconnects.
+    pub async fn web_client_set_path(&self, id: String, path: String) -> Result<()> {
+        let result: WebClientSetPathResult = self.call(WebClientSetPathReq { id, path }).await?;
+        if let Some(e) = result.error {
+            return Err(anyhow::anyhow!(e));
+        }
+        Ok(())
+    }
+
+    /// Snapshot the host-managed web-client servers for this workspace.
+    pub async fn web_client_list(&self) -> Result<Vec<WebClientInfo>> {
+        let result: WebClientListResult = self.call(WebClientListReq {}).await?;
+        Ok(result.clients)
     }
 
     /// Notify the host of the app's foreground/background state.

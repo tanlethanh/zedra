@@ -35,7 +35,24 @@ pub struct ListPickerItem {
     pub label: String,
     pub subtitle: Option<String>,
     pub image_name: Option<String>,
+    /// Optional trailing accessory icon (bundle asset name). When set, the row
+    /// shows a separately tappable accessory; a tap on it reports the selection
+    /// with `trailing = true`.
+    pub trailing_icon: Option<String>,
 }
+
+/// A list-picker choice: which row, and whether its trailing accessory (not the
+/// row body) was tapped.
+#[derive(Clone, Copy, Debug)]
+pub struct ListPickerSelection {
+    pub index: usize,
+    pub trailing: bool,
+}
+
+/// Native rows report a trailing-accessory tap as `index + this offset`, so the
+/// shared `Option<usize>` selection path stays unchanged. Decoded in
+/// [`show_list_picker`]. Far above any realistic row count.
+pub const LIST_PICKER_TRAILING_OFFSET: usize = 1 << 28;
 
 #[derive(Clone, Debug)]
 pub struct NativeEditMenuItem {
@@ -278,6 +295,7 @@ static ALERT_CALLBACKS: OnceLock<Mutex<HashMap<u32, Box<dyn FnOnce(Option<usize>
 static NEXT_SELECTION_ID: AtomicU32 = AtomicU32::new(1);
 static SELECTION_CALLBACKS: OnceLock<Mutex<HashMap<u32, Box<dyn FnOnce(Option<usize>) + Send>>>> =
     OnceLock::new();
+
 static NEXT_TEXT_INPUT_ID: AtomicU32 = AtomicU32::new(1);
 static TEXT_INPUT_CALLBACKS: OnceLock<Mutex<HashMap<u32, Box<dyn FnOnce(Option<String>) + Send>>>> =
     OnceLock::new();
@@ -389,19 +407,37 @@ pub fn show_selection(
 
 /// Present a native scrollable list picker.
 ///
-/// `on_result` receives `Some(index)` when the user picks an item, or `None`
-/// when the picker is dismissed without a selection.
+/// `on_result` receives `Some(ListPickerSelection)` when the user picks a row or
+/// its trailing accessory, or `None` when the picker is dismissed. A trailing
+/// accessory tap arrives with `trailing = true`.
 pub fn show_list_picker(
     title: &str,
     message: &str,
     items: Vec<ListPickerItem>,
-    on_result: impl FnOnce(Option<usize>) + Send + 'static,
+    on_result: impl FnOnce(Option<ListPickerSelection>) + Send + 'static,
 ) {
     let id = NEXT_SELECTION_ID.fetch_add(1, Ordering::Relaxed);
+    // Decode the native row index (trailing taps arrive offset) into a typed
+    // selection, so the shared `Option<usize>` dispatch path is unchanged.
+    let wrapped = move |raw: Option<usize>| {
+        on_result(raw.map(|raw| {
+            if raw >= LIST_PICKER_TRAILING_OFFSET {
+                ListPickerSelection {
+                    index: raw - LIST_PICKER_TRAILING_OFFSET,
+                    trailing: true,
+                }
+            } else {
+                ListPickerSelection {
+                    index: raw,
+                    trailing: false,
+                }
+            }
+        }));
+    };
     selection_callbacks()
         .lock()
         .unwrap()
-        .insert(id, Box::new(on_result));
+        .insert(id, Box::new(wrapped));
     bridge().present_list_picker(id, title, message, &items);
 }
 
@@ -1036,6 +1072,17 @@ pub trait PlatformBridge: Send + Sync + 'static {
     fn dismiss_custom_sheet(&self) {}
     /// Open a URL in the system browser.
     fn open_url(&self, _url: &str) {}
+    /// Present a native in-app webview. `config_json` is the serialized
+    /// [`crate::webview::WebviewConfig`]; `callback_id` keys the Rust handlers
+    /// the native layer calls back into. Platforms without a webview fall back
+    /// to the system browser. See [`crate::webview`].
+    fn open_webview(&self, _callback_id: u32, url: &str, _config_json: &str) {
+        self.open_url(url);
+    }
+    /// Dismiss the currently presented webview, if any.
+    fn close_webview(&self) {}
+    /// Evaluate JavaScript in the currently presented webview.
+    fn eval_webview_js(&self, _js: &str) {}
     /// Trigger a haptic feedback pattern. No-op on platforms without haptic hardware.
     fn trigger_haptic(&self, _feedback: HapticFeedback) {}
     /// Play a short UI sound effect. No-op on platforms without audio or when silent.

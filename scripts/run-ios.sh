@@ -341,8 +341,8 @@ for runtime, devices in data['devices'].items():
             DEVICE_NAME_SAVED=$(echo "$DEVICE_LINE" | sed 's/ ([^)]*) ([^)]*)$//' | sed 's/ ([^)]*)$//')
             write_saved_device_pref "dev" "$DEVICE_ID" "$DEVICE_NAME_SAVED"
         else
-            # Check saved pref file (one global target per repo checkout — not
-            # session-scoped by $PPID; that scoping was fragile across shell
+            # Check the machine-global saved target — not session-scoped by
+            # $PPID; that scoping was fragile across shell and worktree
             # invocations and caused devtool.sh/ios-log.sh daemon to silently
             # diverge on which device they were talking to. Shared with
             # devtool.sh and ios-log.sh daemon.)

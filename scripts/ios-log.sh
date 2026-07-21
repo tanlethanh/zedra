@@ -11,7 +11,7 @@
 #
 # tail — Stream logs live from a USB-connected iOS device or running
 #   simulator. Device preference is saved in /tmp/zedra-ios-device (one
-#   global target per repo checkout, shared with run-ios.sh/devtool.sh/this
+#   machine-global target shared across checkouts and with run-ios.sh/devtool.sh/this
 #   script's own `daemon` subcommand). Physical device requires
 #   libimobiledevice (brew install libimobiledevice) + USB pairing.
 #
@@ -388,6 +388,8 @@ validate_sim_udid() {
 rotate_sink() {
     local log_file="$1" max_bytes="$2" keep_files="$3"
     local size=0
+    touch "$log_file"
+    chmod 600 "$log_file"
     if [ -f "$log_file" ]; then
         size=$(wc -c < "$log_file" | tr -d ' ')
     fi
@@ -407,6 +409,8 @@ rotate_sink() {
                 fi
             done
             mv -f "$log_file" "$log_file.1"
+            : > "$log_file"
+            chmod 600 "$log_file"
             size=0
         fi
     done
@@ -424,14 +428,16 @@ cmd_daemon_start() {
     done
 
     mkdir -p "$LOG_DIR"
+    chmod 700 "$LOG_DIR"
 
     if [ -f "$PID_FILE" ] && kill -0 "-$(cat "$PID_FILE")" 2>/dev/null; then
         echo "==> Daemon already running (pgid $(cat "$PID_FILE")), log: $LOG_FILE"
         return
     fi
 
-    local kind id name
-    read -r kind id name <<< "$(resolve_daemon_target "$select_device")"
+    local kind id name target
+    target="$(resolve_daemon_target "$select_device")" || exit 1
+    read -r kind id name <<< "$target"
 
     # `set -m` puts the whole backgrounded pipeline into its own process
     # group, so `stop` can tear down every stage at once with

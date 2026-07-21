@@ -84,6 +84,7 @@ export default defineConfig({
             },
           ],
         },
+        { label: "Web tunnel", slug: "docs/web-tunnel" },
         { label: "Security & architecture", slug: "docs/security" },
         { label: "Troubleshooting", slug: "docs/troubleshooting" },
         {

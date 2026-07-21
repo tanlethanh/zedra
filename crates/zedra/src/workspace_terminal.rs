@@ -263,7 +263,13 @@ impl WorkspaceTerminal {
                 }
                 TerminalEvent::OpenHyperlink(hyperlink) => match &hyperlink.target {
                     TerminalHyperlinkTarget::Url { url } => {
-                        platform_bridge::bridge().open_url(url);
+                        if let Some(title) =
+                            crate::web_tunnel::open_url(this.session_handle.clone(), url)
+                        {
+                            this.workspace_state.update(cx, |state, cx| {
+                                state.record_web_tunnel(url, &title, cx);
+                            });
+                        }
                     }
                     TerminalHyperlinkTarget::File { path, .. } => {
                         this.preview.update(cx, |preview, cx| {

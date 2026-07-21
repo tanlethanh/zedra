@@ -11,6 +11,8 @@ import android.view.Gravity
 import android.view.View
 import android.view.ViewGroup
 import android.view.WindowManager
+import android.webkit.WebView
+import android.webkit.WebViewClient
 import android.widget.Button
 import android.widget.FrameLayout
 import android.widget.EditText
@@ -21,6 +23,11 @@ import android.widget.PopupWindow
 import android.widget.TextView
 import androidx.appcompat.app.AlertDialog
 import androidx.core.content.res.ResourcesCompat
+import androidx.webkit.ProxyConfig
+import androidx.webkit.ProxyController
+import androidx.webkit.WebViewFeature
+import androidx.core.view.ViewCompat
+import androidx.core.view.WindowInsetsCompat
 import androidx.core.widget.NestedScrollView
 import com.google.android.material.bottomsheet.BottomSheetBehavior
 import com.google.android.material.bottomsheet.BottomSheetDialog
@@ -40,6 +47,14 @@ object NativePresentations {
     private val notifications = mutableMapOf<Int, View>()
     private var sheetDialog: BottomSheetDialog? = null
     private var editMenuPopup: PopupWindow? = null
+    private var webViewOverlay: View? = null
+    private var activeWebView: WebView? = null
+    private var activeWebViewCallbackId: Int = 0
+    private var webViewProxyActive: Boolean = false
+    private var webViewUrlField: EditText? = null
+    private var webViewFaviconIcon: ImageView? = null
+    private var webViewBackButton: ImageButton? = null
+    private var webViewForwardButton: ImageButton? = null
     private var nativeTheme = NativeTheme.dark()
 
     private data class NativeTheme(
@@ -95,6 +110,7 @@ object NativePresentations {
         sheetDialog = null
         editMenuPopup?.dismiss()
         editMenuPopup = null
+        closeWebViewNow()
         floatingButtons.values.forEach { rootView?.removeView(it) }
         floatingButtons.clear()
         dictationPreviews.values.forEach { rootView?.removeView(it) }
@@ -598,6 +614,267 @@ object NativePresentations {
     }
 
     @JvmStatic
+    fun openWebView(callbackId: Int, configJson: String?) = onUi {
+        val config = parseWebViewConfig(configJson) ?: return@onUi
+        if (config.url.isBlank()) return@onUi
+        closeWebViewNow()
+
+        val activity = requireActivity()
+        val root = requireRoot()
+        val container = LinearLayout(activity).apply {
+            orientation = LinearLayout.VERTICAL
+            setBackgroundColor(nativeTheme.background)
+            elevation = dp(18f).toFloat()
+        }
+        val title = config.title
+        val url = config.url
+        if (BuildConfig.DEBUG) {
+            android.util.Log.i(
+                "zedra",
+                "[debug:webview] openWebView cb=$callbackId handler=${config.messageHandlerName} " +
+                    "intercept=${config.interceptNavigation} origin=${webViewOrigin(config.url)}",
+            )
+            WebView.setWebContentsDebuggingEnabled(true)
+        }
+        val webView = WebView(activity).apply {
+            setBackgroundColor(nativeTheme.background)
+            webViewClient = WebViewControllerClient(callbackId, config)
+            webChromeClient = object : android.webkit.WebChromeClient() {
+                override fun onReceivedIcon(view: WebView, icon: android.graphics.Bitmap?) {
+                    super.onReceivedIcon(view, icon)
+                    if (icon != null) updateWebViewFavicon(icon)
+                }
+
+                override fun onConsoleMessage(m: android.webkit.ConsoleMessage): Boolean {
+                    if (BuildConfig.DEBUG) {
+                        android.util.Log.i(
+                            "zedra",
+                            "[debug:webview] console message level=${m.messageLevel()} line=${m.lineNumber()}",
+                        )
+                    }
+                    return true
+                }
+            }
+            @Suppress("SetJavaScriptEnabled")
+            settings.javaScriptEnabled = true
+            settings.domStorageEnabled = true
+            val handlerName = config.messageHandlerName
+            if (!handlerName.isNullOrBlank()) {
+                addJavascriptInterface(WebViewMessageBridge(callbackId), handlerName)
+            }
+        }
+        // Safari-style chrome: a top bar (back / forward / URL capsule with
+        // favicon + reload / share / close) above the page.
+        container.addView(buildWebViewTopBar(activity, webView, title, url))
+        container.addView(webView, LinearLayout.LayoutParams(
+            ViewGroup.LayoutParams.MATCH_PARENT,
+            0,
+            1f,
+        ))
+
+        activeWebView = webView
+        activeWebViewCallbackId = callbackId
+        webViewOverlay = container
+        root.addView(container, FrameLayout.LayoutParams(
+            ViewGroup.LayoutParams.MATCH_PARENT,
+            ViewGroup.LayoutParams.MATCH_PARENT,
+        ))
+        container.bringToFront()
+        applyWebViewProxy(activity, config.socksProxy) { loadWebView(webView, url) }
+    }
+
+    private fun buildWebViewTopBar(
+        activity: MainActivity,
+        webView: WebView,
+        title: String,
+        url: String,
+    ): View {
+        // App vector icons (matching the iOS SF-Symbol top bar) tinted to the text color.
+        // FIT_CENTER + vertical padding renders the glyph at `glyphDp` inside the 36dp-tall
+        // slot, so mixed sizes share one vertical center; horizontal padding stays small so
+        // narrow (pill) slots don't shrink the glyph. iOS point sizes: back/forward 20,
+        // reload/share 15, close 17.
+        fun iconControl(slug: String, glyphDp: Float, onClick: () -> Unit) = ImageButton(activity).apply {
+            setImageResource(iconRes(slug))
+            imageTintList = ColorStateList.valueOf(nativeTheme.textPrimary)
+            background = null
+            scaleType = ImageView.ScaleType.FIT_CENTER
+            val vPad = ((36f - glyphDp) / 2f).coerceAtLeast(0f)
+            setPadding(dp(6f), dp(vPad), dp(6f), dp(vPad))
+            isClickable = true
+            setSelectableItemBackground(this)
+            setOnClickListener { onClick() }
+        }
+
+        val backButton = iconControl("chevron-left", 20f) {
+            if (webView.canGoBack()) webView.goBack()
+        }.apply { isEnabled = false; alpha = 0.35f }
+        val forwardButton = iconControl("chevron-right", 20f) {
+            if (webView.canGoForward()) webView.goForward()
+        }.apply { isEnabled = false; alpha = 0.35f }
+        val shareButton = iconControl("share", 15f) {
+            shareCurrentWebViewUrl(activity, webView)
+        }
+        val closeButton = iconControl("x", 17f) { closeWebViewNow() }
+
+        // URL capsule: favicon + editable URL + reload, sized to match the reload button.
+        val faviconIcon = ImageView(activity).apply {
+            scaleType = ImageView.ScaleType.FIT_CENTER
+            visibility = View.GONE
+        }
+        val reloadButton = iconControl("refresh-ccw", 15f) { webView.reload() }
+        val clearButton = iconControl("x", 15f) {
+            webViewUrlField?.setText("")
+        }.apply { visibility = View.GONE }
+
+        // Back stays visible in edit mode; only forward/share collapse (their weighted-row
+        // space is reclaimed by the pill).
+        fun setEditingChromeHidden(hidden: Boolean) {
+            val visibility = if (hidden) View.GONE else View.VISIBLE
+            forwardButton.visibility = visibility
+            shareButton.visibility = visibility
+            faviconIcon.visibility = if (hidden) View.GONE else if (faviconIcon.drawable != null) View.VISIBLE else View.GONE
+            reloadButton.visibility = visibility
+            clearButton.visibility = if (hidden) View.VISIBLE else View.GONE
+        }
+
+        val urlField = EditText(activity).apply {
+            setSingleLine(true)
+            inputType = InputType.TYPE_CLASS_TEXT or InputType.TYPE_TEXT_VARIATION_URI
+            imeOptions = android.view.inputmethod.EditorInfo.IME_ACTION_GO
+            setText(android.net.Uri.parse(url).host ?: title.takeIf { it.isNotBlank() } ?: url)
+            textSize = 15f
+            setTextColor(nativeTheme.textPrimary)
+            gravity = Gravity.CENTER
+            maxLines = 1
+            setPadding(dp(4f), 0, dp(4f), 0)
+            setBackgroundColor(Color.TRANSPARENT)
+            ellipsize = android.text.TextUtils.TruncateAt.MIDDLE
+            setOnFocusChangeListener { view, hasFocus ->
+                val field = view as EditText
+                setEditingChromeHidden(hasFocus)
+                if (hasFocus) {
+                    field.gravity = Gravity.CENTER_VERTICAL or Gravity.START
+                    field.setText(webView.url ?: url)
+                    field.setSelection(field.text?.length ?: 0)
+                    field.selectAll()
+                } else {
+                    field.gravity = Gravity.CENTER
+                    val uri = android.net.Uri.parse(webView.url ?: "")
+                    field.setText(uri.host ?: webView.url)
+                    // Losing focus (tapping the page or another control) must dismiss the
+                    // keyboard; the focus listener is the only common blur path.
+                    hideKeyboard(field)
+                }
+            }
+            setOnEditorActionListener { view, actionId, _ ->
+                if (actionId == android.view.inputmethod.EditorInfo.IME_ACTION_GO) {
+                    navigateWebViewTo(webView, (view as EditText).text?.toString())
+                    view.clearFocus()
+                    hideKeyboard(view)
+                    true
+                } else {
+                    false
+                }
+            }
+        }
+        val pill = LinearLayout(activity).apply {
+            orientation = LinearLayout.HORIZONTAL
+            gravity = Gravity.CENTER_VERTICAL
+            background = GradientDrawable().apply {
+                cornerRadius = dp(18f).toFloat()
+                setColor(nativeTheme.card)
+            }
+            // Favicon box matches iOS (20dp, leading 8) so it reads at the reload glyph's weight.
+            addView(faviconIcon, LinearLayout.LayoutParams(dp(20f), dp(20f)).apply {
+                marginStart = dp(8f)
+            })
+            addView(urlField, LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.MATCH_PARENT, 1f))
+            addView(reloadButton, LinearLayout.LayoutParams(dp(30f), ViewGroup.LayoutParams.MATCH_PARENT).apply {
+                marginEnd = dp(3f)
+            })
+            addView(clearButton, LinearLayout.LayoutParams(dp(30f), ViewGroup.LayoutParams.MATCH_PARENT).apply {
+                marginEnd = dp(3f)
+            })
+        }
+
+        webViewUrlField = urlField
+        webViewFaviconIcon = faviconIcon
+        webViewBackButton = backButton
+        webViewForwardButton = forwardButton
+
+        // Single row: back | forward | URL pill (flex) | share | close. Every button gets the
+        // same fixed height as the pill so glyphs of different sizes stay vertically centered.
+        fun fixed(view: View) = view.apply {
+            minimumWidth = dp(40f)
+        }
+        return LinearLayout(activity).apply {
+            orientation = LinearLayout.VERTICAL
+            setBackgroundColor(nativeTheme.background)
+            clipToPadding = false
+            addView(LinearLayout(activity).apply {
+                orientation = LinearLayout.HORIZONTAL
+                gravity = Gravity.CENTER_VERTICAL
+                addView(fixed(backButton), LinearLayout.LayoutParams(ViewGroup.LayoutParams.WRAP_CONTENT, dp(36f)))
+                addView(fixed(forwardButton), LinearLayout.LayoutParams(ViewGroup.LayoutParams.WRAP_CONTENT, dp(36f)))
+                addView(pill, LinearLayout.LayoutParams(0, dp(36f), 1f).apply {
+                    setMargins(dp(6f), 0, dp(6f), 0)
+                })
+                addView(fixed(shareButton), LinearLayout.LayoutParams(ViewGroup.LayoutParams.WRAP_CONTENT, dp(36f)))
+                addView(fixed(closeButton), LinearLayout.LayoutParams(ViewGroup.LayoutParams.WRAP_CONTENT, dp(36f)))
+            }, LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT,
+            ).apply { setMargins(dp(8f), dp(8f), dp(8f), dp(8f)) })
+            addView(View(activity).apply {
+                setBackgroundColor(nativeTheme.border)
+            }, LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, max(1, dp(0.5f))))
+            // Keep the row below the status bar.
+            ViewCompat.setOnApplyWindowInsetsListener(this) { v, insets ->
+                val sys = insets.getInsets(WindowInsetsCompat.Type.systemBars()).top
+                v.setPadding(0, sys, 0, 0)
+                insets
+            }
+            ViewCompat.requestApplyInsets(this)
+        }
+    }
+
+    private fun navigateWebViewTo(webView: WebView, raw: String?) {
+        val trimmed = raw?.trim().orEmpty()
+        if (trimmed.isEmpty()) return
+        val uri = android.net.Uri.parse(trimmed)
+        webView.loadUrl(if (uri.scheme != null) trimmed else "https://$trimmed")
+    }
+
+    private fun shareCurrentWebViewUrl(activity: MainActivity, webView: WebView) {
+        val url = webView.url ?: return
+        val intent = android.content.Intent(android.content.Intent.ACTION_SEND).apply {
+            type = "text/plain"
+            putExtra(android.content.Intent.EXTRA_TEXT, url)
+        }
+        activity.startActivity(android.content.Intent.createChooser(intent, null))
+    }
+
+    /** Dismiss the currently presented webview, if any. */
+    fun closeWebView() = onUi { closeWebViewNow() }
+
+    /** Evaluate JavaScript in the currently presented webview. */
+    fun evalWebView(js: String?) = onUi {
+        if (js.isNullOrBlank()) return@onUi
+        activeWebView?.evaluateJavascript(js, null)
+    }
+
+    @JvmStatic
+    fun handleBackPressed(): Boolean {
+        val webView = activeWebView ?: return false
+        if (webView.canGoBack()) {
+            webView.goBack()
+        } else {
+            closeWebViewNow()
+        }
+        return true
+    }
+
+    @JvmStatic
     fun updateNativeFloatingButton(
         id: Int,
         imageName: String?,
@@ -780,6 +1057,237 @@ object NativePresentations {
     private fun requireActivity(): MainActivity = activity ?: error("NativePresentations not registered")
 
     private fun requireRoot(): FrameLayout = rootView ?: error("NativePresentations root not registered")
+
+    // Route the webview through the in-app SOCKS proxy (the web tunnel), then load.
+    // ProxyController.setProxyOverride is process-global while set, so it's cleared
+    // on close; socks5:// carries the page's localhost:* traffic to the proxy.
+    private fun applyWebViewProxy(activity: MainActivity, socksProxy: String?, load: () -> Unit) {
+        if (socksProxy.isNullOrBlank() || !WebViewFeature.isFeatureSupported(WebViewFeature.PROXY_OVERRIDE)) {
+            load()
+            return
+        }
+        val proxyConfig = ProxyConfig.Builder().addProxyRule("socks5://$socksProxy").build()
+        webViewProxyActive = true
+        ProxyController.getInstance().setProxyOverride(
+            proxyConfig,
+            { command -> activity.runOnUiThread(command) },
+            { load() },
+        )
+    }
+
+    private fun clearWebViewProxy() {
+        if (!webViewProxyActive) return
+        webViewProxyActive = false
+        if (WebViewFeature.isFeatureSupported(WebViewFeature.PROXY_OVERRIDE)) {
+            ProxyController.getInstance().clearProxyOverride({ command -> command.run() }, {})
+        }
+    }
+
+    private fun hideKeyboard(view: View?) {
+        val token = view?.windowToken ?: return
+        (activity?.getSystemService(android.content.Context.INPUT_METHOD_SERVICE)
+            as? android.view.inputmethod.InputMethodManager)
+            ?.hideSoftInputFromWindow(token, 0)
+    }
+
+    private fun closeWebViewNow() {
+        clearWebViewProxy()
+        val root = rootView
+        val overlay = webViewOverlay
+        // Dismiss the keyboard if the URL field had focus, so it doesn't linger over the app.
+        hideKeyboard(overlay ?: root)
+        val webView = activeWebView
+        val callbackId = activeWebViewCallbackId
+        webViewOverlay = null
+        activeWebView = null
+        activeWebViewCallbackId = 0
+        webViewUrlField = null
+        webViewFaviconIcon = null
+        webViewBackButton = null
+        webViewForwardButton = null
+        if (overlay != null && root != null) {
+            root.removeView(overlay)
+        }
+        webView?.destroy()
+        if (callbackId > 0) {
+            MainActivity.nativeWebViewDismiss(callbackId)
+        }
+    }
+
+    /** Refresh the top bar (URL, favicon, back/forward) to match the webview. */
+    private fun updateWebViewChrome(webView: WebView, configTitle: String) {
+        webViewBackButton?.let {
+            val canGoBack = webView.canGoBack()
+            it.isEnabled = canGoBack
+            it.alpha = if (canGoBack) 1f else 0.35f
+        }
+        webViewForwardButton?.let {
+            val canGoForward = webView.canGoForward()
+            it.isEnabled = canGoForward
+            it.alpha = if (canGoForward) 1f else 0.35f
+        }
+        // Don't stomp on text the user is actively typing.
+        val field = webViewUrlField
+        if (field != null && !field.hasFocus()) {
+            val uri = android.net.Uri.parse(webView.url ?: "")
+            val display = uri.host ?: configTitle.takeIf { it.isNotBlank() } ?: webView.url
+            if (!display.isNullOrBlank()) {
+                field.setText(display)
+            }
+        }
+    }
+
+    /** Hide the previous page's favicon while a new page loads. */
+    private fun resetWebViewFavicon() {
+        webViewFaviconIcon?.setImageDrawable(null)
+        webViewFaviconIcon?.visibility = View.GONE
+    }
+
+    private fun updateWebViewFavicon(icon: android.graphics.Bitmap) {
+        webViewFaviconIcon?.setImageBitmap(icon)
+        webViewFaviconIcon?.visibility = View.VISIBLE
+    }
+
+    private data class WebViewConfig(
+        val url: String,
+        val title: String,
+        val messageHandlerName: String?,
+        val interceptNavigation: Boolean,
+        val socksProxy: String?,
+        val injectJs: String?,
+    )
+
+    private fun parseWebViewConfig(configJson: String?): WebViewConfig? {
+        if (configJson.isNullOrBlank()) return null
+        return try {
+            val obj = org.json.JSONObject(configJson)
+            WebViewConfig(
+                url = obj.optString("url"),
+                title = obj.optString("title", ""),
+                messageHandlerName = obj.optString("messageHandlerName", "").takeIf { it.isNotBlank() },
+                interceptNavigation = obj.optBoolean("interceptNavigation", false),
+                socksProxy = obj.optString("socksProxy", "").takeIf { it.isNotBlank() },
+                injectJs = obj.optString("injectJs", "").takeIf { it.isNotBlank() },
+            )
+        } catch (e: Throwable) {
+            null
+        }
+    }
+
+    private fun webViewOrigin(rawUrl: String?): String {
+        val uri = runCatching { android.net.Uri.parse(rawUrl) }.getOrNull() ?: return "invalid"
+        val scheme = uri.scheme ?: return "unknown"
+        val host = uri.host ?: return "$scheme://unknown"
+        return if (uri.port >= 0) "$scheme://$host:${uri.port}" else "$scheme://$host"
+    }
+
+    /** Exposed as `window.<name>` so the page can post messages to Rust. */
+    private class WebViewMessageBridge(private val callbackId: Int) {
+        @android.webkit.JavascriptInterface
+        fun postMessage(message: String?) {
+            if (BuildConfig.DEBUG) {
+                android.util.Log.i(
+                    "zedra",
+                    "[debug:webview] bridge postMessage cb=$callbackId length=${message?.length ?: 0}",
+                )
+            }
+            MainActivity.nativeWebViewMessage(callbackId, message ?: "")
+        }
+    }
+
+    private class WebViewControllerClient(
+        private val callbackId: Int,
+        private val config: WebViewConfig,
+    ) : WebViewClient() {
+        override fun shouldOverrideUrlLoading(
+            view: WebView,
+            request: android.webkit.WebResourceRequest,
+        ): Boolean {
+            if (!config.interceptNavigation) return false
+            val allow = MainActivity.nativeWebViewNavigate(
+                callbackId,
+                request.url.toString(),
+            )
+            // Returning true means we handled (i.e. blocked) the navigation.
+            return !allow
+        }
+
+        override fun onPageStarted(view: WebView, url: String?, favicon: android.graphics.Bitmap?) {
+            super.onPageStarted(view, url, favicon)
+            if (BuildConfig.DEBUG) {
+                android.util.Log.i(
+                    "zedra",
+                    "[debug:webview] onPageStarted origin=${webViewOrigin(url)}",
+                )
+            }
+            NativePresentations.resetWebViewFavicon()
+            NativePresentations.updateWebViewChrome(view, config.title)
+            injectJs(view)
+        }
+
+        override fun onPageFinished(view: WebView, url: String?) {
+            super.onPageFinished(view, url)
+            if (BuildConfig.DEBUG) {
+                android.util.Log.i(
+                    "zedra",
+                    "[debug:webview] onPageFinished origin=${webViewOrigin(url)}",
+                )
+            }
+            NativePresentations.updateWebViewChrome(view, config.title)
+            injectJs(view)
+        }
+
+        // No user-script API here, so run the script at both page callbacks:
+        // onPageStarted may be too early for a JS context, onPageFinished too
+        // late to beat the page. Injected scripts must be idempotent.
+        private fun injectJs(view: WebView) {
+            val js = config.injectJs ?: return
+            view.evaluateJavascript(js, null)
+        }
+
+        // Previously unimplemented, so a blocked/failed load (cleartext policy, host
+        // unreachable) silently rendered a blank page with no signal anywhere in the logs.
+        override fun onReceivedError(
+            view: WebView,
+            request: android.webkit.WebResourceRequest,
+            error: android.webkit.WebResourceError,
+        ) {
+            super.onReceivedError(view, request, error)
+            if (BuildConfig.DEBUG) {
+                android.util.Log.w(
+                    "zedra",
+                    "[debug:webview] onReceivedError origin=${webViewOrigin(request.url.toString())} " +
+                        "isMainFrame=${request.isForMainFrame} code=${error.errorCode}",
+                )
+            }
+        }
+
+        override fun onReceivedHttpError(
+            view: WebView,
+            request: android.webkit.WebResourceRequest,
+            errorResponse: android.webkit.WebResourceResponse,
+        ) {
+            super.onReceivedHttpError(view, request, errorResponse)
+            if (BuildConfig.DEBUG) {
+                android.util.Log.w(
+                    "zedra",
+                    "[debug:webview] onReceivedHttpError origin=${webViewOrigin(request.url.toString())} " +
+                        "isMainFrame=${request.isForMainFrame} status=${errorResponse.statusCode}",
+                )
+            }
+        }
+
+        override fun doUpdateVisitedHistory(view: WebView, url: String?, isReload: Boolean) {
+            super.doUpdateVisitedHistory(view, url, isReload)
+            NativePresentations.updateWebViewChrome(view, config.title)
+        }
+    }
+
+    private fun loadWebView(webView: WebView, url: String) {
+        if (activeWebView === webView) {
+            webView.loadUrl(url)
+        }
+    }
 
     private fun dp(value: Float): Int {
         val density = activity?.resources?.displayMetrics?.density ?: 1f

@@ -225,6 +225,36 @@ pub enum ZedraProto {
     /// Kept at enum tail because protocol variants are append-only.
     #[rpc(tx = oneshot::Sender<FsUploadResult>)]
     FsUpload(FsUploadReq),
+
+    /// Connect one app-local web proxy stream to a host-side loopback TCP port.
+    /// Kept at enum tail because protocol variants are append-only.
+    #[rpc(rx = mpsc::Receiver<WebTunnelInput>, tx = mpsc::Sender<WebTunnelOutput>)]
+    WebConnect(WebConnectReq),
+
+    /// Start a host-managed agent web-client server (e.g. `opencode serve`).
+    /// Kept at enum tail because protocol variants are append-only.
+    #[rpc(tx = oneshot::Sender<WebClientStartResult>)]
+    WebClientStart(WebClientStartReq),
+
+    /// Stop a host-managed web-client server by id.
+    /// Kept at enum tail because protocol variants are append-only.
+    #[rpc(tx = oneshot::Sender<WebClientStopResult>)]
+    WebClientStop(WebClientStopReq),
+
+    /// Snapshot the host-managed web-client servers for this workspace.
+    /// Kept at enum tail because protocol variants are append-only.
+    #[rpc(tx = oneshot::Sender<WebClientListResult>)]
+    WebClientList(WebClientListReq),
+
+    /// Subscribe to live title/state updates for host-managed web clients.
+    /// Kept at enum tail because protocol variants are append-only.
+    #[rpc(tx = mpsc::Sender<WebClientUpdate>)]
+    WebClientWatch(WebClientWatchReq),
+
+    /// Record the path the user navigated to inside a web client's UI.
+    /// Kept at enum tail because protocol variants are append-only.
+    #[rpc(tx = oneshot::Sender<WebClientSetPathResult>)]
+    WebClientSetPath(WebClientSetPathReq),
 }
 
 // ---------------------------------------------------------------------------
@@ -252,6 +282,8 @@ pub const FS_DOCS_TREE_MAX_LIMIT: u32 = 1000;
 pub const FS_DOCS_TREE_MAX_OFFSET: u32 = 5_000;
 /// Maximum filesystem entries visited while rebuilding one docs tree snapshot.
 pub const FS_DOCS_TREE_MAX_VISITED_ENTRIES: u32 = 10_000;
+/// Maximum byte chunk forwarded through one web tunnel stream frame.
+pub const WEB_TUNNEL_MAX_CHUNK_BYTES: usize = 32 * 1024;
 
 // ---------------------------------------------------------------------------
 // Serde helper for [u8; 64] (serde supports arrays only up to size 32 by default)
@@ -639,6 +671,44 @@ pub struct ClearClientDeltaInfoReq {}
 #[derive(Debug, Serialize, Deserialize)]
 pub struct ClearClientDeltaInfoResult {}
 
+// ---------------------------------------------------------------------------
+// Web tunnel types
+// ---------------------------------------------------------------------------
+
+/// The web tunnel only ever forwards loopback destinations. This is the shared
+/// trust-boundary predicate: the app rejects non-loopback targets early and the
+/// host rejects them before opening the TCP connection. Keep it single-sourced
+/// so the two sides cannot drift.
+pub fn is_loopback_host(host: &str) -> bool {
+    host.eq_ignore_ascii_case("localhost")
+        || host
+            .parse::<std::net::IpAddr>()
+            .map(|addr| addr.is_loopback())
+            .unwrap_or(false)
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct WebConnectReq {
+    pub host: String,
+    pub port: u16,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct WebTunnelInput {
+    #[serde(with = "serde_bytes")]
+    pub data: Vec<u8>,
+    pub close: bool,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct WebTunnelOutput {
+    #[serde(with = "serde_bytes")]
+    pub data: Vec<u8>,
+    pub connected: bool,
+    pub close: bool,
+    pub error: Option<String>,
+}
+
 /// A single fuzzy-search hit. `match_indices` are the host matcher's matched
 /// character positions into `rel_path`, so the client highlights exactly what
 /// the host scored instead of re-running a divergent matcher.
@@ -865,6 +935,10 @@ pub enum HostEvent {
         terminal_id: String,
         agent_slug: Option<String>,
     },
+    /// Host asked the client to open a web tunnel / webview at `url` (from
+    /// `zedra open <target>`). The client resolves loopback targets through the
+    /// web tunnel and tracks them per workspace. Appended at `zedra/rpc/4`.
+    WebViewRequested { url: String },
 }
 
 // ---------------------------------------------------------------------------
@@ -1218,6 +1292,98 @@ pub struct InstalledAgentEntry {
     pub available: bool,
     pub version: Option<String>,
     pub launch_cmd: Option<String>,
+    /// Agent runs a host-managed web-client server (e.g. `opencode serve`), so
+    /// the app can offer the web-client affordance. Append-only field; older
+    /// peers default it to `false`.
+    #[serde(default)]
+    pub web_client: bool,
+}
+
+// ---------------------------------------------------------------------------
+// Web-client servers: host-managed agent web UIs (e.g. `opencode serve`) the
+// app reaches through the web tunnel and renders in an in-app webview.
+// ---------------------------------------------------------------------------
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct WebClientStartReq {
+    /// Agent slug whose `web_client()` server to launch.
+    pub slug: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct WebClientStartResult {
+    /// Host-generated id for the running server; empty on error.
+    pub id: String,
+    /// Loopback port the server listens on; `0` on error.
+    pub port: u16,
+    /// Path to open first; see [`WebClientInfo::path`]. Empty on error.
+    pub path: String,
+    pub error: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct WebClientStopReq {
+    pub id: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct WebClientStopResult {
+    pub error: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct WebClientListReq {}
+
+/// Record where the user navigated inside a web client's UI, so reopening the
+/// card returns to that view instead of the server's home page.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct WebClientSetPathReq {
+    pub id: String,
+    /// Absolute URL path (with optional query), e.g. `/L1Vzc.../session/ses_x`.
+    pub path: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct WebClientSetPathResult {
+    pub error: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct WebClientListResult {
+    pub clients: Vec<WebClientInfo>,
+}
+
+/// A running host-managed web-client server.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct WebClientInfo {
+    pub id: String,
+    pub slug: String,
+    /// Loopback port on the host; the app tunnels `http://localhost:<port>`.
+    pub port: u16,
+    /// Active session title from the agent's server, if known.
+    pub title: Option<String>,
+    pub state: AgentState,
+    /// URL path the app opens for this server, seeded from the agent's default
+    /// (e.g. opencode's workdir view) and updated by `WebClientSetPath` as the
+    /// user navigates. Host-held so it survives client reconnects.
+    pub path: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct WebClientWatchReq {}
+
+/// Live update for a host-managed web client — a full snapshot so a subscriber
+/// can build the entry from the stream alone. `closed` marks server exit.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct WebClientUpdate {
+    pub id: String,
+    pub slug: String,
+    pub port: u16,
+    pub title: Option<String>,
+    pub state: AgentState,
+    pub closed: bool,
+    /// Current URL path for this server; see [`WebClientInfo::path`].
+    pub path: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]

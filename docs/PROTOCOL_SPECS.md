@@ -234,7 +234,7 @@ Result types that carry `error: Option<String>`:
 `FsListResult`, `FsSearchResult`, `FsReadResult`, `FsStatResult`, `SessionSwitchResult`, `TermCreateResult`,
 `GitStatusResult`, `GitDiffResult`, `GitLogResult`, `GitCommitResult`, `GitStageResult`,
 `GitUnstageResult`, `GitBranchesResult`, `AgentListResult`, `AgentSessionsResult`,
-`AgentResumeResult`, `LspDiagnosticsResult`, `FsUploadResult`.
+`AgentResumeResult`, `LspDiagnosticsResult`, `FsUploadResult`, `WebTunnelOutput`.
 
 Types that use non-string status fields or enum variants instead:
 `FsWriteResult` (`ok: bool`), `GitCheckoutResult` (`ok: bool`), `FsWatchResult`/`FsUnwatchResult` (enum),
@@ -294,7 +294,20 @@ Types that use non-string status fields or enum variants instead:
   - `NotWatched`
   - `Unsupported` (client-local fallback when host does not support observer RPCs)
 
-## 5.5 Terminals
+## 5.5 Web Tunnel
+
+- `WebConnect(WebConnectReq) <-> WebTunnelInput/WebTunnelOutput` (bidirectional)
+
+### WebConnect conventions
+
+- `WebConnect` is the browser tunnel path. The app-local WebView SOCKS5 proxy sends a `WebConnectReq` for each loopback TCP destination requested by the browser.
+- The app and host both validate that the destination is loopback only: `localhost`, `127.0.0.0/8`, or `::1`.
+- The host opens `tokio::net::TcpStream` to `WebConnectReq.host:WebConnectReq.port`, then sends a `WebTunnelOutput` with `connected = true` before any tunneled bytes. The app must wait for this before returning SOCKS success to WebView.
+- `WebTunnelInput.data` and `WebTunnelOutput.data` are raw byte chunks capped by `WEB_TUNNEL_MAX_CHUNK_BYTES`.
+- `close = true` half-closes or tears down that tunnel stream. `error = Some(msg)` means the stream failed and the receiver should close its local side.
+- The tunnel does not parse HTTP. HTTP, HTTPS, WebSocket upgrades, SSE, HMR, keep-alive, and backend calls are all just bytes after the SOCKS handshake.
+
+## 5.6 Terminals
 
 - `TermCreate(TermCreateReq) -> TermCreateResult`
 - `TermAttach(TermAttachReq) <-> TermInput/TermOutput` (bidirectional)
@@ -346,7 +359,7 @@ replace the session bound to the authenticated dispatch loop. Clients must not
 use it to switch the active workspace; connect to the target session through the
 normal `Connect`/`AuthProve` flow instead.
 
-## 5.6 Git
+## 5.7 Git
 
 - `GitStatus(GitStatusReq) -> GitStatusResult`
 - `GitDiff(GitDiffReq) -> GitDiffResult`
@@ -369,7 +382,7 @@ All Git result types carry `error: Option<String>`. Host sends error when git re
 - `GitStage` stages the provided paths with `git add -- <paths>`.
 - `GitUnstage` removes the provided paths from the index while preserving working tree contents.
 
-## 5.7 AI, Managed Agents, and LSP
+## 5.8 AI, Managed Agents, and LSP
 
 - `AiPrompt(AiPromptReq) -> AiPromptResult`
 - `AgentList(AgentListReq) -> AgentListResult`
@@ -423,6 +436,25 @@ CLI `--version` probes are slow and cached separately from the synchronous agent
 4. **Background completion:** host pushes `HostEvent::AgentInfoChanged { info }` once per managed agent to every session with an active `Subscribe` stream. `info` is the full cached `AgentSummary` for that agent (including versions and live bindings for that session).
 5. **Client update:** replace the cached row for `info.kind` (do not treat the event as a partial patch).
 
+## 5.9 Web Client Servers
+
+- `WebClientStart(WebClientStartReq) -> WebClientStartResult`
+- `WebClientStop(WebClientStopReq) -> WebClientStopResult`
+- `WebClientList(WebClientListReq) -> WebClientListResult`
+- `WebClientWatch(WebClientWatchReq) -> stream WebClientUpdate`
+- `WebClientSetPath(WebClientSetPathReq) -> WebClientSetPathResult`
+
+### Web client conventions
+
+- `InstalledAgentEntry.web_client` marks agents whose actor has a web UI the app can open as a card (e.g. `opencode serve`). Append-only field, defaults `false`; the app offers the web-client affordance only for these. The actor registry is authoritative — no per-slug client logic.
+- A **card is one webview**, not one process. `WebClientStart{slug}` asks the actor to open a card — launch or reuse its server, do any per-card setup — and returns `{id, port, path}` (or `error`). The app tunnels `http://localhost:<port><path>` (§5.5) into the in-app webview.
+- **Process topology is the actor's choice, invisible to the protocol.** The host runs an agent-agnostic process pool keyed by an actor-chosen key: an actor may back many cards with one shared server, or spawn one per card. opencode shares a single `opencode serve` (a server started in any directory serves every project) and opens a **fresh session per card**, so `path` is `/<base64url(workdir)>/session/<id>`. The pool reaps a server when its last card closes.
+- Cards are **daemon-scoped**: they survive client reconnects and are re-listed by `WebClientList`. `WebClientStop{id}` closes one card (reaping the server only when it was the last on it); a server exiting on its own closes its cards too.
+- `WebClientWatch` streams `WebClientUpdate{id, slug, port, title, state, closed, path}` — a full snapshot each time, so a subscriber maintains its list from the stream alone: seeded with all current cards on subscribe (in creation order), an initial update when one opens, live title/state/path changes, then `closed = true` on close. `state` is the shared `AgentState`.
+- Title/state derivation is **actor-owned** (`AgentActor::web_client_open` keeps a sink), read from the agent server's own API; the host never interprets an agent's web protocol generically. A shared server demuxes its event bus to each card by session id. `title` is the provider-stored session title only — never prompt or tool content.
+- `path` is the URL path the app opens, seeded by the actor so a card opens on its session rather than the server's home view. The app reports navigations with `WebClientSetPath{id, path}`, so reopening a card returns to the view the user left. Held **host-side**, so it survives reconnects.
+- `path` is an opaque routing string. It can identify a session, so it is never logged and never sent to telemetry.
+
 ---
 
 ## 6) Host Events
@@ -434,6 +466,7 @@ Current host event variants:
 - `FsChanged { path }`
 - `AgentInfoChanged { info }`
 - `TerminalAgentChanged { terminal_id, agent_slug }`
+- `WebViewRequested { url }`
 
 Client rules:
 
@@ -442,6 +475,7 @@ Client rules:
 - `FsChanged { path }`: invalidate cached file tree for the watched path and reload affected expanded nodes.
 - `AgentInfoChanged`: replace cached `AgentSummary` for `info.slug`. One event per managed agent per version refresh. Requires an active `Subscribe` stream.
 - `TerminalAgentChanged`: update the terminal's agent identity to `agent_slug` (`None` clears it). Emitted when the host-resolved foreground agent for a terminal changes (command start/end). Authoritative — clients render it instead of re-detecting locally. Requires an active `Subscribe` stream.
+- `WebViewRequested`: open `url` in the in-app webview, routing loopback targets through the web tunnel (non-loopback opens in the system browser). Emitted from `zedra open <target>` via the local REST API. Loopback targets are tracked per workspace for quick reopen. Appended at `zedra/rpc/4`; dropped for `v3` clients.
 
 ---
 
@@ -681,6 +715,11 @@ Any protocol-layer change must include all applicable steps:
   path serves both. `v2` clients get empty agent `live` fields and have
   `Pi`/`Hermes` + the `v3`-only `HostEvent` variants filtered out. Response-only
   delta; stopgap pending issue #140.
+
+### 2026-06-19
+
+- Added `WebConnect(WebConnectReq) <-> WebTunnelInput/WebTunnelOutput` for the app WebView SOCKS tunnel. The browser path streams raw TCP bytes to host loopback.
+- ALPN bumped to `zedra/rpc/4`.
 
 ### 2026-06-11
 

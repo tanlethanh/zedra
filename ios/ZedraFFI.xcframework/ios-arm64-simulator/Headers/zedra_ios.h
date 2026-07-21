@@ -128,7 +128,8 @@ extern void ios_present_list_picker(uint32_t callback_id,
                                     int32_t item_count,
                                     const char *const *labels,
                                     const char *const *subtitles,
-                                    const char *const *image_names);
+                                    const char *const *image_names,
+                                    const char *const *trailing_image_names);
 
 /**
  * Present a native edit menu anchored at a window coordinate.
@@ -162,10 +163,32 @@ extern void ios_dismiss_custom_sheet(void);
 extern void ios_open_url(const char *url);
 
 /**
+ * Present a native in-app WKWebView. `config_json` is the serialized
+ * `webview::WebviewConfig`; `callback_id` keys the Rust handlers.
+ */
+extern void ios_open_webview(uint32_t callback_id, const char *config_json);
+
+/**
+ * Dismiss the currently presented webview.
+ */
+extern void ios_close_webview(void);
+
+/**
+ * Evaluate JavaScript in the currently presented webview.
+ */
+extern void ios_eval_webview_js(const char *js);
+
+/**
  * Trigger a UIKit haptic feedback generator.
  * kind encoding matches HapticFeedback::to_i32().
  */
 extern void ios_trigger_haptic(int32_t kind);
+
+/**
+ * Play a UI sound effect via AudioToolbox.
+ * kind encoding matches SoundEffect::to_i32().
+ */
+extern void ios_play_sound(int32_t kind);
 
 /**
  * Position or update a native floating icon button.
@@ -212,6 +235,11 @@ extern void ios_present_native_notification(uint32_t callback_id,
  * Start native Google Sign-In for Delta account auth.
  */
 extern void ios_start_delta_google_sign_in(uint32_t callback_id);
+
+/**
+ * Start native Apple Sign-In for Delta account auth.
+ */
+extern void ios_start_delta_apple_sign_in(uint32_t callback_id);
 
 /**
  * Request push authorization and return the APNs token.
@@ -272,6 +300,22 @@ void zedra_ios_text_input_result(uint32_t callback_id, const char *value);
 void zedra_ios_text_input_dismiss(uint32_t callback_id);
 
 /**
+ * Deliver a message the webview page posted through its JS bridge.
+ */
+void zedra_ios_webview_message(uint32_t callback_id, const char *message);
+
+/**
+ * Ask Rust whether a webview navigation should proceed. Returns `true` to
+ * allow. Called synchronously on the UI thread.
+ */
+bool zedra_ios_webview_navigate(uint32_t callback_id, const char *url);
+
+/**
+ * Called when the webview is dismissed.
+ */
+void zedra_ios_webview_dismiss(uint32_t callback_id);
+
+/**
  * Called from the native app delegate when the app enters the background.
  *
  * Drops any unacknowledged native presentation callbacks so captured closures
@@ -280,9 +324,17 @@ void zedra_ios_text_input_dismiss(uint32_t callback_id);
  */
 void zedra_ios_app_did_enter_background(void);
 
+void zedra_ios_app_will_enter_foreground(void);
+
 void zedra_ios_native_notification_action(uint32_t callback_id);
 
 void zedra_ios_native_notification_dismiss(uint32_t callback_id);
+
+void zedra_ios_delta_apple_sign_in_result(uint32_t callback_id,
+                                          const char *id_token,
+                                          const char *email);
+
+void zedra_ios_delta_apple_sign_in_error(uint32_t callback_id, const char *message);
 
 void zedra_ios_delta_google_sign_in_result(uint32_t callback_id,
                                            const char *id_token,
@@ -296,6 +348,19 @@ void zedra_ios_delta_push_token_result(uint32_t callback_id,
                                        const char *environment);
 
 void zedra_ios_delta_push_token_error(uint32_t callback_id, const char *message);
+
+/**
+ * Called from the native keyboard accessory bar when a shortcut key button is tapped.
+ *
+ * `key` is one of: "escape", "tab", "left", "down", "up", "right", "enter", "shift_enter".
+ * Maps the name to the corresponding terminal escape sequence and sends it via the active session.
+ */
+void zedra_ios_send_key_input(const char *key);
+
+/**
+ * Called from the native terminal composer to send finalized text to the active terminal.
+ */
+void zedra_ios_send_terminal_text(const char *text);
 
 /**
  * Called from the native app delegate when the app is opened via a `zedra://` URL.
