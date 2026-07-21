@@ -1,7 +1,9 @@
 use gpui::*;
+use tokio::sync::broadcast;
 use tracing::*;
 
-use zedra_session::SessionHandle;
+use zedra_rpc::proto::HostEvent;
+use zedra_session::{Session, SessionHandle};
 
 use crate::editor::combined_diff_view::{CombinedDiffView, DiffFileEntry};
 use crate::editor::git_diff_view::FileDiff;
@@ -29,15 +31,18 @@ pub struct WorkspaceGitdiff {
     /// Set once the file list (from `git_status`) has been fetched — further
     /// `open_combined` calls just scroll instead of re-fetching, since
     /// `CombinedDiffView` lazily loads each file's actual diff content on its
-    /// own and caches it.
+    /// own and caches it. Reset to `false` on `HostEvent::GitChanged` so the
+    /// next open refetches a list that staging/commit/external edits changed.
     status_loaded: bool,
     _diff_view_subscription: Subscription,
+    _host_event_task: Task<()>,
 }
 
 impl EventEmitter<GitdiffHeaderChanged> for WorkspaceGitdiff {}
 
 impl WorkspaceGitdiff {
-    pub fn new(session_handle: SessionHandle, cx: &mut Context<Self>) -> Self {
+    pub fn new(session: Session, cx: &mut Context<Self>) -> Self {
+        let session_handle = session.handle().clone();
         let diff_view = cx.new(|cx| CombinedDiffView::new(session_handle.clone(), cx));
         // `CombinedDiffView` emits `()` whenever a lazily-fetched file finishes
         // loading — recompute the running total so the header summary grows
@@ -49,6 +54,28 @@ impl WorkspaceGitdiff {
                 cx.emit(GitdiffHeaderChanged { added, removed });
             },
         );
+        // Invalidate the cached file list on any git change so the next open
+        // refetches instead of scrolling a list that no longer matches the repo.
+        let mut host_event_rx = session.subscribe_host_events();
+        let host_event_task = cx.spawn(async move |this, cx| {
+            loop {
+                match host_event_rx.recv().await {
+                    Ok(HostEvent::GitChanged) => {
+                        if this
+                            .update(cx, |this, _cx| this.status_loaded = false)
+                            .is_err()
+                        {
+                            break;
+                        }
+                    }
+                    Ok(_) => {}
+                    Err(broadcast::error::RecvError::Lagged(skipped)) => {
+                        warn!("gitdiff host event listener lagged by {}", skipped);
+                    }
+                    Err(broadcast::error::RecvError::Closed) => break,
+                }
+            }
+        });
         Self {
             state: GitdiffState::Loading,
             diff_view,
@@ -56,6 +83,7 @@ impl WorkspaceGitdiff {
             diff_task: None,
             status_loaded: false,
             _diff_view_subscription: diff_view_subscription,
+            _host_event_task: host_event_task,
         }
     }
 
@@ -70,11 +98,15 @@ impl WorkspaceGitdiff {
     /// for N diff RPCs it may never scroll to. Once the file list is loaded,
     /// this just scrolls (no RPC) since the list doesn't change out from
     /// under the view while it's open.
-    pub fn open_combined(&mut self, scroll_to: Option<String>, cx: &mut Context<Self>) {
+    pub fn open_combined(
+        &mut self,
+        scroll_to: Option<(String, GitFileSection)>,
+        cx: &mut Context<Self>,
+    ) {
         if self.status_loaded {
-            if let Some(path) = scroll_to {
+            if let Some((path, section)) = scroll_to {
                 self.diff_view
-                    .update(cx, |view, cx| view.scroll_to(&path, cx));
+                    .update(cx, |view, cx| view.scroll_to(&path, section, cx));
             }
             return;
         }
@@ -132,8 +164,8 @@ impl WorkspaceGitdiff {
                 this.status_loaded = true;
                 this.diff_view.update(cx, |view, cx| {
                     view.set_files(files, cx);
-                    if let Some(path) = &scroll_to {
-                        view.scroll_to(path, cx);
+                    if let Some((path, section)) = &scroll_to {
+                        view.scroll_to(path, *section, cx);
                     }
                 });
                 cx.notify();

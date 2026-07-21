@@ -33,6 +33,15 @@ const MAX_DIFF_BYTES: usize = 200 * 1024;
 /// prefetched eagerly, so a small scroll doesn't have to wait on an RPC.
 const PREFETCH_WINDOW: usize = 2;
 
+/// Placeholder text for a file whose diff is still being fetched. Kept in sync
+/// with the cached row's `content` so `resolve_selection`'s UTF-16 offset
+/// accounting matches what's actually painted (see `rebuild_row_cache`).
+const LOADING_TEXT: &str = "Loading diff…";
+/// Placeholder text for a file whose diff couldn't be loaded (too large, RPC
+/// error, or no matching hunk). Tapping the row retries. Same content/paint
+/// sync requirement as `LOADING_TEXT`.
+const UNAVAILABLE_TEXT: &str = "Diff unavailable · tap to retry";
+
 /// One changed file, tagged with the sidebar section it came from. `file` is
 /// a placeholder (empty hunks, `old_path`/`new_path` both set to the file's
 /// path) until `loaded` — content is fetched lazily, only for files near
@@ -63,6 +72,8 @@ enum RowKind {
     },
     /// Body of a file not yet fetched — see `DiffFileEntry::loaded`.
     LoadingPlaceholder,
+    /// Body of a file whose fetch terminally failed — see `load_failed`.
+    LoadFailed,
     Line(DiffLine),
 }
 
@@ -137,10 +148,19 @@ pub struct CombinedDiffView {
     rows_dirty: bool,
     h_scroll: super::HScrollState,
     max_line_chars: usize,
-    pending_scroll_to: Option<String>,
+    /// Pending scroll target as `(path, section)` — section disambiguates a
+    /// partially-staged file that appears in both the staged and unstaged
+    /// sections under the same path (see `scroll_to_now`).
+    pending_scroll_to: Option<(String, GitFileSection)>,
     session_handle: SessionHandle,
     /// Indices into `files` with an in-flight `git_diff` fetch.
     loading: HashSet<usize>,
+    /// Indices into `files` whose fetch terminally failed (too large, RPC
+    /// error, or parsed to no matching hunk). Kept out of `request_load` so a
+    /// failed file isn't re-fetched every render — that respin would hammer
+    /// the host and spin the placeholder forever. Cleared by `retry_load`
+    /// (tap) and `set_files`.
+    load_failed: HashSet<usize>,
     /// Bumped by `set_files`; lets a stale in-flight fetch from a prior file
     /// list recognize it no longer applies and skip writing to `files`.
     generation: u64,
@@ -170,6 +190,7 @@ impl CombinedDiffView {
             pending_scroll_to: None,
             session_handle,
             loading: HashSet::new(),
+            load_failed: HashSet::new(),
             generation: 0,
             collapsed: HashSet::new(),
             line_cache: HashMap::new(),
@@ -193,7 +214,7 @@ impl CombinedDiffView {
             } else {
                 entry.file.old_path.clone()
             };
-            self.pending_scroll_to = Some(path);
+            self.pending_scroll_to = Some((path, entry.section));
         }
         cx.notify();
     }
@@ -204,6 +225,7 @@ impl CombinedDiffView {
         self.files = files;
         self.rows_dirty = true;
         self.loading.clear();
+        self.load_failed.clear();
         self.collapsed.clear();
         self.line_cache.clear();
         self.generation += 1;
@@ -225,7 +247,7 @@ impl CombinedDiffView {
         let Some(entry) = self.files.get(index) else {
             return;
         };
-        if entry.loaded || self.loading.contains(&index) {
+        if entry.loaded || self.loading.contains(&index) || self.load_failed.contains(&index) {
             return;
         }
         let path = if !entry.file.new_path.is_empty() {
@@ -252,20 +274,34 @@ impl CombinedDiffView {
                         let file = parse_unified_diff(&text)
                             .into_iter()
                             .find(|f| f.new_path == path || f.old_path == path);
-                        if let (Some(file), Some(entry)) = (file, this.files.get_mut(index)) {
-                            entry.file = file;
-                            entry.loaded = true;
-                            this.rows_dirty = true;
-                            // Let `WorkspaceGitdiff` know it can recompute the
-                            // header's running total now that this file loaded.
-                            cx.emit(());
+                        match (file, this.files.get_mut(index)) {
+                            (Some(file), Some(entry)) => {
+                                entry.file = file;
+                                entry.loaded = true;
+                                this.rows_dirty = true;
+                                // Let `WorkspaceGitdiff` know it can recompute the
+                                // header's running total now that this file loaded.
+                                cx.emit(());
+                            }
+                            // Parsed but no hunk matches this path — mark failed
+                            // rather than leave it unloaded, which would respin
+                            // the fetch on the next render.
+                            _ => {
+                                tracing::warn!("git_diff for {path} had no matching hunk");
+                                this.load_failed.insert(index);
+                                this.rows_dirty = true;
+                            }
                         }
                     }
                     Ok(_) => {
-                        tracing::warn!("[debug:diffload] diff too large for {path}, skipping");
+                        tracing::warn!("git_diff too large for {path}, skipping");
+                        this.load_failed.insert(index);
+                        this.rows_dirty = true;
                     }
                     Err(e) => {
                         tracing::warn!("git_diff RPC failed for {path}: {e}");
+                        this.load_failed.insert(index);
+                        this.rows_dirty = true;
                     }
                 }
                 cx.notify();
@@ -292,23 +328,40 @@ impl CombinedDiffView {
         }
     }
 
+    /// Clear a file's terminal-failed state and re-request its diff — the
+    /// explicit retry path behind a `LoadFailed` row's tap.
+    fn retry_load(&mut self, index: usize, cx: &mut Context<Self>) {
+        if self.load_failed.remove(&index) {
+            self.rows_dirty = true;
+            self.request_load(index, cx);
+            cx.notify();
+        }
+    }
+
     /// Scroll so the given file's header row is at the top. If the view hasn't
     /// finished loading yet, the request is remembered and applied once ready.
-    pub fn scroll_to(&mut self, path: &str, cx: &mut Context<Self>) {
+    /// `section` disambiguates a partially-staged file present in two sections.
+    pub fn scroll_to(&mut self, path: &str, section: GitFileSection, cx: &mut Context<Self>) {
         if self.rows_dirty {
-            self.pending_scroll_to = Some(path.to_string());
+            self.pending_scroll_to = Some((path.to_string(), section));
             cx.notify();
             return;
         }
-        self.scroll_to_now(path, cx);
+        self.scroll_to_now(path, section, cx);
     }
 
-    fn scroll_to_now(&mut self, path: &str, cx: &mut Context<Self>) {
-        let Some(index) = self
-            .files
-            .iter()
-            .position(|entry| entry.file.new_path == path || entry.file.old_path == path)
-        else {
+    fn scroll_to_now(&mut self, path: &str, section: GitFileSection, cx: &mut Context<Self>) {
+        // Match section too: a partially-staged file has a staged and an
+        // unstaged entry under the same path, and files are bucketed staged
+        // first, so a path-only match would always land on the staged block.
+        let by_path_and_section = self.files.iter().position(|entry| {
+            entry.section == section && (entry.file.new_path == path || entry.file.old_path == path)
+        });
+        let Some(index) = by_path_and_section.or_else(|| {
+            self.files
+                .iter()
+                .position(|entry| entry.file.new_path == path || entry.file.old_path == path)
+        }) else {
             return;
         };
         let Some(&row) = self.file_row_start.get(index) else {
@@ -387,11 +440,19 @@ impl CombinedDiffView {
             });
 
             if !entry.loaded {
+                let failed = self.load_failed.contains(&file_index);
+                let (kind, text) = if failed {
+                    (RowKind::LoadFailed, UNAVAILABLE_TEXT)
+                } else {
+                    (RowKind::LoadingPlaceholder, LOADING_TEXT)
+                };
                 rows.push(CachedRow {
                     file_index,
-                    kind: RowKind::LoadingPlaceholder,
+                    kind,
                     highlights: Vec::new(),
-                    content: String::new(),
+                    // Must equal the row's rendered selectable text so
+                    // `resolve_selection`'s UTF-16 offsets stay aligned.
+                    content: text.to_string(),
                     status,
                     section: entry.section,
                 });
@@ -639,7 +700,7 @@ fn render_loading_placeholder_row(
     let mut small_style = text_style.clone();
     small_style.font_size = px(GUTTER_FONT_SIZE).into();
     small_style.color = rgb(theme::text_muted(cx)).into();
-    let label = StyledText::new("Loading diff…")
+    let label = StyledText::new(LOADING_TEXT)
         .with_default_highlights(&small_style, Vec::new())
         .selectable()
         .selection_order(i as u64)
@@ -651,6 +712,41 @@ fn render_loading_placeholder_row(
         .items_center()
         .justify_center()
         .opacity(0.6)
+        .child(label)
+        .into_any_element()
+}
+
+/// A file whose diff couldn't be loaded — tapping re-requests it. Selectable
+/// text is `UNAVAILABLE_TEXT`, matching the cached row content so selection
+/// offsets stay aligned (see `rebuild_row_cache`).
+fn render_load_failed_row(
+    i: usize,
+    file_index: usize,
+    separator: &'static str,
+    text_style: &TextStyle,
+    weak: WeakEntity<CombinedDiffView>,
+    cx: &App,
+) -> AnyElement {
+    let mut small_style = text_style.clone();
+    small_style.font_size = px(GUTTER_FONT_SIZE).into();
+    small_style.color = rgb(theme::text_muted(cx)).into();
+    let label = StyledText::new(UNAVAILABLE_TEXT)
+        .with_default_highlights(&small_style, Vec::new())
+        .selectable()
+        .selection_order(i as u64)
+        .selection_separator_after(separator);
+    div()
+        .id(("diff-load-retry", file_index))
+        .w_full()
+        .h(px(LINE_HEIGHT))
+        .flex()
+        .items_center()
+        .justify_center()
+        .opacity(0.6)
+        .cursor_pointer()
+        .on_press(move |_event, _window, cx| {
+            let _ = weak.update(cx, |this, cx| this.retry_load(file_index, cx));
+        })
         .child(label)
         .into_any_element()
 }
@@ -959,8 +1055,8 @@ impl Render for CombinedDiffView {
         if self.rows_dirty {
             info!("rebuilding combined diff row cache");
             self.rebuild_row_cache();
-            if let Some(path) = self.pending_scroll_to.take() {
-                self.scroll_to_now(&path, cx);
+            if let Some((path, section)) = self.pending_scroll_to.take() {
+                self.scroll_to_now(&path, section, cx);
             }
         }
         // Cheap no-op once the active file's window is already loaded/loading;
@@ -1053,6 +1149,14 @@ impl Render for CombinedDiffView {
                                                 cx,
                                             )
                                         }
+                                        RowKind::LoadFailed => render_load_failed_row(
+                                            i,
+                                            row.file_index,
+                                            separator,
+                                            &text_style,
+                                            weak.clone(),
+                                            cx,
+                                        ),
                                         RowKind::Line(line) => render_line_row(
                                             row,
                                             line,

@@ -1918,6 +1918,22 @@ diff-view-only "Mention"/"Comment" native selection actions.
    into that terminal, then the banner disappears.
 7. With comments pending, tap the banner's **×** — expected: the banner
    disappears immediately and nothing is pasted anywhere.
+8. **Send All, then cancel the picker** — with 2+ comments pending, tap
+   **Send All** and dismiss the agent picker without choosing a terminal.
+   Expected: the pending comments and the banner count survive intact
+   (nothing lost); tapping Send All again still offers all of them.
+9. **Partially-staged file navigation** — stage part of a file so it appears
+   in both **Staged** and **Changes**. Tap the **unstaged** sidebar row.
+   Expected: the diff scrolls to that file's *unstaged* block, not the staged
+   one above it.
+10. **Stale list after staging** — with the combined diff open, stage/unstage
+   a file (or commit) from the git drawer, then tap a sidebar entry again.
+   Expected: the diff reflects the new git state (moved sections, updated
+   hunks, new files present) rather than the pre-change list.
+11. **Failed / oversized diff** — open a diff where one file is over ~200 KB
+   (or force an RPC error). Expected: that file shows **"Diff unavailable ·
+   tap to retry"** instead of spinning on "Loading diff…" forever; the host
+   isn't hit repeatedly. Tapping the row re-attempts the fetch.
 
 ## Agent web client (opencode)
 

@@ -783,7 +783,7 @@ impl Workspace {
         let terminal_state = cx.new(|_| TerminalState::new());
 
         let editor = cx.new(|cx| WorkspaceEditor::new(session.handle().clone(), cx));
-        let gitdiff = cx.new(|cx| WorkspaceGitdiff::new(session.handle().clone(), cx));
+        let gitdiff = cx.new(|cx| WorkspaceGitdiff::new(session.clone(), cx));
 
         let connection_banner = cx.new(|cx| ConnectionBanner::new(session_state.clone(), cx));
         let content = cx.new(|cx| {
@@ -2083,9 +2083,10 @@ impl Workspace {
                 });
                 view_telemetry::record(view_telemetry::workspace_file(&path));
             }
-            WorkspaceMainView::GitDiff { path, section: _ } => {
+            WorkspaceMainView::GitDiff { path, section } => {
+                let section = section_from_u8(section);
                 self.gitdiff.update(cx, |g, cx| {
-                    g.open_combined(Some(path), cx);
+                    g.open_combined(Some((path, section)), cx);
                 });
                 let gitdiff = self.gitdiff.clone();
                 self.content.update(cx, move |c, cx| {
@@ -3132,6 +3133,10 @@ impl Workspace {
             PendingWorkspaceAction::SendAllComments { target, comments } => {
                 self.activate_existing_terminal(target.tid.clone(), cx);
                 self.schedule_send_all_comments_after_activation(target, comments, cx);
+                // Target chosen — now safe to drop the pending comments/banner.
+                self.pending_comments.clear();
+                self.content
+                    .update(cx, |c, cx| c.set_pending_comments_count(0, cx));
                 platform_bridge::dismiss_custom_sheet();
             }
             PendingWorkspaceAction::SpawnAgentTerminal {
@@ -3253,9 +3258,11 @@ impl Workspace {
         if self.pending_comments.is_empty() {
             return;
         }
-        let comments = std::mem::take(&mut self.pending_comments);
-        self.content
-            .update(cx, |c, cx| c.set_pending_comments_count(0, cx));
+        // Clone, don't take: cancelling the picker below must leave the pending
+        // comments (and their banner) intact. They're cleared only once a
+        // target is actually chosen (see `SendAllComments` in
+        // `process_pending_platform_action`).
+        let comments = self.pending_comments.clone();
         self.present_agent_target_picker("Send All Comments", cx, move |target| {
             PendingWorkspaceAction::SendAllComments {
                 target,
