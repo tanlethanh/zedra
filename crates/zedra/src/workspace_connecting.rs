@@ -128,6 +128,25 @@ fn render_details_toggle(expanded: bool, cx: &mut Context<WorkspaceConnecting>) 
         )
 }
 
+/// Elapsed in a connect stage past which we hint the connection may be stalled.
+const HOLE_PUNCH_SLOW_MS: u64 = 8_000;
+
+/// Live badge label for the hole-punch phase: which sub-stage, elapsed, and a
+/// stall hint once it runs long. Answers "hanging or still in progress?".
+fn hole_punch_status_label(snap: &ConnectSnapshot) -> String {
+    let stage = snap
+        .hole_punch_stage
+        .map(|s| s.display_name())
+        .unwrap_or("Hole punching");
+    match snap.hole_punch_elapsed_ms {
+        Some(ms) if ms >= HOLE_PUNCH_SLOW_MS => {
+            format!("{stage}\u{2026} {}s \u{00b7} slow", ms / 1000)
+        }
+        Some(ms) if ms >= 1000 => format!("{stage}\u{2026} {}s", ms / 1000),
+        _ => format!("{stage}\u{2026}"),
+    }
+}
+
 fn render_phase_title(
     phase: &ConnectPhase,
     snap: &ConnectSnapshot,
@@ -135,6 +154,10 @@ fn render_phase_title(
     cx: &mut Context<WorkspaceConnecting>,
 ) -> Div {
     let (label, color) = transport_badge(&theme::palette(cx), phase, snap.transport.as_ref());
+    let label = match phase {
+        ConnectPhase::HolePunching => hole_punch_status_label(snap),
+        _ => label,
+    };
 
     let title = match phase {
         ConnectPhase::BindingEndpoint | ConnectPhase::HolePunching => "Connect",
@@ -507,7 +530,17 @@ fn build_timing_string(snap: &ConnectSnapshot) -> String {
         parts.push(format!("Bind {ms}ms"));
     }
     if let Some(ms) = snap.hole_punch_ms {
-        parts.push(format!("HolePunch {ms}ms"));
+        match (snap.resolve_ms, snap.handshake_ms) {
+            (Some(resolve), Some(handshake)) => parts.push(format!(
+                "HolePunch {ms}ms (find {resolve} + hs {handshake})"
+            )),
+            _ => parts.push(format!("HolePunch {ms}ms")),
+        }
+    }
+    if snap.relay_only {
+        parts.push("Relay-only (no direct)".to_string());
+    } else if let Some(ms) = snap.direct_upgrade_ms {
+        parts.push(format!("Direct +{ms}ms"));
     }
     if let Some(ms) = snap.rpc_ms {
         parts.push(format!("RPC {ms}ms"));

@@ -249,6 +249,27 @@ extern int32_t ios_system_prefers_dark_theme(void);
 extern void ios_set_keyboard_accessory_theme(bool is_dark);
 
 /**
+ * Acquire an image natively. source: 0 = photo library, 1 = clipboard.
+ * Delivers exactly one of zedra_ios_image_acquire_{result,cancel,error}(callback_id, ..).
+ */
+extern void ios_acquire_image(uint32_t callback_id, int32_t source);
+
+/**
+ * Returns true when UIPasteboard currently holds an image (UIPasteboard.hasImages).
+ */
+extern bool ios_clipboard_has_image(void);
+
+/**
+ * Show or update a native progress HUD (spinner + message) for `id`.
+ */
+extern void ios_present_native_progress(uint32_t id, const char *message);
+
+/**
+ * Hide the native progress HUD for `id`.
+ */
+extern void ios_dismiss_native_progress(uint32_t id);
+
+/**
  * Called from the native alert handler after the user taps a button.
  *
  * `callback_id` matches the value passed to `ios_present_alert`.
@@ -281,6 +302,25 @@ void zedra_ios_text_input_result(uint32_t callback_id, const char *value);
  * Called when a text-input dialog is cancelled or dismissed.
  */
 void zedra_ios_text_input_dismiss(uint32_t callback_id);
+
+/**
+ * Called by Swift with the processed image bytes ready to upload.
+ * `extension` is "jpg" or "png" (lowercase, no dot).
+ */
+void zedra_ios_image_acquire_result(uint32_t callback_id,
+                                    const uint8_t *data,
+                                    uintptr_t len,
+                                    const char *extension);
+
+/**
+ * Called by Swift when the user cancels the picker, or the clipboard held no image.
+ */
+void zedra_ios_image_acquire_cancel(uint32_t callback_id);
+
+/**
+ * Called by Swift on a decode/processing failure.
+ */
+void zedra_ios_image_acquire_error(uint32_t callback_id, const char *message);
 
 /**
  * Called from the native app delegate when the app enters the background.

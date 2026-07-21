@@ -20,7 +20,7 @@ use zedra_host::client as zedra_client;
 use zedra_host::ga4::Ga4;
 use zedra_host::{
     api, delta, identity, iroh_listener, metrics, net_monitor, paths, qr, rpc_daemon,
-    session_registry, utils, version_check, workspace_lock,
+    session_registry, uploads, utils, version_check, workspace_lock,
 };
 use zedra_rpc::ZedraPairingTicket;
 use zedra_telemetry::Event;
@@ -1108,6 +1108,7 @@ async fn main() -> Result<()> {
                     }
                 });
             }
+            uploads::spawn_startup_cleanup();
 
             // 1. Bind iroh endpoint with configured relay URLs.
             let endpoint_relay_urls: Vec<String> = if relay_url.is_empty() {

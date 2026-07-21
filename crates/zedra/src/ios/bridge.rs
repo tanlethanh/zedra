@@ -4,9 +4,9 @@ use tracing::*;
 use crate::active_terminal;
 use crate::deeplink;
 use crate::platform_bridge::{
-    self, AlertButton, AlertButtonStyle, CustomSheetOptions, HapticFeedback, ListPickerItem,
-    NativeDictationPreviewOptions, NativeEditMenuItem, NativeFloatingButtonOptions,
-    NativeNotificationOptions, PlatformBridge, SoundEffect, SystemTheme,
+    self, AlertButton, AlertButtonStyle, CustomSheetOptions, HapticFeedback, ImageAcquireSource,
+    ListPickerItem, NativeDictationPreviewOptions, NativeEditMenuItem, NativeFloatingButtonOptions,
+    NativeNotificationOptions, PickedImage, PlatformBridge, SoundEffect, SystemTheme,
 };
 
 /// Screen scale factor (e.g. 3.0 for @3x), stored as f32 bits.
@@ -184,6 +184,15 @@ unsafe extern "C" {
     fn ios_system_prefers_dark_theme() -> i32;
     /// Apply the app appearance to the native keyboard accessory bar.
     fn ios_set_keyboard_accessory_theme(is_dark: bool);
+    /// Acquire an image natively. source: 0 = photo library, 1 = clipboard.
+    /// Delivers exactly one of zedra_ios_image_acquire_{result,cancel,error}(callback_id, ..).
+    fn ios_acquire_image(callback_id: u32, source: i32);
+    /// Returns true when UIPasteboard currently holds an image (UIPasteboard.hasImages).
+    fn ios_clipboard_has_image() -> bool;
+    /// Show or update a native progress HUD (spinner + message) for `id`.
+    fn ios_present_native_progress(id: u32, message: *const std::ffi::c_char);
+    /// Hide the native progress HUD for `id`.
+    fn ios_dismiss_native_progress(id: u32);
 }
 
 impl PlatformBridge for IosBridge {
@@ -579,6 +588,25 @@ impl PlatformBridge for IosBridge {
             ios_set_keyboard_accessory_theme(is_dark);
         }
     }
+
+    fn acquire_image(&self, id: u32, source: ImageAcquireSource) {
+        unsafe { ios_acquire_image(id, source.to_i32()) };
+    }
+
+    fn clipboard_has_image(&self) -> bool {
+        unsafe { ios_clipboard_has_image() }
+    }
+
+    fn present_native_progress(&self, id: u32, message: &str) {
+        use std::ffi::CString;
+
+        let message = CString::new(message).unwrap_or_else(|_| CString::new("").unwrap());
+        unsafe { ios_present_native_progress(id, message.as_ptr()) };
+    }
+
+    fn dismiss_native_progress(&self, id: u32) {
+        unsafe { ios_dismiss_native_progress(id) };
+    }
 }
 
 /// Called from the native alert handler after the user taps a button.
@@ -631,6 +659,46 @@ pub extern "C" fn zedra_ios_text_input_result(callback_id: u32, value: *const st
 #[unsafe(no_mangle)]
 pub extern "C" fn zedra_ios_text_input_dismiss(callback_id: u32) {
     platform_bridge::dispatch_text_input_dismiss(callback_id);
+}
+
+/// Called by Swift with the processed image bytes ready to upload.
+/// `extension` is "jpg" or "png" (lowercase, no dot).
+#[unsafe(no_mangle)]
+pub extern "C" fn zedra_ios_image_acquire_result(
+    callback_id: u32,
+    data: *const u8,
+    len: usize,
+    extension: *const std::ffi::c_char,
+) {
+    if data.is_null() || len == 0 {
+        platform_bridge::dispatch_image_acquire_error(callback_id, "empty image data".to_string());
+        return;
+    }
+    let bytes = unsafe { std::slice::from_raw_parts(data, len) }.to_vec();
+    let extension = c_string(extension).unwrap_or_default();
+    platform_bridge::dispatch_image_acquire_result(
+        callback_id,
+        PickedImage {
+            data: bytes,
+            extension,
+        },
+    );
+}
+
+/// Called by Swift when the user cancels the picker, or the clipboard held no image.
+#[unsafe(no_mangle)]
+pub extern "C" fn zedra_ios_image_acquire_cancel(callback_id: u32) {
+    platform_bridge::dispatch_image_acquire_cancel(callback_id);
+}
+
+/// Called by Swift on a decode/processing failure.
+#[unsafe(no_mangle)]
+pub extern "C" fn zedra_ios_image_acquire_error(
+    callback_id: u32,
+    message: *const std::ffi::c_char,
+) {
+    let message = c_string(message).unwrap_or_else(|| "unknown error".to_string());
+    platform_bridge::dispatch_image_acquire_error(callback_id, message);
 }
 
 /// Called from the native app delegate when the app enters the background.
