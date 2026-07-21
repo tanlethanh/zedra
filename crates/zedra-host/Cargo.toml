@@ -22,6 +22,7 @@ no-telemetry = []
 [dependencies]
 # Async runtime
 tokio = { version = "1", features = ["full"] }
+futures = { workspace = true }
 
 # Local REST API
 axum = "0.7"
@@ -31,6 +32,7 @@ reqwest = { version = "0.12", default-features = false, features = [
     "http2",
     "json",
     "rustls-tls",
+    "stream",
     "system-proxy",
 ] }
 
@@ -45,6 +47,7 @@ clap = { version = "4", features = ["derive", "env"] }
 
 # Serialization
 base64-url.workspace = true
+percent-encoding.workspace = true
 serde.workspace = true
 serde_json = { workspace = true, features = ["std"] }
 data-encoding.workspace = true

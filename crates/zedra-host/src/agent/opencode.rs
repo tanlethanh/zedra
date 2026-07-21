@@ -1,11 +1,13 @@
 use super::utils::*;
 use crate::sqlite_readonly;
 use chrono::{DateTime, Utc};
+use futures::StreamExt;
 use serde::Deserialize;
 use serde_json::Value;
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::process::Command;
+use std::sync::Arc;
 use zedra_rpc::proto::*;
 
 #[derive(Deserialize, Clone)]
@@ -740,6 +742,27 @@ impl AgentActor for OpenCodeActor {
         Some(format!("opencode --session {quoted}"))
     }
 
+    fn has_web_client(&self) -> bool {
+        true
+    }
+
+    // One `opencode serve` backs every card: a server started in any directory
+    // serves all projects (the `:dir` route is just an `x-opencode-directory`
+    // header), so cards share a process and each gets a fresh session.
+    fn web_client_open(
+        &self,
+        ctx: crate::web_client::WebClientOpenCtx,
+    ) -> ActorFuture<'static, Result<crate::web_client::WebClientOpened, String>> {
+        Box::pin(web_client_open(ctx))
+    }
+
+    fn web_client_close(
+        &self,
+        ctx: crate::web_client::WebClientCloseCtx,
+    ) -> ActorFuture<'static, ()> {
+        Box::pin(web_client_close(ctx))
+    }
+
     fn subscription_plan<'a>(&'a self) -> ActorFuture<'a, Option<Vec<AgentInfoField>>> {
         spawn_blocking_opt(Self::subscription_plan_fields)
     }
@@ -1096,5 +1119,519 @@ export const ZedraPlugin = async () => ({{
             script = serde_json::to_string(&script_path.display().to_string())?,
             should_forward = should_forward_js()
         ))
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Web client: one shared `opencode serve` behind many cards.
+//
+// A single server serves every project (the `:dir` route is just an
+// `x-opencode-directory` header), so all cards share one process from the pool
+// and each card is a fresh session. One `/global/event` reader per server
+// demuxes the bus to each card by session id. All opencode-specific shape
+// (endpoints, event format, routing) lives here; `web_client.rs` stays generic.
+// ---------------------------------------------------------------------------
+
+/// Pool key: a constant, so every card shares the one `opencode serve`.
+const POOL_KEY: &str = "opencode";
+
+fn server_spec() -> crate::web_client::ServerSpec {
+    crate::web_client::ServerSpec {
+        program: "opencode".to_string(),
+        args: |port| {
+            vec![
+                "serve".to_string(),
+                "--port".to_string(),
+                port.to_string(),
+                "--hostname".to_string(),
+                "127.0.0.1".to_string(),
+            ]
+        },
+        env: Vec::new(),
+    }
+}
+
+/// One card's slice of a shared server: which session it follows and where to
+/// push that session's live title/state.
+#[derive(Clone)]
+struct OpenCard {
+    session_id: String,
+    workdir: PathBuf,
+    sink: crate::web_client::WebClientSink,
+}
+
+/// A running `opencode serve` and the cards watching its event bus.
+struct SharedServer {
+    /// Card id -> its session filter + sink. Shared with the demux task.
+    cards: Arc<tokio::sync::Mutex<HashMap<String, OpenCard>>>,
+    /// Ends the demux task when the last card closes.
+    stop: Arc<tokio::sync::Notify>,
+}
+
+/// Shared servers keyed by port (one per daemon in practice). Holds only weak
+/// sinks, never a strong manager ref, so it never keeps the daemon alive.
+fn shared_servers() -> &'static tokio::sync::Mutex<HashMap<u16, SharedServer>> {
+    static SERVERS: std::sync::OnceLock<tokio::sync::Mutex<HashMap<u16, SharedServer>>> =
+        std::sync::OnceLock::new();
+    SERVERS.get_or_init(|| tokio::sync::Mutex::new(HashMap::new()))
+}
+
+async fn web_client_open(
+    ctx: crate::web_client::WebClientOpenCtx,
+) -> Result<crate::web_client::WebClientOpened, String> {
+    let port = ctx.pool.acquire(POOL_KEY, &server_spec()).await?;
+
+    // opencode resolves its own project directory (`/tmp` -> `/private/tmp` on
+    // macOS), so a raw workdir would create/route a directory it never matches.
+    let workdir = std::fs::canonicalize(&ctx.workdir).unwrap_or(ctx.workdir);
+    let session = match create_session(port, &workdir).await {
+        Ok(session) => session,
+        Err(e) => {
+            // Undo the acquire so a failed open does not pin the server.
+            ctx.pool.release(POOL_KEY).await;
+            return Err(e);
+        }
+    };
+
+    let mut servers = shared_servers().lock().await;
+    let server = servers.entry(port).or_insert_with(|| {
+        let cards: Arc<tokio::sync::Mutex<HashMap<String, OpenCard>>> =
+            Arc::new(tokio::sync::Mutex::new(HashMap::new()));
+        let stop = Arc::new(tokio::sync::Notify::new());
+        tokio::spawn(demux_events(
+            port,
+            cards.clone(),
+            stop.clone(),
+            ctx.pool.clone(),
+        ));
+        SharedServer { cards, stop }
+    });
+    server.cards.lock().await.insert(
+        ctx.id.clone(),
+        OpenCard {
+            session_id: session.id.clone(),
+            workdir: workdir.clone(),
+            sink: ctx.sink.clone(),
+        },
+    );
+    drop(servers);
+
+    // Seed the card so it shows the fresh session's title immediately.
+    ctx.sink
+        .set(Some(AgentState::Idle), session_title(session.title))
+        .await;
+
+    // opencode's web UI routes `/:dir/session/:id`, `:dir` = base64url(path).
+    let path = format!(
+        "/{}/session/{}",
+        base64_url::encode(workdir.to_string_lossy().as_ref()),
+        session.id
+    );
+    Ok(crate::web_client::WebClientOpened { port, path })
+}
+
+async fn web_client_close(ctx: crate::web_client::WebClientCloseCtx) {
+    let mut servers = shared_servers().lock().await;
+    // Find which server holds this card, remove it, and if that empties the
+    // server, stop its demux task and drop the server entry.
+    let mut empty_port = None;
+    let mut removed = false;
+    for (&port, server) in servers.iter() {
+        let mut cards = server.cards.lock().await;
+        if cards.remove(&ctx.id).is_some() {
+            removed = true;
+            if cards.is_empty() {
+                server.stop.notify_waiters();
+                empty_port = Some(port);
+            }
+            break;
+        }
+    }
+    if let Some(port) = empty_port {
+        servers.remove(&port);
+    }
+    drop(servers);
+    if removed {
+        ctx.pool.release(POOL_KEY).await;
+    }
+}
+
+/// Read `opencode serve`'s `/global/event` bus once and fan each event out to
+/// the cards on its session id. Ends on `stop` (last card closed) or when the
+/// stream closes (server died), closing any surviving cards and clearing the
+/// dead server from the pool.
+async fn demux_events(
+    port: u16,
+    cards: Arc<tokio::sync::Mutex<HashMap<String, OpenCard>>>,
+    stop: Arc<tokio::sync::Notify>,
+    pool: crate::web_client::WebClientPool,
+) {
+    let event_url = format!("http://127.0.0.1:{port}/global/event");
+    let response = tokio::select! {
+        _ = stop.notified() => return,
+        response = reqwest::Client::new().get(&event_url).send() => match response {
+            Ok(response) => response,
+            Err(e) => {
+                tracing::warn!("web-client: opencode event stream failed: {e}");
+                fail_server(port, &cards, &pool).await;
+                return;
+            }
+        },
+    };
+
+    let mut stream = response.bytes_stream();
+    let mut buffer: Vec<u8> = Vec::new();
+    loop {
+        let chunk = tokio::select! {
+            _ = stop.notified() => return,
+            chunk = stream.next() => chunk,
+        };
+        let Some(Ok(chunk)) = chunk else {
+            // Stream closed: the server exited on its own.
+            fail_server(port, &cards, &pool).await;
+            return;
+        };
+        buffer.extend_from_slice(&chunk);
+        for frame in drain_sse_frames(&mut buffer) {
+            dispatch_frame(port, &frame, &cards).await;
+        }
+    }
+}
+
+/// Route one SSE frame to the cards following its session id.
+async fn dispatch_frame(
+    port: u16,
+    frame: &str,
+    cards: &Arc<tokio::sync::Mutex<HashMap<String, OpenCard>>>,
+) {
+    let Some(payload) = sse_frame_payload(frame) else {
+        return;
+    };
+    let Some(event_type) = payload.get("type").and_then(Value::as_str) else {
+        return;
+    };
+    let properties = payload.get("properties").cloned().unwrap_or(Value::Null);
+    let Some(session_id) = sse_event_session_id(&properties) else {
+        return;
+    };
+    let state = sse_event_state(event_type, &properties);
+    // Session lifecycle events change the title; refresh it lazily.
+    let refresh_title = matches!(event_type, "session.updated" | "session.idle");
+    if state.is_none() && !refresh_title {
+        return;
+    }
+
+    let matching_cards: Vec<OpenCard> = cards
+        .lock()
+        .await
+        .values()
+        .filter(|card| card.session_id == session_id)
+        .cloned()
+        .collect();
+    for card in matching_cards {
+        let title = if refresh_title {
+            fetch_session_title(port, &card.workdir, Some(&card.session_id)).await
+        } else {
+            None
+        };
+        if state.is_some() || title.is_some() {
+            card.sink.set(state, title).await;
+        }
+    }
+}
+
+/// The server died: close every surviving card and drop it from the pool so a
+/// later open respawns instead of reusing a dead port.
+async fn fail_server(
+    port: u16,
+    cards: &Arc<tokio::sync::Mutex<HashMap<String, OpenCard>>>,
+    pool: &crate::web_client::WebClientPool,
+) {
+    shared_servers().lock().await.remove(&port);
+    pool.remove(POOL_KEY).await;
+    let sinks: Vec<_> = cards
+        .lock()
+        .await
+        .values()
+        .map(|card| card.sink.clone())
+        .collect();
+    for sink in sinks {
+        sink.closed().await;
+    }
+}
+
+/// A freshly created opencode session.
+struct CreatedSession {
+    id: String,
+    title: Option<String>,
+}
+
+#[derive(Deserialize)]
+struct SessionRow {
+    #[serde(default)]
+    id: String,
+    #[serde(default)]
+    directory: String,
+    #[serde(default)]
+    title: Option<String>,
+}
+
+/// Create a fresh session in `workdir` on the server at `port`.
+async fn create_session(port: u16, workdir: &Path) -> Result<CreatedSession, String> {
+    #[derive(Deserialize)]
+    struct SessionResponse {
+        id: String,
+        #[serde(default)]
+        title: Option<String>,
+    }
+    let session: SessionResponse = reqwest::Client::new()
+        .post(format!("http://127.0.0.1:{port}/session"))
+        .header("x-opencode-directory", directory_header(workdir))
+        .header("content-type", "application/json")
+        .body("{}")
+        .timeout(std::time::Duration::from_secs(10))
+        .send()
+        .await
+        .map_err(|e| format!("opencode create session failed: {e}"))?
+        .json()
+        .await
+        .map_err(|e| format!("opencode create session decode failed: {e}"))?;
+    Ok(CreatedSession {
+        id: session.id,
+        title: session.title,
+    })
+}
+
+/// Percent-encode a directory for the `x-opencode-directory` header (the app's
+/// web UI sends the same header for its API calls).
+fn directory_header(workdir: &Path) -> String {
+    const ESCAPE: &percent_encoding::AsciiSet = &percent_encoding::NON_ALPHANUMERIC
+        .remove(b'-')
+        .remove(b'_')
+        .remove(b'.')
+        .remove(b'~')
+        .remove(b'/');
+    percent_encoding::utf8_percent_encode(&workdir.to_string_lossy(), ESCAPE).to_string()
+}
+
+/// Same semantics as `opencode_agent_state`, but reads a raw SSE event's
+/// `properties` object (the hook payload nests one level deeper).
+fn sse_event_state(event_type: &str, properties: &Value) -> Option<AgentState> {
+    match event_type {
+        "permission.asked" => Some(AgentState::WaitingApproval),
+        "permission.replied" => Some(AgentState::Running),
+        "session.idle" => Some(AgentState::Completed),
+        "session.error" => Some(AgentState::Error),
+        "session.status" => {
+            let status = properties.get("status")?;
+            let status = status
+                .as_str()
+                .map(str::to_string)
+                .or_else(|| status.get("type")?.as_str().map(str::to_string))?;
+            match status.as_str() {
+                "busy" | "retry" => Some(AgentState::Running),
+                "idle" => Some(AgentState::Completed),
+                _ => None,
+            }
+        }
+        _ => None,
+    }
+}
+
+/// Split complete `\n\n`-terminated SSE frames out of `buffer`.
+fn drain_sse_frames(buffer: &mut Vec<u8>) -> Vec<String> {
+    let mut frames = Vec::new();
+    while let Some(idx) = buffer.windows(2).position(|w| w == b"\n\n") {
+        let frame: Vec<u8> = buffer.drain(..idx + 2).collect();
+        if let Ok(text) = String::from_utf8(frame) {
+            frames.push(text);
+        }
+    }
+    frames
+}
+
+/// The `payload` object from an SSE frame's `data:` lines, if present.
+fn sse_frame_payload(frame: &str) -> Option<Value> {
+    let mut data = String::new();
+    for line in frame.lines() {
+        if let Some(rest) = line.strip_prefix("data:") {
+            data.push_str(rest.trim_start());
+        }
+    }
+    let json: Value = serde_json::from_str(&data).ok()?;
+    json.get("payload").cloned()
+}
+
+/// Session id an SSE event belongs to, so one bus can be demuxed per card.
+/// opencode puts it at `properties.sessionID`, or nested under `info` for
+/// message/session events.
+fn sse_event_session_id(properties: &Value) -> Option<String> {
+    let str_at =
+        |value: &Value, key: &str| value.get(key).and_then(Value::as_str).map(str::to_string);
+    str_at(properties, "sessionID")
+        .or_else(|| properties.get("info").and_then(|i| str_at(i, "sessionID")))
+        .or_else(|| properties.get("info").and_then(|i| str_at(i, "id")))
+}
+
+/// Title of session `session_id` (or the first in `workdir`) from `/session`.
+async fn fetch_session_title(
+    port: u16,
+    workdir: &Path,
+    session_id: Option<&str>,
+) -> Option<String> {
+    let rows: Vec<SessionRow> = reqwest::Client::new()
+        .get(format!("http://127.0.0.1:{port}/session"))
+        .header("x-opencode-directory", directory_header(workdir))
+        .timeout(std::time::Duration::from_secs(3))
+        .send()
+        .await
+        .ok()?
+        .json()
+        .await
+        .ok()?;
+    let workdir = workdir.to_string_lossy();
+    select_session_title(&rows, &workdir, session_id)
+}
+
+fn select_session_title(
+    rows: &[SessionRow],
+    workdir: &str,
+    session_id: Option<&str>,
+) -> Option<String> {
+    let row = match session_id {
+        Some(session_id) => rows.iter().find(|row| row.id == session_id),
+        None => rows
+            .iter()
+            .find(|row| row.directory == workdir)
+            .or_else(|| rows.first()),
+    };
+    row.and_then(|row| row.title.clone())
+        .filter(|title| !title.is_empty())
+}
+
+#[cfg(test)]
+mod web_client_tests {
+    use super::*;
+
+    #[test]
+    fn drain_frames_splits_on_blank_line_and_keeps_partial() {
+        let mut buffer = b"data: a\n\ndata: b\n\ndata: par".to_vec();
+        let frames = drain_sse_frames(&mut buffer);
+        assert_eq!(frames, vec!["data: a\n\n", "data: b\n\n"]);
+        assert_eq!(buffer, b"data: par");
+    }
+
+    #[test]
+    fn frame_payload_extracts_data_json_payload() {
+        let frame = "data: {\"payload\":{\"type\":\"session.idle\",\"properties\":{}}}\n\n";
+        let payload = sse_frame_payload(frame).unwrap();
+        assert_eq!(
+            payload.get("type").and_then(Value::as_str),
+            Some("session.idle")
+        );
+    }
+
+    #[test]
+    fn frame_payload_none_without_payload_or_data() {
+        assert!(sse_frame_payload("data: {\"foo\":1}\n\n").is_none());
+        assert!(sse_frame_payload(": comment only\n\n").is_none());
+    }
+
+    #[test]
+    fn sse_event_state_maps_opencode_events() {
+        assert_eq!(
+            sse_event_state("session.idle", &serde_json::json!({})),
+            Some(AgentState::Completed)
+        );
+        assert_eq!(
+            sse_event_state("permission.asked", &serde_json::json!({})),
+            Some(AgentState::WaitingApproval)
+        );
+        assert_eq!(
+            sse_event_state("session.status", &serde_json::json!({ "status": "busy" })),
+            Some(AgentState::Running)
+        );
+        assert_eq!(
+            sse_event_state("server.connected", &serde_json::json!({})),
+            None
+        );
+    }
+
+    // Demuxing one bus to per-session cards hinges on pulling the session id out
+    // of every shape opencode emits.
+    #[test]
+    fn sse_event_session_id_reads_flat_and_nested_shapes() {
+        assert_eq!(
+            sse_event_session_id(&serde_json::json!({ "sessionID": "ses_a" })),
+            Some("ses_a".to_string())
+        );
+        assert_eq!(
+            sse_event_session_id(&serde_json::json!({ "info": { "sessionID": "ses_b" } })),
+            Some("ses_b".to_string())
+        );
+        assert_eq!(
+            sse_event_session_id(&serde_json::json!({ "info": { "id": "ses_c" } })),
+            Some("ses_c".to_string())
+        );
+        // Global events (no session) must not be routed to any card.
+        assert_eq!(sse_event_session_id(&serde_json::json!({})), None);
+    }
+
+    #[test]
+    fn directory_header_percent_encodes_but_keeps_path_separators() {
+        assert_eq!(
+            directory_header(std::path::Path::new("/private/tmp/my project")),
+            "/private/tmp/my%20project"
+        );
+    }
+
+    // opencode's `:dir` route decodes with atob(base64url); the app opens
+    // `host:port` + this path, so a mismatch lands on the home view.
+    #[test]
+    fn session_path_is_base64url_dir_plus_session_id() {
+        let dir = std::path::Path::new("/Users/me/projects/zedra");
+        let path = format!(
+            "/{}/session/{}",
+            base64_url::encode(dir.to_string_lossy().as_ref()),
+            "ses_x"
+        );
+        assert_eq!(path, "/L1VzZXJzL21lL3Byb2plY3RzL3plZHJh/session/ses_x");
+    }
+
+    fn session_row(id: &str, directory: &str, title: &str) -> SessionRow {
+        SessionRow {
+            id: id.to_string(),
+            directory: directory.to_string(),
+            title: Some(title.to_string()),
+        }
+    }
+
+    #[test]
+    fn explicit_session_title_never_falls_back_to_another_row() {
+        let rows = vec![
+            session_row("ses_a", "/work", "First"),
+            session_row("ses_b", "/work", "Second"),
+        ];
+        assert_eq!(
+            select_session_title(&rows, "/work", Some("ses_b")).as_deref(),
+            Some("Second")
+        );
+        assert_eq!(select_session_title(&rows, "/work", Some("missing")), None);
+    }
+
+    #[test]
+    fn absent_session_id_uses_directory_then_first_row_fallbacks() {
+        let rows = vec![
+            session_row("ses_a", "/other", "First"),
+            session_row("ses_b", "/work", "Directory"),
+        ];
+        assert_eq!(
+            select_session_title(&rows, "/work", None).as_deref(),
+            Some("Directory")
+        );
+        assert_eq!(
+            select_session_title(&rows, "/missing", None).as_deref(),
+            Some("First")
+        );
     }
 }

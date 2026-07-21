@@ -80,22 +80,27 @@ impl AgentPicker {
     }
 
     fn present(&self, agents: Vec<InstalledAgentEntry>) {
+        // Web-capable agents get a trailing globe: tapping it opens the agent's
+        // web client instead of a terminal.
         let picker_items: Vec<ListPickerItem> = agents
             .iter()
             .map(|a| ListPickerItem {
                 label: a.display_name.clone(),
                 subtitle: a.version.clone(),
                 image_name: Some(a.icon_name.clone()),
+                trailing_icon: a.web_client.then(|| "globe".to_string()),
             })
             .collect();
 
-        let launch_targets: Vec<(String, Option<String>, String)> = agents
+        // Per-row: (slug, web-capable, terminal launch command, terminal title).
+        let targets: Vec<(String, bool, Option<String>, String)> = agents
             .iter()
             .map(|a| {
                 (
-                    format!("Launching {}...", a.display_name),
-                    a.launch_cmd.clone(),
                     a.slug.clone(),
+                    a.web_client,
+                    a.launch_cmd.clone(),
+                    format!("Launching {}...", a.display_name),
                 )
             })
             .collect();
@@ -106,17 +111,21 @@ impl AgentPicker {
             "Launch an agent in a new terminal",
             picker_items,
             move |selection| {
-                let Some(index) = selection else { return };
-                let Some((initial_title, Some(cmd), agent_slug)) =
-                    launch_targets.get(index).cloned()
+                let Some(selection) = selection else { return };
+                let Some((slug, web_capable, launch_cmd, initial_title)) =
+                    targets.get(selection.index).cloned()
                 else {
                     return;
                 };
-                pending.set(PendingWorkspaceAction::SpawnAgentTerminal {
-                    launch_cmd: cmd,
-                    initial_title,
-                    agent_slug,
-                });
+                if selection.trailing && web_capable {
+                    pending.set(PendingWorkspaceAction::SpawnAgentWebClient { slug });
+                } else if let Some(launch_cmd) = launch_cmd {
+                    pending.set(PendingWorkspaceAction::SpawnAgentTerminal {
+                        launch_cmd,
+                        initial_title,
+                        agent_slug: slug,
+                    });
+                }
             },
         );
     }
@@ -129,6 +138,7 @@ impl AgentPicker {
             label: "Dismiss".to_string(),
             subtitle: Some(message.to_string()),
             image_name: None,
+            trailing_icon: None,
         }];
         platform_bridge::show_list_picker(
             "Create Agent",

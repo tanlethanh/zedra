@@ -4,7 +4,7 @@ use std::path::PathBuf;
 use std::sync::{Mutex, OnceLock};
 use tracing::*;
 use uuid::Uuid;
-use zedra_rpc::proto::HostInfoSnapshot;
+use zedra_rpc::proto::{AgentState, HostInfoSnapshot, WebClientInfo, WebClientUpdate};
 
 use zedra_session::*;
 
@@ -162,6 +162,37 @@ fn upsert_web_tunnel(tunnels: &mut Vec<TrackedTunnel>, url: &str, title: &str, n
     }
 }
 
+fn web_client_card(info: WebClientInfo) -> WebClientCard {
+    WebClientCard {
+        id: info.id,
+        slug: info.slug,
+        port: info.port,
+        title: info.title,
+        state: info.state,
+        path: info.path,
+    }
+}
+
+fn replace_web_client_cards(cards: &mut Vec<WebClientCard>, clients: Vec<WebClientInfo>) {
+    *cards = clients.into_iter().map(web_client_card).collect();
+}
+
+/// A host-managed agent web-client server (e.g. `opencode serve`) shown as a
+/// card. Runtime-only: rebuilt from the host's `WebClientWatch` stream on every
+/// connect. Icon and display name resolve from `slug`.
+#[derive(Clone, Debug, PartialEq)]
+pub struct WebClientCard {
+    pub id: String,
+    pub slug: String,
+    /// Host loopback port; the app tunnels `http://localhost:<port>`.
+    pub port: u16,
+    pub title: Option<String>,
+    pub state: AgentState,
+    /// URL path to open on the server, tracking where the user last navigated.
+    /// Host-held, so it survives reconnects.
+    pub path: String,
+}
+
 /// Shareable workspace state. Clone copies the Arc only. Read via methods (non-blocking).
 #[derive(Clone, Default, Serialize, Deserialize)]
 pub struct WorkspaceState {
@@ -199,6 +230,10 @@ pub struct WorkspaceState {
     pub terminal_ids: Vec<String>,
     #[serde(skip)]
     pub host_info: Option<HostInfoSnapshot>,
+    // Host-managed web-client servers (e.g. `opencode serve`), live from the
+    // host's `WebClientWatch` stream. Rebuilt per connect, so not persisted.
+    #[serde(skip)]
+    pub web_clients: Vec<WebClientCard>,
 }
 
 #[derive(Clone, PartialEq)]
@@ -213,6 +248,7 @@ struct WorkspaceStateSyncSnapshot {
     active_terminal_id: Option<String>,
     terminal_ids: Vec<String>,
     host_info: Option<HostInfoSnapshot>,
+    web_clients: Vec<WebClientCard>,
     delta_host_pubkey: Option<[u8; 32]>,
     delta_host_node_id: Option<Uuid>,
 }
@@ -287,6 +323,7 @@ impl WorkspaceState {
             active_terminal_id: self.active_terminal_id.clone(),
             terminal_ids: self.terminal_ids.clone(),
             host_info: self.host_info.clone(),
+            web_clients: self.web_clients.clone(),
             delta_host_pubkey: self.delta_host_pubkey,
             delta_host_node_id: self.delta_host_node_id,
         }
@@ -299,6 +336,7 @@ impl WorkspaceState {
         self.main_view_stack.reset(WorkspaceMainView::Default);
         self.terminal_ids.clear();
         self.host_info = None;
+        self.web_clients.clear();
     }
 
     pub fn mark_disconnected(&mut self, cx: &mut Context<Self>) {
@@ -346,6 +384,14 @@ impl WorkspaceState {
         let before = self.sync_snapshot();
         let session_id = session_state.snapshot.session_id.clone();
         self.connect_phase = Some(session_state.phase.clone());
+        if matches!(
+            session_state.phase,
+            ConnectPhase::Disconnected
+                | ConnectPhase::Reconnecting { .. }
+                | ConnectPhase::Failed(_)
+        ) {
+            self.web_clients.clear();
+        }
         self.terminal_ids = session_handle.terminal_ids().clone();
         if !matches!(
             session_state.phase,
@@ -493,6 +539,37 @@ impl WorkspaceState {
     pub fn record_web_tunnel(&mut self, url: &str, title: &str, cx: &mut Context<Self>) {
         upsert_web_tunnel(&mut self.web_tunnels, url, title, Self::now_u64());
         cx.emit(WorkspaceStateEvent::StateChanged);
+        cx.notify();
+    }
+
+    /// Apply a live web-client update from the host's `WebClientWatch` stream:
+    /// remove on close, otherwise upsert by id (preserving list order).
+    pub fn apply_web_client_update(&mut self, update: WebClientUpdate, cx: &mut Context<Self>) {
+        if update.closed {
+            self.web_clients.retain(|card| card.id != update.id);
+        } else if let Some(card) = self.web_clients.iter_mut().find(|c| c.id == update.id) {
+            card.slug = update.slug;
+            card.port = update.port;
+            card.title = update.title;
+            card.state = update.state;
+            card.path = update.path;
+        } else {
+            self.web_clients.push(WebClientCard {
+                id: update.id,
+                slug: update.slug,
+                port: update.port,
+                title: update.title,
+                state: update.state,
+                path: update.path,
+            });
+        }
+        cx.notify();
+    }
+
+    /// Replace runtime cards from the host's authoritative list after a local
+    /// stream lag. The host list is already in stable creation order.
+    pub fn replace_web_clients(&mut self, clients: Vec<WebClientInfo>, cx: &mut Context<Self>) {
+        replace_web_client_cards(&mut self.web_clients, clients);
         cx.notify();
     }
 
@@ -826,6 +903,14 @@ mod tests {
                 system_uptime_secs: 30,
                 batteries: Vec::new(),
             }),
+            web_clients: vec![WebClientCard {
+                id: "web-1".into(),
+                slug: "opencode".into(),
+                port: 4096,
+                title: Some("Session".into()),
+                state: AgentState::Running,
+                path: "/session/1".into(),
+            }],
             ..Default::default()
         };
 
@@ -839,6 +924,47 @@ mod tests {
         assert_eq!(state.active_main_view, WorkspaceMainView::Default);
         assert!(state.terminal_ids.is_empty());
         assert_eq!(state.host_info, None);
+        assert!(state.web_clients.is_empty());
+    }
+
+    #[test]
+    fn authoritative_web_client_list_replaces_zombies_and_preserves_order() {
+        let mut cards = vec![WebClientCard {
+            id: "zombie".into(),
+            slug: "opencode".into(),
+            port: 4000,
+            title: None,
+            state: AgentState::Idle,
+            path: "/zombie".into(),
+        }];
+        let clients = vec![
+            WebClientInfo {
+                id: "first".into(),
+                slug: "opencode".into(),
+                port: 4096,
+                title: Some("First".into()),
+                state: AgentState::Running,
+                path: "/first".into(),
+            },
+            WebClientInfo {
+                id: "second".into(),
+                slug: "opencode".into(),
+                port: 4097,
+                title: Some("Second".into()),
+                state: AgentState::Completed,
+                path: "/second".into(),
+            },
+        ];
+
+        replace_web_client_cards(&mut cards, clients);
+
+        assert_eq!(
+            cards
+                .iter()
+                .map(|card| card.id.as_str())
+                .collect::<Vec<_>>(),
+            vec!["first", "second"]
+        );
     }
 
     #[tokio::test]
@@ -880,6 +1006,32 @@ mod tests {
 
         assert!(state.sync_fields_from_session(session.handle(), &session_state));
         assert_eq!(state.connect_phase, Some(ConnectPhase::Connected));
+    }
+
+    #[tokio::test]
+    async fn reconnect_phase_clears_cards_before_stream_reseeds_them() {
+        let session = Session::new(tokio::runtime::Handle::current());
+        let mut session_state = SessionState::new();
+        session_state.phase = ConnectPhase::Reconnecting {
+            attempt: 1,
+            reason: ReconnectReason::ConnectionLost,
+            next_retry_secs: 0,
+        };
+        let mut state = WorkspaceState {
+            connect_phase: Some(ConnectPhase::Connected),
+            web_clients: vec![WebClientCard {
+                id: "stale".into(),
+                slug: "opencode".into(),
+                port: 4096,
+                title: None,
+                state: AgentState::Idle,
+                path: "/stale".into(),
+            }],
+            ..Default::default()
+        };
+
+        assert!(state.sync_fields_from_session(session.handle(), &session_state));
+        assert!(state.web_clients.is_empty());
     }
 
     #[test]

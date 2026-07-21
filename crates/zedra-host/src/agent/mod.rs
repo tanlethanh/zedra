@@ -545,6 +545,37 @@ pub(crate) trait AgentActor: Sync {
         None
     }
 
+    /// Whether this agent has a web UI the app can open as a web-client card
+    /// (e.g. `opencode serve`). Advertises the affordance to the app; only
+    /// agents that return `true` implement [`web_client_open`](Self::web_client_open).
+    fn has_web_client(&self) -> bool {
+        false
+    }
+
+    /// Open a web-client card: launch or reuse the agent's server (via
+    /// `ctx.pool`), do any per-card setup (opencode creates a fresh session),
+    /// and return the card's port and path. The agent owns its server's shape —
+    /// process topology, API, event format — and keeps `ctx.sink` to push the
+    /// card's live title/state until it closes. Only called when
+    /// [`has_web_client`](Self::has_web_client) is `true`.
+    fn web_client_open(
+        &self,
+        _ctx: crate::web_client::WebClientOpenCtx,
+    ) -> ActorFuture<'static, Result<crate::web_client::WebClientOpened, String>> {
+        Box::pin(std::future::ready(Err(
+            "agent has no web client".to_string()
+        )))
+    }
+
+    /// Close the card `ctx.id`: drop its per-card state and release its
+    /// `ctx.pool` reference, which reaps the server when the last card closes.
+    fn web_client_close(
+        &self,
+        _ctx: crate::web_client::WebClientCloseCtx,
+    ) -> ActorFuture<'static, ()> {
+        Box::pin(std::future::ready(()))
+    }
+
     fn subscription_plan<'a>(&'a self) -> ActorFuture<'a, Option<Vec<AgentInfoField>>> {
         Box::pin(async { None })
     }

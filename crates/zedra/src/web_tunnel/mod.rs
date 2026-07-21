@@ -36,6 +36,79 @@ pub(crate) use exact_port::{
 /// External write-up of the two modes and their origin tradeoffs.
 const MODES_DOC_URL: &str = "https://zedra.dev/docs/web-tunnel-modes";
 
+/// Called with the page's current path (+ query) whenever it changes. See
+/// [`open_url_with`].
+pub type RouteHook = std::sync::Arc<dyn Fn(String) + Send + Sync>;
+
+/// Turn off the keyboard's QuickType suggestion strip for the page's editable
+/// fields. The strip belongs to the keyboard, not the webview, so there is no
+/// bar to remove: WebKit maps these attributes onto each field's UIKit text
+/// traits, which is the only lever short of private API. A web app mounts its
+/// composer after load and may swap it per route, so new fields are caught as
+/// they appear.
+const DISABLE_AUTOCORRECT_JS: &str = r#"
+(() => {
+  if (window.__zedraAutocorrectOff) return;
+  window.__zedraAutocorrectOff = true;
+  const SELECTOR = "input, textarea, [contenteditable]";
+  const off = (el) => {
+    if (el.dataset.zedraAutocorrectOff) return;
+    el.dataset.zedraAutocorrectOff = "1";
+    el.setAttribute("autocorrect", "off");
+    el.setAttribute("autocapitalize", "off");
+    el.setAttribute("spellcheck", "false");
+  };
+  const scan = (node) => {
+    if (!(node instanceof Element)) return;
+    if (node.matches(SELECTOR)) off(node);
+    node.querySelectorAll(SELECTOR).forEach(off);
+  };
+  const start = () => {
+    scan(document.body);
+    // Only walk nodes as they mount; a full re-sweep per mutation would run on
+    // every streamed token of an agent's reply.
+    new MutationObserver((records) => {
+      for (const record of records) for (const node of record.addedNodes) scan(node);
+    }).observe(document.documentElement, { childList: true, subtree: true });
+  };
+  if (document.body) start();
+  else addEventListener("DOMContentLoaded", start, { once: true });
+})();
+"#;
+
+/// Report the page's route to Rust over the `zedra` bridge. A single-page app
+/// changes route with `history.pushState`, which fires no navigation the native
+/// layer can intercept, so hook the history API itself. Injected more than once
+/// per document on Android, so the hook guards against wrapping twice.
+const ROUTE_REPORTER_JS: &str = r#"
+(() => {
+  if (window.__zedraRouteHooked) return;
+  window.__zedraRouteHooked = true;
+  const post = (m) => {
+    if (window.webkit?.messageHandlers?.zedra) window.webkit.messageHandlers.zedra.postMessage(m);
+    else if (window.zedra) window.zedra.postMessage(m);
+  };
+  let last = null;
+  const report = () => {
+    const path = location.pathname + location.search;
+    if (path === last) return;
+    last = path;
+    post(path);
+  };
+  for (const name of ["pushState", "replaceState"]) {
+    const original = history[name];
+    history[name] = function (...args) {
+      const result = original.apply(this, args);
+      report();
+      return result;
+    };
+  }
+  addEventListener("popstate", report);
+  addEventListener("load", report);
+  report();
+})();
+"#;
+
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum AdapterKind {
     Alias,
@@ -74,6 +147,18 @@ fn session_for(endpoint_id: &PublicKey) -> Option<SessionHandle> {
 /// can record it for quick reopen), or `None` when `url` opened in the system
 /// browser instead.
 pub fn open_url(session_handle: SessionHandle, url: &str) -> Option<String> {
+    open_url_with(session_handle, url, None)
+}
+
+/// [`open_url`], plus an optional `on_route` hook fired with the page's path
+/// whenever it navigates — including single-page-app `pushState` routes, which
+/// no native navigation callback sees. Runs on the native UI thread; keep it
+/// cheap. Only applies to the in-app webview, not the system-browser fallback.
+pub fn open_url_with(
+    session_handle: SessionHandle,
+    url: &str,
+    on_route: Option<RouteHook>,
+) -> Option<String> {
     // Log only the origin, never the raw URL: the path/query of a user's local
     // web app can carry session tokens or OAuth params.
     let origin = webview_title(url);
@@ -96,7 +181,7 @@ pub fn open_url(session_handle: SessionHandle, url: &str) -> Option<String> {
         .insert(endpoint_id, session_handle);
     let spawn_url = url.to_string();
     let spawn_title = origin.clone();
-    runtime.spawn(async move { serve(endpoint_id, spawn_url, spawn_title, port).await });
+    runtime.spawn(async move { serve(endpoint_id, spawn_url, spawn_title, port, on_route).await });
     Some(origin)
 }
 
@@ -116,14 +201,20 @@ pub fn normalize_target(input: &str) -> String {
     format!("http://{input}")
 }
 
-async fn serve(endpoint_id: PublicKey, url: String, title: String, port: u16) {
+async fn serve(
+    endpoint_id: PublicKey,
+    url: String,
+    title: String,
+    port: u16,
+    on_route: Option<RouteHook>,
+) {
     // The alias rewrites the webview host to `<word>.zedra.test`, which changes
     // the TLS SNI; an https host still presents its `localhost` certificate, so
     // validation fails. Alias mode therefore only serves cleartext http.
     let alias_ok = is_cleartext_http(&url);
     if registry().prefs.lock().unwrap().get(&endpoint_id) == Some(&AdapterKind::Alias) {
         if alias_ok {
-            serve_alias(endpoint_id, &url, title).await;
+            serve_alias(endpoint_id, &url, title, on_route).await;
         } else {
             notify_https_needs_exact_port(port);
         }
@@ -131,10 +222,31 @@ async fn serve(endpoint_id: PublicKey, url: String, title: String, port: u16) {
     }
     match exact_port::ensure(endpoint_id, port).await {
         Ok(()) => {
-            crate::webview::open(crate::webview::WebviewConfig::new(url).title(title));
+            crate::webview::open(tunnel_webview(url, title, on_route));
         }
-        Err(()) if alias_ok => prompt_alias_fallback(endpoint_id, url, title, port),
+        Err(()) if alias_ok => prompt_alias_fallback(endpoint_id, url, title, port, on_route),
         Err(()) => notify_https_needs_exact_port(port),
+    }
+}
+
+/// The webview both adapters present: a tunnelled page the user drives with its
+/// own UI, so the keyboard carries no chrome of ours, plus route reporting when
+/// the caller asked for it.
+fn tunnel_webview(
+    url: String,
+    title: String,
+    on_route: Option<RouteHook>,
+) -> crate::webview::WebviewConfig {
+    let config = crate::webview::WebviewConfig::new(url)
+        .title(title)
+        .hide_input_accessory(true);
+    let mut js = DISABLE_AUTOCORRECT_JS.to_string();
+    match on_route {
+        Some(hook) => {
+            js.push_str(ROUTE_REPORTER_JS);
+            config.inject_js(js).on_message(move |path| hook(path))
+        }
+        None => config.inject_js(js),
     }
 }
 
@@ -156,7 +268,12 @@ fn notify_https_needs_exact_port(port: u16) {
     );
 }
 
-async fn serve_alias(endpoint_id: PublicKey, url: &str, title: String) {
+async fn serve_alias(
+    endpoint_id: PublicKey,
+    url: &str,
+    title: String,
+    on_route: Option<RouteHook>,
+) {
     let proxy_port = match alias::ensure_proxy().await {
         Ok(port) => port,
         Err(error) => {
@@ -166,14 +283,19 @@ async fn serve_alias(endpoint_id: PublicKey, url: &str, title: String) {
         }
     };
     crate::webview::open(
-        crate::webview::WebviewConfig::new(alias_url(url, &endpoint_id))
-            .title(title)
+        tunnel_webview(alias_url(url, &endpoint_id), title, on_route)
             .socks_proxy(Ipv4Addr::LOCALHOST, proxy_port),
     );
 }
 
 /// Surface the exact-port failure and let the user opt this host into the alias.
-fn prompt_alias_fallback(endpoint_id: PublicKey, url: String, title: String, port: u16) {
+fn prompt_alias_fallback(
+    endpoint_id: PublicKey,
+    url: String,
+    title: String,
+    port: u16,
+    on_route: Option<RouteHook>,
+) {
     tracing::info!("web-tunnel: exact-port unavailable for :{port}, offering alias");
     let message = format!(
         "localhost:{port} can't be bound on this device (another host or app holds it). \
@@ -183,12 +305,12 @@ fn prompt_alias_fallback(endpoint_id: PublicKey, url: String, title: String, por
         NativeNotificationOptions::new("Web tunnel: port unavailable")
             .message(message)
             .kind(NativeNotificationKind::Warning),
-        move || approve_alias(endpoint_id, url, title),
+        move || approve_alias(endpoint_id, url, title, on_route),
     );
 }
 
 /// The user approved the alias for this host: remember it and serve now.
-fn approve_alias(endpoint_id: PublicKey, url: String, title: String) {
+fn approve_alias(endpoint_id: PublicKey, url: String, title: String, on_route: Option<RouteHook>) {
     registry()
         .prefs
         .lock()
@@ -200,7 +322,7 @@ fn approve_alias(endpoint_id: PublicKey, url: String, title: String) {
     let Ok(runtime) = session.runtime() else {
         return;
     };
-    runtime.spawn(async move { serve_alias(endpoint_id, &url, title).await });
+    runtime.spawn(async move { serve_alias(endpoint_id, &url, title, on_route).await });
 }
 
 fn notify_failed(error: &str) {

@@ -175,6 +175,18 @@ Verifies a `zedra/rpc/3` host still serves a pre-bump app.
 11. Tap outside an active selection, scroll selected content, then switch views
 12. Expected: selection dismisses or refreshes cleanly without stale highlights, handles, or toolbar
 
+## 0c-Selection-Occlusion. Overlays Suppress Terminal Selection (iOS + Android)
+
+1. Open a workspace terminal with visible output, then open the workspace drawer over it
+2. Long press a drawer row that sits above terminal output (e.g. a webview tunnel row in the Session tab)
+3. Expected: the row's long-press action fires; no native text selection of the terminal output underneath begins
+4. Long press the drawer backdrop area beside the panel (terminal output still visible there)
+5. Expected: no native selection begins; backdrop tap behavior is unchanged
+6. Close the drawer and long press terminal output
+7. Expected: native word selection with handles works exactly as before
+8. Long press an empty terminal cell
+9. Expected: the native paste menu appears as before
+
 ## 0c-Android-AppIds. Debug And Release Application IDs
 
 1. Run `./scripts/run-android.sh --target arm64-v8a`
@@ -826,7 +838,9 @@ adb logcat -c                       # clear
 adb logcat -s zedra | grep webview  # stream
 ```
 
-In a debug build the webview also forwards page `console.*` output to logcat (`webview: console: …`) and enables Chrome remote inspection (`chrome://inspect`).
+In a debug build, logcat records webview event metadata but not raw bridge
+messages, console output, paths, or queries. URLs appear as origins only. Chrome
+remote inspection remains available at `chrome://inspect`.
 
 ### Driving it from an agent (Android, debug)
 
@@ -1866,3 +1880,48 @@ Covers the animated status banner overlaid at the top of the workspace main view
    state.
 7. Toggle appearance (Settings → Appearance) while the banner is visible. Expected:
    banner surface, border, text, and accent dot recolor with the theme.
+
+## Agent web client (opencode)
+
+Host-managed `opencode serve` opened in the in-app webview over the web tunnel.
+Requires `opencode` on the host's PATH and a web-tunnel-capable build.
+
+1. **Advertise**: with a host running in a workspace where `opencode` is
+   installed, open **Create Agent**. Expected: the OpenCode row shows a trailing
+   **globe** accessory (agents without a web client show none).
+2. **Create**: tap the globe (not the row body). Expected: a web-client **card**
+   appears in the drawer terminal list — OpenCode icon with a small globe corner
+   badge, subtitle `localhost:<port>` — and the in-app webview opens on a **fresh
+   session in the host's current project** (URL `/<dir>/session/<id>`), not
+   opencode's project-picker home view. Tapping the row body instead still
+   launches the normal terminal agent.
+3. **Second card, shared server**: tap the globe again. Expected: a **second**
+   card opens on a **different** fresh session, and both cards run on the **same
+   port** (one shared `opencode serve` — check `ps aux | grep "opencode serve"`
+   shows a single process). Cards keep a stable order across reconnects.
+4. **Live status**: start a prompt in one card's session. Expected: **only that
+   card's** state dot tracks activity (blue running → green idle) and title
+   updates — the other card, on a different session, is unaffected.
+   `permission.asked` shows the yellow dot.
+5. **Reopen at the last view**: inside a card, navigate (the URL changes).
+   Dismiss the webview and tap the card. Expected: it reopens on **that view**,
+   not the session it was created on.
+6. **Route privacy (Android debug)**: navigate to a route with
+   `?token=zedra-manual-secret`, then inspect `adb logcat -s zedra`. Expected:
+   the card reopens with the query intact, but logcat contains neither
+   `zedra-manual-secret` nor the raw path/query. Webview logs show only the
+   origin and bridge-message length.
+7. **Keyboard**: focus the opencode composer. Expected: no form accessory bar
+   (the prev/next/Done strip) and no QuickType suggestion row above the keys —
+   typing gets no autocorrect or predictions, which is the tradeoff for hiding
+   the row. Check after switching route too (a remounted composer must stay off).
+8. **Reconnect**: background/foreground or drop and restore the connection.
+   Expected: both cards reappear (re-seeded from the host's `WebClientWatch`) in
+   the same order, each still reopening at its own last view — the path is held
+   host-side, so it survives the reconnect.
+9. **Close**: tap one card's ✕. Expected: that card disappears but the shared
+   `opencode serve` keeps running (the other card still uses it). Tap the last
+   card's ✕. Expected: now the process is killed (`ps aux | grep "opencode serve"`
+   shows none).
+10. **Non-web agent**: a non-web agent (e.g. claude) has no globe and creating it
+   still opens a terminal, unchanged.

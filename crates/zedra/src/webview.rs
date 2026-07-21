@@ -63,6 +63,8 @@ pub struct WebviewConfig {
     url: String,
     title: String,
     socks_proxy: Option<String>,
+    inject_js: Option<String>,
+    hide_input_accessory: bool,
     on_message: Option<MessageHandler>,
     on_navigate: Option<NavigationHandler>,
     on_dismiss: Option<DismissHandler>,
@@ -74,6 +76,8 @@ impl WebviewConfig {
             url: url.into(),
             title: String::new(),
             socks_proxy: None,
+            inject_js: None,
+            hide_input_accessory: false,
             on_message: None,
             on_navigate: None,
             on_dismiss: None,
@@ -91,6 +95,26 @@ impl WebviewConfig {
     /// uses this to reach the host's loopback; see [`crate::web_tunnel`].
     pub fn socks_proxy(mut self, host: impl std::fmt::Display, port: u16) -> Self {
         self.socks_proxy = Some(format!("{host}:{port}"));
+        self
+    }
+
+    /// Run `js` in the main frame on each navigation, before the page's own
+    /// scripts where the platform allows it (iOS injects at document start;
+    /// Android has no user-script API and runs it from `onPageStarted` and
+    /// `onPageFinished`). Make the script idempotent. Use it to observe or adapt
+    /// a page you do not control, and pair it with
+    /// [`on_message`](Self::on_message) to report back.
+    pub fn inject_js(mut self, js: impl Into<String>) -> Self {
+        self.inject_js = Some(js.into());
+        self
+    }
+
+    /// Hide the keyboard's form accessory bar — the prev/next/Done strip
+    /// WKWebView puts above the keys. A web app with its own composer gets no
+    /// value from it and it eats vertical space. iOS only: Android's WebView has
+    /// no equivalent bar.
+    pub fn hide_input_accessory(mut self, hide: bool) -> Self {
+        self.hide_input_accessory = hide;
         self
     }
 
@@ -128,6 +152,9 @@ struct WireConfig<'a> {
     #[serde(skip_serializing_if = "Option::is_none")]
     socks_proxy: Option<&'a str>,
     #[serde(skip_serializing_if = "Option::is_none")]
+    inject_js: Option<&'a str>,
+    hide_input_accessory: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
     message_handler_name: Option<&'a str>,
     intercept_navigation: bool,
 }
@@ -141,6 +168,8 @@ pub fn open(config: WebviewConfig) -> u32 {
         url: &config.url,
         title: &config.title,
         socks_proxy: config.socks_proxy.as_deref(),
+        inject_js: config.inject_js.as_deref(),
+        hide_input_accessory: config.hide_input_accessory,
         message_handler_name: config.on_message.as_ref().map(|_| MESSAGE_HANDLER_NAME),
         intercept_navigation: config.on_navigate.is_some(),
     };

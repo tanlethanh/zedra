@@ -24,6 +24,7 @@ pub struct TerminalInputHandler {
     pending_text_input_preflight: Option<TextInputPreflight>,
     text_input_rewrite_active: bool,
     text_input_rewrite_guard_active: bool,
+    hitbox_id: Option<HitboxId>,
 }
 
 impl TerminalInputHandler {
@@ -34,6 +35,7 @@ impl TerminalInputHandler {
         cell_width: Pixels,
         line_height: Pixels,
         selection_enabled: bool,
+        hitbox_id: Option<HitboxId>,
     ) -> Self {
         Self {
             entity,
@@ -43,6 +45,7 @@ impl TerminalInputHandler {
             cell_width,
             line_height,
             selection_enabled,
+            hitbox_id,
             selection_candidate: None,
             pending_text_input_preflight: None,
             text_input_rewrite_active: false,
@@ -1065,6 +1068,18 @@ impl InputHandler for TerminalInputHandler {
         self.selection_enabled || self.using_selection_document(cx)
     }
 
+    fn native_selection_allowed_at(
+        &mut self,
+        point: Point<Pixels>,
+        window: &mut Window,
+        _cx: &mut App,
+    ) -> bool {
+        // Deny points occluded by layers painted above the terminal (drawer,
+        // backdrop, overlays), matching pointer-event dispatch.
+        self.hitbox_id
+            .is_none_or(|id| window.point_reaches_hitbox(id, point))
+    }
+
     fn keyboard_accessory(&mut self, _window: &mut Window, _cx: &mut App) -> bool {
         Self::keyboard_accessory_policy()
     }
@@ -1126,6 +1141,7 @@ mod tests {
             px(10.0),
             px(20.0),
             selection_enabled,
+            None,
         );
         let window = cx.open_window(size(px(200.0), px(80.0)), |_, _| gpui::Empty);
 
@@ -1194,6 +1210,24 @@ mod tests {
 
         assert!(!handles_native_selection);
         assert!(handler.selection_document.is_none());
+    }
+
+    #[test]
+    fn native_selection_denied_when_surface_hitbox_is_unreachable() {
+        let mut cx = TestAppContext::single();
+        let (_, mut handler, window) = terminal_handler_for_output(&mut cx, b"hello world", true);
+
+        window
+            .update(&mut cx, |_, window, cx| {
+                // Surface hitbox absent from the rendered frame = occluded point.
+                handler.hitbox_id = Some(gpui::HitboxId::placeholder());
+                assert!(!handler.native_selection_allowed_at(point(px(2.0), px(10.0)), window, cx));
+
+                // No declared surface: occlusion cannot be judged, so allow.
+                handler.hitbox_id = None;
+                assert!(handler.native_selection_allowed_at(point(px(2.0), px(10.0)), window, cx));
+            })
+            .unwrap();
     }
 
     #[test]
