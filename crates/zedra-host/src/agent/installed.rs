@@ -18,6 +18,7 @@ pub fn list_installed_agents() -> AgentInstalledListResult {
                     available: launch_cmd.is_some(),
                     version: None,
                     launch_cmd,
+                    web_client: actor.has_web_client(),
                 }
             }))
             .map_err(|_| tracing::warn!("installed agent probe panicked for `{}`", actor.slug()))

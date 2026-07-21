@@ -29,4 +29,5 @@ pub mod telemetry;
 pub mod uploads;
 pub mod utils;
 pub mod version_check;
+pub mod web_client;
 pub mod workspace_lock;

@@ -632,7 +632,7 @@ object NativePresentations {
             android.util.Log.i(
                 "zedra",
                 "[debug:webview] openWebView cb=$callbackId handler=${config.messageHandlerName} " +
-                    "intercept=${config.interceptNavigation} url=${config.url}",
+                    "intercept=${config.interceptNavigation} origin=${webViewOrigin(config.url)}",
             )
             WebView.setWebContentsDebuggingEnabled(true)
         }
@@ -647,7 +647,10 @@ object NativePresentations {
 
                 override fun onConsoleMessage(m: android.webkit.ConsoleMessage): Boolean {
                     if (BuildConfig.DEBUG) {
-                        android.util.Log.i("zedra", "[debug:webview] console: ${m.message()}")
+                        android.util.Log.i(
+                            "zedra",
+                            "[debug:webview] console message level=${m.messageLevel()} line=${m.lineNumber()}",
+                        )
                     }
                     return true
                 }
@@ -1151,6 +1154,7 @@ object NativePresentations {
         val messageHandlerName: String?,
         val interceptNavigation: Boolean,
         val socksProxy: String?,
+        val injectJs: String?,
     )
 
     private fun parseWebViewConfig(configJson: String?): WebViewConfig? {
@@ -1163,10 +1167,18 @@ object NativePresentations {
                 messageHandlerName = obj.optString("messageHandlerName", "").takeIf { it.isNotBlank() },
                 interceptNavigation = obj.optBoolean("interceptNavigation", false),
                 socksProxy = obj.optString("socksProxy", "").takeIf { it.isNotBlank() },
+                injectJs = obj.optString("injectJs", "").takeIf { it.isNotBlank() },
             )
         } catch (e: Throwable) {
             null
         }
+    }
+
+    private fun webViewOrigin(rawUrl: String?): String {
+        val uri = runCatching { android.net.Uri.parse(rawUrl) }.getOrNull() ?: return "invalid"
+        val scheme = uri.scheme ?: return "unknown"
+        val host = uri.host ?: return "$scheme://unknown"
+        return if (uri.port >= 0) "$scheme://$host:${uri.port}" else "$scheme://$host"
     }
 
     /** Exposed as `window.<name>` so the page can post messages to Rust. */
@@ -1174,7 +1186,10 @@ object NativePresentations {
         @android.webkit.JavascriptInterface
         fun postMessage(message: String?) {
             if (BuildConfig.DEBUG) {
-                android.util.Log.i("zedra", "[debug:webview] bridge postMessage cb=$callbackId msg=$message")
+                android.util.Log.i(
+                    "zedra",
+                    "[debug:webview] bridge postMessage cb=$callbackId length=${message?.length ?: 0}",
+                )
             }
             MainActivity.nativeWebViewMessage(callbackId, message ?: "")
         }
@@ -1200,18 +1215,34 @@ object NativePresentations {
         override fun onPageStarted(view: WebView, url: String?, favicon: android.graphics.Bitmap?) {
             super.onPageStarted(view, url, favicon)
             if (BuildConfig.DEBUG) {
-                android.util.Log.i("zedra", "[debug:webview] onPageStarted url=$url")
+                android.util.Log.i(
+                    "zedra",
+                    "[debug:webview] onPageStarted origin=${webViewOrigin(url)}",
+                )
             }
             NativePresentations.resetWebViewFavicon()
             NativePresentations.updateWebViewChrome(view, config.title)
+            injectJs(view)
         }
 
         override fun onPageFinished(view: WebView, url: String?) {
             super.onPageFinished(view, url)
             if (BuildConfig.DEBUG) {
-                android.util.Log.i("zedra", "[debug:webview] onPageFinished url=$url")
+                android.util.Log.i(
+                    "zedra",
+                    "[debug:webview] onPageFinished origin=${webViewOrigin(url)}",
+                )
             }
             NativePresentations.updateWebViewChrome(view, config.title)
+            injectJs(view)
+        }
+
+        // No user-script API here, so run the script at both page callbacks:
+        // onPageStarted may be too early for a JS context, onPageFinished too
+        // late to beat the page. Injected scripts must be idempotent.
+        private fun injectJs(view: WebView) {
+            val js = config.injectJs ?: return
+            view.evaluateJavascript(js, null)
         }
 
         // Previously unimplemented, so a blocked/failed load (cleartext policy, host
@@ -1225,9 +1256,8 @@ object NativePresentations {
             if (BuildConfig.DEBUG) {
                 android.util.Log.w(
                     "zedra",
-                    "[debug:webview] onReceivedError url=${request.url} " +
-                        "isMainFrame=${request.isForMainFrame} code=${error.errorCode} " +
-                        "description=${error.description}",
+                    "[debug:webview] onReceivedError origin=${webViewOrigin(request.url.toString())} " +
+                        "isMainFrame=${request.isForMainFrame} code=${error.errorCode}",
                 )
             }
         }
@@ -1241,7 +1271,7 @@ object NativePresentations {
             if (BuildConfig.DEBUG) {
                 android.util.Log.w(
                     "zedra",
-                    "[debug:webview] onReceivedHttpError url=${request.url} " +
+                    "[debug:webview] onReceivedHttpError origin=${webViewOrigin(request.url.toString())} " +
                         "isMainFrame=${request.isForMainFrame} status=${errorResponse.statusCode}",
                 )
             }

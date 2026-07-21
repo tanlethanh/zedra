@@ -140,6 +140,27 @@ pub struct CloseTerminal {
     pub id: String,
 }
 
+/// Open a host-managed web-client server in the in-app webview over the tunnel.
+#[derive(Clone, PartialEq, Action)]
+#[action(namespace = workspace, no_json)]
+pub struct OpenWebClient {
+    pub id: String,
+}
+
+/// Stop a host-managed web-client server.
+#[derive(Clone, PartialEq, Action)]
+#[action(namespace = workspace, no_json)]
+pub struct CloseWebClient {
+    pub id: String,
+}
+
+/// Create a web-client agent: start its server on the host, then open it.
+#[derive(Clone, PartialEq, Action)]
+#[action(namespace = workspace, no_json)]
+pub struct SpawnAgentWebClient {
+    pub slug: String,
+}
+
 #[derive(Clone, PartialEq, Action)]
 #[action(namespace = workspace, no_json)]
 pub struct ToggleDrawer;

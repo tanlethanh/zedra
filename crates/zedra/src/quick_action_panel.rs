@@ -19,6 +19,8 @@ pub enum QuickActionEvent {
     NavigateToWorkspace,
     OpenTerminal { tid: String, ws_index: usize },
     CloseTerminal { tid: String, ws_index: usize },
+    OpenWebClient { id: String, ws_index: usize },
+    CloseWebClient { id: String, ws_index: usize },
 }
 
 impl EventEmitter<QuickActionEvent> for QuickActionPanel {}
@@ -185,6 +187,15 @@ impl QuickActionPanel {
 
     fn handle_terminal_delete(&self, ws_index: usize, tid: String, cx: &mut Context<Self>) {
         cx.emit(QuickActionEvent::CloseTerminal { tid, ws_index });
+    }
+
+    fn handle_open_web_client(&self, ws_index: usize, id: String, cx: &mut Context<Self>) {
+        cx.emit(QuickActionEvent::NavigateToWorkspace);
+        cx.emit(QuickActionEvent::OpenWebClient { id, ws_index });
+    }
+
+    fn handle_close_web_client(&self, ws_index: usize, id: String, cx: &mut Context<Self>) {
+        cx.emit(QuickActionEvent::CloseWebClient { id, ws_index });
     }
 }
 
@@ -411,10 +422,47 @@ impl Render for QuickActionPanel {
                             shell_state: meta.shell_state,
                             last_exit_code: meta.last_exit_code,
                             on_close: Some(on_close),
+                            web_badge: false,
                         },
                     )
                     .on_press(cx.listener(move |this, _event, _window, cx| {
                         this.handle_switch_terminal(index, tid_click.clone(), cx);
+                    }));
+
+                    content = content.child(card);
+                }
+            }
+
+            if !state.web_clients.is_empty() {
+                content = content.gap_1();
+                for card_state in &state.web_clients {
+                    let id_open = card_state.id.clone();
+                    let id_close = card_state.id.clone();
+                    let on_close = Box::new(cx.listener(move |this, _event, _window, cx| {
+                        this.handle_close_web_client(index, id_close.clone(), cx);
+                    }));
+
+                    let card = render_terminal_card(
+                        cx,
+                        TerminalCardProps {
+                            id: format!("{}-wc-{}", index, card_state.id),
+                            index: 0,
+                            is_active: false,
+                            title: card_state
+                                .title
+                                .clone()
+                                .or_else(|| Some(crate::agent::name(&card_state.slug))),
+                            cwd: Some(format!("localhost:{}", card_state.port)),
+                            agent_icon: Some(crate::agent::icon(&card_state.slug)),
+                            agent_state: card_state.state,
+                            shell_state: crate::terminal_state::ShellState::Idle,
+                            last_exit_code: None,
+                            on_close: Some(on_close),
+                            web_badge: true,
+                        },
+                    )
+                    .on_press(cx.listener(move |this, _event, _window, cx| {
+                        this.handle_open_web_client(index, id_open.clone(), cx);
                     }));
 
                     content = content.child(card);

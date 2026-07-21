@@ -37,6 +37,8 @@ webview::close();
 | --- | --- |
 | `title(s)` | Navigation-bar title. Falls back to the page title when empty. |
 | `socks_proxy(host, port)` | Route the webview's traffic through a SOCKS5 proxy (iOS 17+ `proxyConfigurations`, Android `ProxyController`). The web tunnel uses this to reach the host's loopback. |
+| `inject_js(js)` | Run `js` in the main frame on every navigation, ahead of the page's own scripts where the platform allows. Must be idempotent — see below. |
+| `hide_input_accessory(bool)` | Drop the keyboard's form accessory bar (the prev/next/Done strip). iOS only. |
 | `on_message(fn)` | Receive messages the page posts through the `zedra` JS bridge. |
 | `on_navigate(fn)` | Decide per navigation; return `NavigationPolicy::Cancel` to block. |
 | `on_dismiss(fn)` | Fired once when the user dismisses the webview. |
@@ -62,6 +64,17 @@ Send data the other way with `webview::eval_js` (for example, call a function th
 ## Navigation interception
 
 When `on_navigate` is set, the native layer asks Rust before each navigation and blocks it when you return `NavigationPolicy::Cancel`. The handler runs synchronously on the native UI thread, so keep it fast — no blocking I/O.
+
+`on_navigate` only sees real navigations. A single-page app changes route with `history.pushState`, which fires neither `decidePolicyFor` nor `shouldOverrideUrlLoading` — to follow those, inject a script that hooks the history API and posts back over the `zedra` bridge. The web tunnel does this to track where the user is inside a tunnelled app; see `web_tunnel::open_url_with`.
+
+## Script injection
+
+`inject_js` runs a script in the main frame on each navigation. The platforms differ in *when*, so the script must be idempotent (guard on a `window` flag):
+
+- iOS: a `WKUserScript` at `.atDocumentStart` — before the page's own scripts, once per document.
+- Android: `WebView` has no user-script API, so the script runs from both `onPageStarted` (which may precede a usable JS context) and `onPageFinished`. Injecting twice is why the guard is required.
+
+Unlike `eval_js`, injection races nothing on iOS: it is installed before the page runs.
 
 ## Callback threading
 

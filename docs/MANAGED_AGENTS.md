@@ -78,6 +78,28 @@ carries the user's flags (`full_bin_path`, `quiet`).
 | `ctx.hook_binary()` | Binary to embed in hook scripts (`zedra`, or absolute with `--full-bin-path`) |
 | `ctx.home_dir()` | User home; errors when `$HOME` is unset |
 
+### Web client (optional)
+
+An agent with a web UI (e.g. `opencode serve`) can expose it as a card the app
+opens over the web tunnel in an in-app webview. Override two actor methods:
+
+- `has_web_client() -> true` advertises the affordance (sets
+  `InstalledAgentEntry.web_client`, shows the picker globe). Nothing else keys on
+  the slug.
+- `web_client_open(ctx) -> WebClientOpened { port, path }` opens one card. Launch
+  or reuse a server through `ctx.pool.acquire(key, spec)` — the pool is
+  agent-agnostic and refcounts by key, so **the actor alone decides process
+  topology**: a constant key shares one server across cards, a unique key spawns
+  one per card. Do any per-card setup (opencode creates a fresh session), keep
+  `ctx.sink` to push the card's live title/state, and return the port plus the
+  URL `path` the app should open. `web_client_close(ctx)` releases the pool key.
+
+The manager owns the card registry, ordering, broadcast, and process pool; it
+never learns the agent's API, event format, or whether a server is shared. Keep
+all of that in the actor — see `agent/opencode.rs` (one shared server, fresh
+session per card, `/global/event` demuxed per session id). Protocol contract:
+`docs/PROTOCOL_SPECS.md` §5.9.
+
 ## App Adapter
 
 The app keys on the host slug. Unknown slugs get `GenericAdapter`: icon from

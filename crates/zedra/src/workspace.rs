@@ -33,11 +33,11 @@ use crate::transport_badge::ConnectionStatusIndicator;
 use crate::ui::{DrawerEvent, DrawerHost, DrawerSide};
 use crate::workspace_action::{self, GoHome, OpenFileSearch, OpenQuickAction, RequestDisconnect};
 use crate::workspace_action::{
-    AddSelectionToChat, CloseDrawer, CloseTerminal, CreateAgent, CreateNewTerminal, GitCommit,
-    GitShowItemActions, GitStage, GitUnstage, HideConnecting, NavigateBack, OpenAgentDetail,
-    OpenAgentManage, OpenAgentSessions, OpenDrawer, OpenFile, OpenGitDiff, OpenTerminal,
-    RestartConnection, ResumeAgentSession, RevealInFileExplorer, ShowConnecting,
-    SpawnAgentTerminal, ToggleDrawer,
+    AddSelectionToChat, CloseDrawer, CloseTerminal, CloseWebClient, CreateAgent, CreateNewTerminal,
+    GitCommit, GitShowItemActions, GitStage, GitUnstage, HideConnecting, NavigateBack,
+    OpenAgentDetail, OpenAgentManage, OpenAgentSessions, OpenDrawer, OpenFile, OpenGitDiff,
+    OpenTerminal, OpenWebClient, RestartConnection, ResumeAgentSession, RevealInFileExplorer,
+    ShowConnecting, SpawnAgentTerminal, SpawnAgentWebClient, ToggleDrawer,
 };
 use crate::workspace_connecting::WorkspaceConnecting;
 use crate::workspace_connection_banner::{BannerEvent, ConnectionBanner};
@@ -109,6 +109,7 @@ pub struct Workspace {
     _host_event_listener: Option<Task<()>>,
     /// Listens for periodic host resource snapshots.
     _host_info_listener: Option<Task<()>>,
+    _web_client_listener: Option<Task<()>>,
     /// Listens for foreground resume events and checks the live session phase.
     _foreground_resume_listener: Option<Task<()>>,
     /// Notifies the host when app foreground/background state changes.
@@ -152,6 +153,9 @@ pub(crate) enum PendingWorkspaceAction {
         launch_cmd: String,
         initial_title: String,
         agent_slug: String,
+    },
+    SpawnAgentWebClient {
+        slug: String,
     },
 }
 
@@ -1082,6 +1086,50 @@ impl Workspace {
             }
         });
 
+        let mut web_client_rx = session.subscribe_web_clients();
+        let web_client_handle = session.handle().clone();
+        let web_client_listener = cx.spawn(async move |workspace, cx| {
+            loop {
+                match web_client_rx.recv().await {
+                    Ok(update) => {
+                        let should_break = workspace
+                            .update(cx, |ws, cx| {
+                                ws.workspace_state.update(cx, |this, cx| {
+                                    this.apply_web_client_update(update, cx);
+                                });
+                            })
+                            .is_err();
+                        if should_break {
+                            break;
+                        }
+                    }
+                    Err(broadcast::error::RecvError::Lagged(skipped)) => {
+                        tracing::warn!("workspace web client listener lagged by {}", skipped);
+                        let clients = match web_client_handle.web_client_list().await {
+                            Ok(clients) => clients,
+                            Err(error) => {
+                                tracing::warn!(
+                                    "web-client: authoritative list after lag failed: {error}"
+                                );
+                                continue;
+                            }
+                        };
+                        let should_break = workspace
+                            .update(cx, |ws, cx| {
+                                ws.workspace_state.update(cx, |state, cx| {
+                                    state.replace_web_clients(clients, cx);
+                                });
+                            })
+                            .is_err();
+                        if should_break {
+                            break;
+                        }
+                    }
+                    Err(broadcast::error::RecvError::Closed) => break,
+                }
+            }
+        });
+
         let pending_platform_action: SharedPendingSlot<PendingWorkspaceAction> =
             shared_pending_slot();
         let agent_picker = cx
@@ -1122,6 +1170,7 @@ impl Workspace {
             _connect_listener: None,
             _host_event_listener: Some(host_event_listener),
             _host_info_listener: Some(host_info_listener),
+            _web_client_listener: Some(web_client_listener),
             _foreground_resume_listener: Some(foreground_resume_listener),
             _foreground_state_listener: Some(foreground_state_listener.into()),
             agent_picker,
@@ -2664,6 +2713,128 @@ impl Workspace {
         self.request_terminal_delete_confirmation(action.id.clone());
     }
 
+    fn handle_open_web_client(
+        &mut self,
+        action: &OpenWebClient,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.drawer_host
+            .update(cx, |host, cx| host.close_with_window(&mut *window, cx));
+        self.open_web_client(&action.id, cx);
+    }
+
+    /// Open the card's web client at the path it was last left on.
+    fn open_web_client(&mut self, id: &str, cx: &mut Context<Self>) {
+        let Some((port, path)) = self
+            .workspace_state
+            .read(cx)
+            .web_clients
+            .iter()
+            .find(|card| card.id == id)
+            .map(|card| (card.port, card.path.clone()))
+        else {
+            return;
+        };
+        self.open_web_client_url(id.to_string(), port, &path, cx);
+    }
+
+    /// Open a host loopback port in the in-app webview over the tunnel, tracking
+    /// it for quick reopen from the session panel. Routes the user takes inside
+    /// the web UI are reported back to the host, so the card reopens there.
+    fn open_web_client_url(&mut self, id: String, port: u16, path: &str, cx: &mut Context<Self>) {
+        let url = format!("http://localhost:{port}{path}");
+        let session_handle = self.session.handle().clone();
+        let hook_handle = session_handle.clone();
+        let on_route: crate::web_tunnel::RouteHook = std::sync::Arc::new(move |path: String| {
+            let Ok(runtime) = hook_handle.runtime() else {
+                return;
+            };
+            let (handle, id) = (hook_handle.clone(), id.clone());
+            runtime.spawn(async move {
+                if let Err(e) = handle.web_client_set_path(id, path).await {
+                    tracing::warn!("web-client: set path failed: {e}");
+                }
+            });
+        });
+        if let Some(title) = crate::web_tunnel::open_url_with(session_handle, &url, Some(on_route))
+        {
+            // Track the origin, not `url`: the path identifies a session, and the
+            // card already reopens at it. Keeps it out of persisted state.
+            let origin = format!("http://localhost:{port}");
+            self.workspace_state
+                .update(cx, |state, cx| state.record_web_tunnel(&origin, &title, cx));
+        }
+    }
+
+    fn handle_close_web_client(
+        &mut self,
+        action: &CloseWebClient,
+        _window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.stop_web_client(action.id.clone(), cx);
+    }
+
+    /// Stop a web client by id. The card is removed when the host's
+    /// `WebClientWatch` reports it closed.
+    fn stop_web_client(&self, id: String, cx: &mut Context<Self>) {
+        let session_handle = self.session.handle().clone();
+        cx.spawn(async move |_workspace, _cx| {
+            if let Err(e) = session_handle.web_client_stop(id).await {
+                tracing::warn!("web-client: stop failed: {e}");
+            }
+        })
+        .detach();
+    }
+
+    /// Open a web client's webview, routed from the quick-action overview.
+    pub(crate) fn open_web_client_from_quick_action(&mut self, id: String, cx: &mut Context<Self>) {
+        self.open_web_client(&id, cx);
+    }
+
+    /// Stop a web client, routed from the quick-action overview.
+    pub(crate) fn close_web_client_from_quick_action(
+        &mut self,
+        id: String,
+        cx: &mut Context<Self>,
+    ) {
+        self.stop_web_client(id, cx);
+    }
+
+    pub(crate) fn handle_spawn_agent_web_client(
+        &mut self,
+        action: &SpawnAgentWebClient,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.drawer_host
+            .update(cx, |host, cx| host.close_with_window(&mut *window, cx));
+        let session_handle = self.session.handle().clone();
+        let slug = action.slug.clone();
+        cx.spawn(async move |workspace, cx| {
+            match session_handle.web_client_start(slug.clone()).await {
+                // The card appears via the WebClientWatch stream; open it now.
+                Ok((id, port, path)) => {
+                    let _ =
+                        workspace.update(cx, |ws, cx| ws.open_web_client_url(id, port, &path, cx));
+                }
+                Err(e) => {
+                    tracing::error!(agent = slug, "web client start failed: {}", e);
+                    let _ = workspace.update(cx, |_ws, _cx| {
+                        platform_bridge::show_alert(
+                            "Web client",
+                            "Failed to start the web client.",
+                            vec![AlertButton::default("OK")],
+                            |_| {},
+                        );
+                    });
+                }
+            }
+        })
+        .detach();
+    }
+
     /// Terminal-specific view effects: deactivate the previous terminal and swap the content
     /// view. All state (nav stack, active_main_view, active_terminal_id, TerminalOpened event)
     /// is owned by state.navigate / state.go_back before this is called.
@@ -2821,6 +2992,18 @@ impl Workspace {
                             Some(launch_cmd),
                             Some(initial_title),
                             Some(agent_slug),
+                            window,
+                            cx,
+                        );
+                    });
+                })
+                .detach();
+            }
+            PendingWorkspaceAction::SpawnAgentWebClient { slug } => {
+                cx.spawn(async move |this, cx| {
+                    let _ = this.update_in(cx, |workspace, window, cx| {
+                        workspace.handle_spawn_agent_web_client(
+                            &SpawnAgentWebClient { slug },
                             window,
                             cx,
                         );
@@ -3005,6 +3188,9 @@ impl Render for Workspace {
             .on_action(cx.listener(Self::handle_resume_agent_session))
             .on_action(cx.listener(Self::handle_open_terminal))
             .on_action(cx.listener(Self::handle_close_terminal))
+            .on_action(cx.listener(Self::handle_open_web_client))
+            .on_action(cx.listener(Self::handle_close_web_client))
+            .on_action(cx.listener(Self::handle_spawn_agent_web_client))
             .size_full()
             .child(self.drawer_host.clone())
             .when(self.file_search_open, |el| {

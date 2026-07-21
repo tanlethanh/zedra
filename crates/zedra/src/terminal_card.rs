@@ -28,6 +28,8 @@ pub struct TerminalCardProps {
     pub shell_state: ShellState,
     pub last_exit_code: Option<i32>,
     pub on_close: Option<Box<dyn Fn(&PressEvent, &mut Window, &mut App) + 'static>>,
+    /// Overlay a small globe marking a host-managed web-client card.
+    pub web_badge: bool,
 }
 
 /// Diameter of the live agent-state dot overlaid on the terminal icon.
@@ -192,6 +194,28 @@ pub fn render_terminal_card(cx: &App, props: TerminalCardProps) -> Stateful<Div>
                             .border_1()
                             .border_color(rgb(theme::bg_card(cx)))
                             .bg(rgb(color)),
+                    )
+                })
+                // Top-right globe marks a web-client card; distinct corner from
+                // the live state dot so both read at once.
+                .when(props.web_badge, |el| {
+                    el.child(
+                        div()
+                            .absolute()
+                            .top(px(-3.0))
+                            .right(px(-3.0))
+                            .size(px(12.0))
+                            .rounded_full()
+                            .bg(rgb(theme::bg_card(cx)))
+                            .flex()
+                            .items_center()
+                            .justify_center()
+                            .child(
+                                svg()
+                                    .path("icons/globe.svg")
+                                    .size(px(11.0))
+                                    .text_color(rgb(theme::text_muted(cx))),
+                            ),
                     )
                 }),
         )

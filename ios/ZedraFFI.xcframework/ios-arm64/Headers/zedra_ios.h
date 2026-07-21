@@ -128,7 +128,8 @@ extern void ios_present_list_picker(uint32_t callback_id,
                                     int32_t item_count,
                                     const char *const *labels,
                                     const char *const *subtitles,
-                                    const char *const *image_names);
+                                    const char *const *image_names,
+                                    const char *const *trailing_image_names);
 
 /**
  * Present a native edit menu anchored at a window coordinate.
