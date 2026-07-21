@@ -507,7 +507,7 @@ app still builds, but push registration reports an error instead of a token.
 6. Repeat the update and answer `y`
 7. Expected: each daemon is stopped and relaunched detached; `zedra status --workdir <repo>` shows a new PID, the app reconnects, and the previous terminal is gone (killed with the old daemon)
 8. Start a daemon with custom flags, e.g. `zedra start --workdir <repo> --detach --no-telemetry --usage-refresh-secs 60`, then update and answer `y`
-9. Expected: `config.yaml` exists next to `daemon.lock` under `~/.config/zedra/workspaces/`, and the restarted daemon keeps the flags (verify via `zedra logs` / `config.yaml` contents)
+9. Expected: `launch.yaml` exists next to `daemon.lock` under `~/.config/zedra/workspaces/`, and the restarted daemon keeps the flags (verify via `zedra logs` / `launch.yaml` contents)
 10. From a Zedra terminal opened in the app (shell has `ZEDRA_HOST_PID` set), run the update and answer `y`
 11. Expected: the daemon owning that terminal is skipped with a warning and a manual `zedra stop ... && zedra start --detach ...` command; other daemons still restart
 12. Run `zedra update --version <current-release-tag> --yes` with a daemon running

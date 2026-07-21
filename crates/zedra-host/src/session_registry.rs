@@ -14,7 +14,7 @@ use serde::{Deserialize, Serialize};
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::io::Write;
 use std::path::PathBuf;
-use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex as StdMutex};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 use tokio::sync::Mutex;
@@ -248,6 +248,10 @@ pub struct ServerSession {
     pub last_activity: Mutex<Instant>,
     pub terminals: Mutex<HashMap<String, TermSession>>,
     pub terminal_order: Mutex<Vec<String>>,
+    /// In-flight `create_terminal` reservations not yet inserted into
+    /// `terminals`. Counted alongside live terminals so concurrent creates
+    /// can't race past `max_terminals` in the check-then-spawn-then-insert gap.
+    pending_terminals: AtomicUsize,
     /// Client pubkeys authorized to attach to this session (per-session ACL).
     pub acl: Mutex<HashSet<[u8; 32]>>,
     /// Currently attached client connection. None = session is free.
@@ -304,6 +308,22 @@ pub struct ServerSession {
     /// task captures the generation at spawn and only writes `Idle` if it still
     /// matches, so a newer transition during the 30s sleep is not clobbered.
     terminal_state_generation: Mutex<HashMap<String, u64>>,
+}
+
+/// RAII reservation of a terminal slot returned by
+/// [`ServerSession::try_reserve_terminal`]. Decrements the session's pending
+/// count on drop, covering both the success path (after `insert_terminal`) and
+/// early returns when PTY spawning fails.
+pub struct TerminalReservation<'a> {
+    session: &'a ServerSession,
+}
+
+impl Drop for TerminalReservation<'_> {
+    fn drop(&mut self) {
+        self.session
+            .pending_terminals
+            .fetch_sub(1, Ordering::AcqRel);
+    }
 }
 
 #[derive(Clone)]
@@ -431,6 +451,10 @@ impl HostTermMeta {
 
 // Backlog entries are PTY read chunks, not bytes or rendered terminal rows.
 const TERM_BACKLOG_ENTRY_LIMIT: usize = 50_000;
+/// Hard per-terminal byte ceiling for retained backlog, independent of the
+/// entry-count limit. Bounds memory when output is high-volume (large PTY
+/// reads) so scrollback can't grow to count × chunk-size.
+const TERM_BACKLOG_BYTE_LIMIT: usize = 8 * 1024 * 1024;
 
 /// Per-terminal output backlog for replay on TermAttach reconnect.
 ///
@@ -440,6 +464,9 @@ const TERM_BACKLOG_ENTRY_LIMIT: usize = 50_000;
 pub struct TermBacklog {
     pub entries: VecDeque<BacklogEntry>,
     pub next_seq: u64,
+    /// Running sum of `entries[*].data.len()`, kept in sync on push/evict so the
+    /// byte-cap check stays O(1).
+    retained_bytes: usize,
 }
 
 pub struct TermBacklogReplay {
@@ -461,14 +488,16 @@ impl TermBacklog {
         Self {
             entries: VecDeque::new(),
             next_seq: 1,
+            retained_bytes: 0,
         }
     }
 
-    /// Allocate a sequence number, push the entry, evict oldest if over cap.
-    /// Returns the allocated sequence number.
+    /// Allocate a sequence number, push the entry, evict oldest until under both
+    /// the entry-count limit and the byte ceiling. Returns the allocated seq.
     pub fn push(&mut self, terminal_id: String, data: Vec<u8>) -> u64 {
         let seq = self.next_seq;
         self.next_seq += 1;
+        self.retained_bytes += data.len();
         self.entries.push_back(BacklogEntry {
             seq,
             terminal_id,
@@ -477,8 +506,13 @@ impl TermBacklog {
         let limit = crate::global_config::get()
             .terminal
             .scrollback_limit(TERM_BACKLOG_ENTRY_LIMIT);
-        while self.entries.len() > limit {
-            self.entries.pop_front();
+        // Keep at least one entry so a single oversized chunk stays replayable.
+        while self.entries.len() > 1
+            && (self.entries.len() > limit || self.retained_bytes > TERM_BACKLOG_BYTE_LIMIT)
+        {
+            if let Some(front) = self.entries.pop_front() {
+                self.retained_bytes -= front.data.len();
+            }
         }
         seq
     }
@@ -498,7 +532,7 @@ impl TermBacklog {
             oldest_seq: self.entries.front().map(|entry| entry.seq),
             newest_seq: self.next_seq.saturating_sub(1),
             retained_entries: self.entries.len(),
-            retained_bytes: self.entries.iter().map(|entry| entry.data.len()).sum(),
+            retained_bytes: self.retained_bytes,
         }
     }
 }
@@ -1390,6 +1424,7 @@ impl ServerSession {
             last_activity: Mutex::new(Instant::now()),
             terminals: Mutex::new(HashMap::new()),
             terminal_order: Mutex::new(Vec::new()),
+            pending_terminals: AtomicUsize::new(0),
             acl: Mutex::new(HashSet::new()),
             active_client: Mutex::new(None),
             session_token: Mutex::new(None),
@@ -1539,6 +1574,20 @@ impl ServerSession {
         if !order.iter().any(|existing_id| existing_id == &id) {
             order.push(id);
         }
+    }
+
+    /// Atomically reserve a terminal slot if live + pending terminals are under
+    /// `max`. The check and the reservation happen under the `terminals` lock
+    /// (which inserts also take), so concurrent creates can't both pass a stale
+    /// capacity check. Returns a guard that releases the reservation on drop;
+    /// hold it until after `insert_terminal`. `None` means at capacity.
+    pub async fn try_reserve_terminal(&self, max: usize) -> Option<TerminalReservation<'_>> {
+        let terms = self.terminals.lock().await;
+        if terms.len() + self.pending_terminals.load(Ordering::Acquire) >= max {
+            return None;
+        }
+        self.pending_terminals.fetch_add(1, Ordering::AcqRel);
+        Some(TerminalReservation { session: self })
     }
 
     pub async fn remove_terminal(&self, id: &str) -> Option<TermSession> {
@@ -2541,6 +2590,31 @@ mod tests {
         assert_eq!(b.entries.len(), TERM_BACKLOG_ENTRY_LIMIT);
         // seq starts at 1, so after cap + 50 pushes the oldest retained is seq 51.
         assert_eq!(b.entries.front().unwrap().seq, 51);
+    }
+
+    #[test]
+    fn term_backlog_byte_cap() {
+        let mut b = TermBacklog::new();
+        let chunk = vec![0u8; 1024 * 1024]; // 1 MiB per push
+
+        // Well under the entry-count limit, but pushing past the byte ceiling.
+        for _ in 0..20 {
+            b.push("term-1".to_string(), chunk.clone());
+        }
+
+        assert!(b.retained_bytes <= TERM_BACKLOG_BYTE_LIMIT);
+        assert!(b.entries.len() < 20); // oldest chunks evicted by the byte cap
+                                       // The running byte total stays consistent with the retained entries.
+        let summed: usize = b.entries.iter().map(|e| e.data.len()).sum();
+        assert_eq!(summed, b.retained_bytes);
+    }
+
+    #[test]
+    fn term_backlog_keeps_single_oversized_chunk() {
+        let mut b = TermBacklog::new();
+        // One chunk larger than the ceiling must stay replayable, not self-evict.
+        b.push("term-1".to_string(), vec![0u8; TERM_BACKLOG_BYTE_LIMIT + 1]);
+        assert_eq!(b.entries.len(), 1);
     }
 
     #[test]

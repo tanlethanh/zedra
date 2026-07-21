@@ -51,10 +51,10 @@ The daemon reads the file at startup. If the YAML is malformed, Zedra logs a war
 
 Zedra reads config from two files:
 
-- **Global** — `~/.config/zedra/config.yaml` (`%APPDATA%\zedra\config.yaml` on Windows). Defaults for every workspace.
-- **Per-workspace** — `.zedra/config.yaml` in the workspace directory you serve. Settings here apply only to that workspace and override the global file. Commit it to share project defaults with your team.
+- **Global** — `~/.config/zedra/config.yaml` (`%APPDATA%\zedra\config.yaml` on Windows). Defaults for every workspace. Only you can edit it.
+- **Per-workspace** — `.zedra/config.yaml` in the workspace directory you serve. Settings here apply only to that workspace and override the global file. You can commit it to share project defaults with your team.
 
-Both files use the same settings. Set a value in one or both.
+Because a per-workspace file can arrive with a cloned repository, Zedra ignores the settings that can run code or expose secrets when they appear there — **`terminal.shell`**, **`terminal.env`**, **`terminal.env_passthrough`**, and **`agents.overrides`**. Set those in the global file only; a workspace file that sets them is ignored with a warning in the daemon log. Every other setting works in either file.
 
 ## Precedence
 
@@ -66,7 +66,7 @@ Settings resolve from lowest to highest priority:
 4. Environment variables
 5. `zedra start` flags
 
-A flag or environment variable always overrides both files. Each file fills in what the level below it did not set. Boolean switches and list settings (`agents.disabled`, `terminal.env_passthrough`) accumulate across the two files rather than replace.
+A flag or environment variable always overrides both files. Each file fills in what the level below it did not set. Boolean switches and the `agents.disabled` list accumulate across the two files rather than replace.
 
 ## `network`
 
@@ -80,9 +80,9 @@ A flag or environment variable always overrides both files. Each file fills in w
 
 ## `terminal`
 
-- **`shell`** — shell terminals launch. Wins over `$SHELL`.
-- **`env`** — variables injected into every terminal. Win over inherited and passed-through values.
-- **`env_passthrough`** — host env var names to forward. Opt-in, since terminals otherwise start with a sanitized environment to keep secrets out of a phone-controlled shell.
+- **`shell`** — shell terminals launch. Wins over `$SHELL`. Global file only.
+- **`env`** — variables injected into every terminal. Win over inherited and passed-through values. Global file only.
+- **`env_passthrough`** — host env var names to forward. Opt-in, since terminals otherwise start with a sanitized environment to keep secrets out of a phone-controlled shell. Global file only.
 - **`scrollback`** — output chunks kept per terminal for reconnect replay. Clamp 1000–500000, default 50000.
 - **`max_terminals`** — terminals per session. Clamp 1–64, default 16.
 
@@ -91,7 +91,7 @@ A flag or environment variable always overrides both files. Each file fills in w
 - **`session_limit`** — max concurrent agent sessions. Overridden by `ZEDRA_AGENT_SESSION_LIMIT`.
 - **`disabled`** — registry slugs to hide from lists and scans. Hidden agents still run if launched by hand.
 - **`usage_refresh_secs`** — usage-poll cadence; `0` disables. Overridden by `--usage-refresh-secs`, default 300.
-- **`overrides`** — per-agent launch overrides, keyed by slug (`claude`, `codex`, `opencode`, `hermes`, `pi`, `maki`):
+- **`overrides`** — per-agent launch overrides, keyed by slug (`claude`, `codex`, `opencode`, `hermes`, `pi`, `maki`). Global file only:
   - **`bin`** — executable to launch instead of the one on `PATH`.
   - **`launch_cmd`** — full command, run verbatim. Wins over `bin`. Use it to add flags (`hermes --tui`).
 

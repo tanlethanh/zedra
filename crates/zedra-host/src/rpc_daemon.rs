@@ -2265,14 +2265,17 @@ pub async fn create_terminal(
     let max_terminals = crate::global_config::get()
         .terminal
         .max_terminals_limit(MAX_TERMINALS_PER_SESSION);
-    if session.terminals.lock().await.len() >= max_terminals {
-        anyhow::bail!(
+    // Reserve a slot atomically so concurrent creates can't both pass a stale
+    // capacity check during the spawn gap. Held until after insert_terminal.
+    let _reservation = match session.try_reserve_terminal(max_terminals).await {
+        Some(reservation) => reservation,
+        None => anyhow::bail!(
             "session {} already has {} terminals (limit {})",
             session.id,
             max_terminals,
             max_terminals,
-        );
-    }
+        ),
+    };
 
     let id = session.next_terminal_id().await;
     opts.env.push(("ZEDRA_TERMINAL_ID".to_string(), id.clone()));

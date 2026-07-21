@@ -2118,7 +2118,7 @@ fn should_restart_daemons(input: &str) -> bool {
 }
 
 /// Stop each live daemon and relaunch it detached with the freshly installed
-/// binary, reusing the launch flags persisted in its `config.yaml`.
+/// binary, reusing the launch flags persisted in its `launch.yaml`.
 fn restart_daemons_after_update(alive: &[&(PathBuf, workspace_lock::LockInfo, bool)], exe: &Path) {
     // Killing the daemon that owns this terminal would hang up the updater
     // itself before the relaunch runs; skip it and hand the restart back.
