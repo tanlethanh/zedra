@@ -838,7 +838,9 @@ adb logcat -c                       # clear
 adb logcat -s zedra | grep webview  # stream
 ```
 
-In a debug build the webview also forwards page `console.*` output to logcat (`webview: console: …`) and enables Chrome remote inspection (`chrome://inspect`).
+In a debug build, logcat records webview event metadata but not raw bridge
+messages, console output, paths, or queries. URLs appear as origins only. Chrome
+remote inspection remains available at `chrome://inspect`.
 
 ### Driving it from an agent (Android, debug)
 
@@ -1904,17 +1906,22 @@ Requires `opencode` on the host's PATH and a web-tunnel-capable build.
 5. **Reopen at the last view**: inside a card, navigate (the URL changes).
    Dismiss the webview and tap the card. Expected: it reopens on **that view**,
    not the session it was created on.
-6. **Keyboard**: focus the opencode composer. Expected: no form accessory bar
+6. **Route privacy (Android debug)**: navigate to a route with
+   `?token=zedra-manual-secret`, then inspect `adb logcat -s zedra`. Expected:
+   the card reopens with the query intact, but logcat contains neither
+   `zedra-manual-secret` nor the raw path/query. Webview logs show only the
+   origin and bridge-message length.
+7. **Keyboard**: focus the opencode composer. Expected: no form accessory bar
    (the prev/next/Done strip) and no QuickType suggestion row above the keys —
    typing gets no autocorrect or predictions, which is the tradeoff for hiding
    the row. Check after switching route too (a remounted composer must stay off).
-7. **Reconnect**: background/foreground or drop and restore the connection.
+8. **Reconnect**: background/foreground or drop and restore the connection.
    Expected: both cards reappear (re-seeded from the host's `WebClientWatch`) in
    the same order, each still reopening at its own last view — the path is held
    host-side, so it survives the reconnect.
-8. **Close**: tap one card's ✕. Expected: that card disappears but the shared
+9. **Close**: tap one card's ✕. Expected: that card disappears but the shared
    `opencode serve` keeps running (the other card still uses it). Tap the last
    card's ✕. Expected: now the process is killed (`ps aux | grep "opencode serve"`
    shows none).
-9. **Non-web agent**: a non-web agent (e.g. claude) has no globe and creating it
+10. **Non-web agent**: a non-web agent (e.g. claude) has no globe and creating it
    still opens a terminal, unchanged.

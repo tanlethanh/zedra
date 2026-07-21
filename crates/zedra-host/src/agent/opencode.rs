@@ -1153,6 +1153,7 @@ fn server_spec() -> crate::web_client::ServerSpec {
 
 /// One card's slice of a shared server: which session it follows and where to
 /// push that session's live title/state.
+#[derive(Clone)]
 struct OpenCard {
     session_id: String,
     workdir: PathBuf,
@@ -1234,9 +1235,11 @@ async fn web_client_close(ctx: crate::web_client::WebClientCloseCtx) {
     // Find which server holds this card, remove it, and if that empties the
     // server, stop its demux task and drop the server entry.
     let mut empty_port = None;
+    let mut removed = false;
     for (&port, server) in servers.iter() {
         let mut cards = server.cards.lock().await;
         if cards.remove(&ctx.id).is_some() {
+            removed = true;
             if cards.is_empty() {
                 server.stop.notify_waiters();
                 empty_port = Some(port);
@@ -1248,7 +1251,9 @@ async fn web_client_close(ctx: crate::web_client::WebClientCloseCtx) {
         servers.remove(&port);
     }
     drop(servers);
-    ctx.pool.release(POOL_KEY).await;
+    if removed {
+        ctx.pool.release(POOL_KEY).await;
+    }
 }
 
 /// Read `opencode serve`'s `/global/event` bus once and fan each event out to
@@ -1316,8 +1321,14 @@ async fn dispatch_frame(
         return;
     }
 
-    let guard = cards.lock().await;
-    for card in guard.values().filter(|c| c.session_id == session_id) {
+    let matching_cards: Vec<OpenCard> = cards
+        .lock()
+        .await
+        .values()
+        .filter(|card| card.session_id == session_id)
+        .cloned()
+        .collect();
+    for card in matching_cards {
         let title = if refresh_title {
             fetch_session_title(port, &card.workdir, Some(&card.session_id)).await
         } else {
@@ -1338,14 +1349,30 @@ async fn fail_server(
 ) {
     shared_servers().lock().await.remove(&port);
     pool.remove(POOL_KEY).await;
-    for card in cards.lock().await.values() {
-        card.sink.closed().await;
+    let sinks: Vec<_> = cards
+        .lock()
+        .await
+        .values()
+        .map(|card| card.sink.clone())
+        .collect();
+    for sink in sinks {
+        sink.closed().await;
     }
 }
 
 /// A freshly created opencode session.
 struct CreatedSession {
     id: String,
+    title: Option<String>,
+}
+
+#[derive(Deserialize)]
+struct SessionRow {
+    #[serde(default)]
+    id: String,
+    #[serde(default)]
+    directory: String,
+    #[serde(default)]
     title: Option<String>,
 }
 
@@ -1452,15 +1479,6 @@ async fn fetch_session_title(
     workdir: &Path,
     session_id: Option<&str>,
 ) -> Option<String> {
-    #[derive(Deserialize)]
-    struct SessionRow {
-        #[serde(default)]
-        id: String,
-        #[serde(default)]
-        directory: String,
-        #[serde(default)]
-        title: Option<String>,
-    }
     let rows: Vec<SessionRow> = reqwest::Client::new()
         .get(format!("http://127.0.0.1:{port}/session"))
         .header("x-opencode-directory", directory_header(workdir))
@@ -1472,11 +1490,22 @@ async fn fetch_session_title(
         .await
         .ok()?;
     let workdir = workdir.to_string_lossy();
-    rows.iter()
-        .find(|row| session_id.is_some_and(|id| row.id == id))
-        .or_else(|| rows.iter().find(|row| row.directory == workdir))
-        .or_else(|| rows.first())
-        .and_then(|row| row.title.clone())
+    select_session_title(&rows, &workdir, session_id)
+}
+
+fn select_session_title(
+    rows: &[SessionRow],
+    workdir: &str,
+    session_id: Option<&str>,
+) -> Option<String> {
+    let row = match session_id {
+        Some(session_id) => rows.iter().find(|row| row.id == session_id),
+        None => rows
+            .iter()
+            .find(|row| row.directory == workdir)
+            .or_else(|| rows.first()),
+    };
+    row.and_then(|row| row.title.clone())
         .filter(|title| !title.is_empty())
 }
 
@@ -1567,5 +1596,42 @@ mod web_client_tests {
             "ses_x"
         );
         assert_eq!(path, "/L1VzZXJzL21lL3Byb2plY3RzL3plZHJh/session/ses_x");
+    }
+
+    fn session_row(id: &str, directory: &str, title: &str) -> SessionRow {
+        SessionRow {
+            id: id.to_string(),
+            directory: directory.to_string(),
+            title: Some(title.to_string()),
+        }
+    }
+
+    #[test]
+    fn explicit_session_title_never_falls_back_to_another_row() {
+        let rows = vec![
+            session_row("ses_a", "/work", "First"),
+            session_row("ses_b", "/work", "Second"),
+        ];
+        assert_eq!(
+            select_session_title(&rows, "/work", Some("ses_b")).as_deref(),
+            Some("Second")
+        );
+        assert_eq!(select_session_title(&rows, "/work", Some("missing")), None);
+    }
+
+    #[test]
+    fn absent_session_id_uses_directory_then_first_row_fallbacks() {
+        let rows = vec![
+            session_row("ses_a", "/other", "First"),
+            session_row("ses_b", "/work", "Directory"),
+        ];
+        assert_eq!(
+            select_session_title(&rows, "/work", None).as_deref(),
+            Some("Directory")
+        );
+        assert_eq!(
+            select_session_title(&rows, "/missing", None).as_deref(),
+            Some("First")
+        );
     }
 }

@@ -1087,6 +1087,7 @@ impl Workspace {
         });
 
         let mut web_client_rx = session.subscribe_web_clients();
+        let web_client_handle = session.handle().clone();
         let web_client_listener = cx.spawn(async move |workspace, cx| {
             loop {
                 match web_client_rx.recv().await {
@@ -1104,6 +1105,25 @@ impl Workspace {
                     }
                     Err(broadcast::error::RecvError::Lagged(skipped)) => {
                         tracing::warn!("workspace web client listener lagged by {}", skipped);
+                        let clients = match web_client_handle.web_client_list().await {
+                            Ok(clients) => clients,
+                            Err(error) => {
+                                tracing::warn!(
+                                    "web-client: authoritative list after lag failed: {error}"
+                                );
+                                continue;
+                            }
+                        };
+                        let should_break = workspace
+                            .update(cx, |ws, cx| {
+                                ws.workspace_state.update(cx, |state, cx| {
+                                    state.replace_web_clients(clients, cx);
+                                });
+                            })
+                            .is_err();
+                        if should_break {
+                            break;
+                        }
                     }
                     Err(broadcast::error::RecvError::Closed) => break,
                 }

@@ -38,6 +38,15 @@ const READY_POLL: Duration = Duration::from_millis(200);
 /// Update channel depth; a slow watcher drops old updates, never blocks a server.
 const UPDATE_CAPACITY: usize = 64;
 
+/// One card being opened. Sink updates are buffered here until the actor
+/// returns a usable port and path, so early title/state updates are not lost.
+struct Opening {
+    seq: u64,
+    slug: String,
+    title: Option<String>,
+    state: AgentState,
+}
+
 /// One card in the app's list — a web session on some agent's server.
 struct Running {
     /// Creation order. The registry is a hash map, so this is what gives `list`
@@ -52,6 +61,11 @@ struct Running {
     path: String,
 }
 
+enum CardEntry {
+    Opening(Opening),
+    Running(Running),
+}
+
 /// A pooled server process and how many cards depend on it.
 struct Pooled {
     process: ServerProcess,
@@ -59,7 +73,7 @@ struct Pooled {
 }
 
 struct Inner {
-    running: Mutex<HashMap<String, Running>>,
+    cards: Mutex<HashMap<String, CardEntry>>,
     updates: broadcast::Sender<WebClientUpdate>,
     workdir: PathBuf,
     next_seq: AtomicU64,
@@ -77,7 +91,7 @@ impl WebClientManager {
         let (updates, _) = broadcast::channel(UPDATE_CAPACITY);
         Self {
             inner: Arc::new(Inner {
-                running: Mutex::new(HashMap::new()),
+                cards: Mutex::new(HashMap::new()),
                 updates,
                 workdir,
                 next_seq: AtomicU64::new(0),
@@ -95,47 +109,56 @@ impl WebClientManager {
             return Err(format!("agent {slug} has no web client"));
         }
         let id = uuid::Uuid::new_v4().to_string();
+        let seq = self.inner.next_seq.fetch_add(1, Ordering::Relaxed);
+        self.inner.cards.lock().await.insert(
+            id.clone(),
+            CardEntry::Opening(Opening {
+                seq,
+                slug: slug.to_string(),
+                title: None,
+                state: AgentState::Idle,
+            }),
+        );
         let ctx = WebClientOpenCtx {
             id: id.clone(),
             workdir: self.inner.workdir.clone(),
             sink: self.sink(id.clone()),
             pool: self.pool(),
         };
-        let opened = actor.web_client_open(ctx).await?;
-
-        let seq = self.inner.next_seq.fetch_add(1, Ordering::Relaxed);
-        self.inner.running.lock().await.insert(
-            id.clone(),
-            Running {
-                seq,
-                slug: slug.to_string(),
-                port: opened.port,
-                title: None,
-                state: AgentState::Idle,
-                path: opened.path.clone(),
-            },
-        );
-        // Broadcast the initial snapshot so live subscribers see the new card.
-        self.inner.apply(&id, None, None, None).await;
-
-        Ok(WebClientInfo {
-            id,
-            slug: slug.to_string(),
-            port: opened.port,
-            title: None,
-            state: AgentState::Idle,
-            path: opened.path,
-        })
+        let opened = match actor.web_client_open(ctx).await {
+            Ok(opened) => opened,
+            Err(error) => {
+                self.inner.remove_opening(&id).await;
+                return Err(error);
+            }
+        };
+        let Some(info) = self.inner.activate(&id, opened).await else {
+            actor
+                .web_client_close(WebClientCloseCtx {
+                    id,
+                    pool: self.pool(),
+                })
+                .await;
+            return Err("web client closed while opening".to_string());
+        };
+        Ok(info)
     }
 
     /// Close the card with `id`: tell its actor (which reaps the server when the
     /// last card on it closes), then drop the card and broadcast the close.
     pub async fn stop(&self, id: &str) -> Result<(), String> {
-        let slug = match self.inner.running.lock().await.get(id) {
-            Some(running) => running.slug.clone(),
-            None => return Err(format!("no web client with id {id}")),
+        let running = {
+            let mut cards = self.inner.cards.lock().await;
+            match cards.remove(id) {
+                Some(CardEntry::Running(running)) => running,
+                Some(entry @ CardEntry::Opening(_)) => {
+                    cards.insert(id.to_string(), entry);
+                    return Err(format!("no web client with id {id}"));
+                }
+                None => return Err(format!("no web client with id {id}")),
+            }
         };
-        if let Some(actor) = agent::actor(&slug) {
+        if let Some(actor) = agent::actor(&running.slug) {
             actor
                 .web_client_close(WebClientCloseCtx {
                     id: id.to_string(),
@@ -143,7 +166,7 @@ impl WebClientManager {
                 })
                 .await;
         }
-        self.inner.close_card(id).await;
+        self.inner.broadcast_closed(id, running);
         Ok(())
     }
 
@@ -151,10 +174,11 @@ impl WebClientManager {
     /// Re-reporting the current path is a no-op: the app reports the route on
     /// page load too, which is the path it just opened.
     pub async fn set_path(&self, id: &str, path: &str) -> Result<(), String> {
-        match self.inner.running.lock().await.get(id) {
-            Some(running) if running.path == path => return Ok(()),
-            Some(_) => {}
+        match self.inner.cards.lock().await.get(id) {
+            Some(CardEntry::Running(running)) if running.path == path => return Ok(()),
+            Some(CardEntry::Running(_)) => {}
             None => return Err(format!("no web client with id {id}")),
+            Some(CardEntry::Opening(_)) => return Err(format!("no web client with id {id}")),
         }
         self.inner
             .apply(id, None, None, Some(path.to_string()))
@@ -165,11 +189,14 @@ impl WebClientManager {
     /// Snapshot in creation order, so the app's cards keep a stable position
     /// across reconnects (the registry itself is unordered).
     pub async fn list(&self) -> Vec<WebClientInfo> {
-        let running = self.inner.running.lock().await;
-        let mut clients: Vec<(u64, WebClientInfo)> = running
+        let cards = self.inner.cards.lock().await;
+        let mut clients: Vec<(u64, WebClientInfo)> = cards
             .iter()
-            .map(|(id, r)| {
-                (
+            .filter_map(|(id, entry)| {
+                let CardEntry::Running(r) = entry else {
+                    return None;
+                };
+                Some((
                     r.seq,
                     WebClientInfo {
                         id: id.clone(),
@@ -179,7 +206,7 @@ impl WebClientManager {
                         state: r.state,
                         path: r.path.clone(),
                     },
-                )
+                ))
             })
             .collect();
         clients.sort_by_key(|(seq, _)| *seq);
@@ -205,20 +232,47 @@ impl WebClientManager {
 }
 
 impl Inner {
+    async fn remove_opening(&self, id: &str) {
+        let mut cards = self.cards.lock().await;
+        if matches!(cards.get(id), Some(CardEntry::Opening(_))) {
+            cards.remove(id);
+        }
+    }
+
+    /// Activate a provisional card and publish its first complete snapshot.
+    async fn activate(&self, id: &str, opened: WebClientOpened) -> Option<WebClientInfo> {
+        let (info, update) = {
+            let mut cards = self.cards.lock().await;
+            let CardEntry::Opening(opening) = cards.remove(id)? else {
+                return None;
+            };
+            let running = Running {
+                seq: opening.seq,
+                slug: opening.slug,
+                port: opened.port,
+                title: opening.title,
+                state: opening.state,
+                path: opened.path,
+            };
+            let info = running.info(id);
+            let update = running.update(id, false);
+            cards.insert(id.to_string(), CardEntry::Running(running));
+            (info, update)
+        };
+        let _ = self.updates.send(update);
+        Some(info)
+    }
+
     /// Remove `id` and broadcast a closed update, once. Removal is the guard, so
     /// a user stop and a server-death close racing still emit a single close.
     async fn close_card(&self, id: &str) {
-        if let Some(entry) = self.running.lock().await.remove(id) {
-            let _ = self.updates.send(WebClientUpdate {
-                id: id.to_string(),
-                slug: entry.slug,
-                port: entry.port,
-                title: entry.title,
-                state: entry.state,
-                closed: true,
-                path: entry.path,
-            });
+        if let Some(CardEntry::Running(running)) = self.cards.lock().await.remove(id) {
+            self.broadcast_closed(id, running);
         }
+    }
+
+    fn broadcast_closed(&self, id: &str, running: Running) {
+        let _ = self.updates.send(running.update(id, true));
     }
 
     /// Apply a live state, title, and/or path change and broadcast the full
@@ -232,31 +286,99 @@ impl Inner {
         path: Option<String>,
     ) {
         let update = {
-            let mut running = self.running.lock().await;
-            let Some(entry) = running.get_mut(id) else {
+            let mut cards = self.cards.lock().await;
+            let Some(entry) = cards.get_mut(id) else {
                 return;
             };
-            if let Some(state) = state {
-                entry.state = state;
-            }
-            if let Some(title) = title {
-                entry.title = Some(title);
-            }
-            if let Some(path) = path {
-                entry.path = path;
-            }
-            WebClientUpdate {
-                id: id.to_string(),
-                slug: entry.slug.clone(),
-                port: entry.port,
-                title: entry.title.clone(),
-                state: entry.state,
-                closed: false,
-                path: entry.path.clone(),
+            match entry {
+                CardEntry::Opening(opening) => {
+                    if let Some(state) = state {
+                        opening.state = state;
+                    }
+                    if let Some(title) = title {
+                        opening.title = Some(title);
+                    }
+                    return;
+                }
+                CardEntry::Running(running) => {
+                    if let Some(state) = state {
+                        running.state = state;
+                    }
+                    if let Some(title) = title {
+                        running.title = Some(title);
+                    }
+                    if let Some(path) = path {
+                        running.path = path;
+                    }
+                    running.update(id, false)
+                }
             }
         };
         let _ = self.updates.send(update);
     }
+}
+
+impl Running {
+    fn info(&self, id: &str) -> WebClientInfo {
+        WebClientInfo {
+            id: id.to_string(),
+            slug: self.slug.clone(),
+            port: self.port,
+            title: self.title.clone(),
+            state: self.state,
+            path: self.path.clone(),
+        }
+    }
+
+    fn update(&self, id: &str, closed: bool) -> WebClientUpdate {
+        WebClientUpdate {
+            id: id.to_string(),
+            slug: self.slug.clone(),
+            port: self.port,
+            title: self.title.clone(),
+            state: self.state,
+            closed,
+            path: self.path.clone(),
+        }
+    }
+}
+
+/// Turn an authoritative list into stream updates relative to what one watcher
+/// has already seen. Missing cards become explicit closes; current cards are
+/// replayed in creation order.
+pub(crate) fn reconcile_snapshot(
+    sent: &mut HashMap<String, WebClientUpdate>,
+    snapshot: Vec<WebClientInfo>,
+) -> Vec<WebClientUpdate> {
+    let mut current = HashMap::new();
+    let mut updates = Vec::new();
+    for info in snapshot {
+        let update = WebClientUpdate {
+            id: info.id,
+            slug: info.slug,
+            port: info.port,
+            title: info.title,
+            state: info.state,
+            closed: false,
+            path: info.path,
+        };
+        current.insert(update.id.clone(), update.clone());
+        updates.push(update);
+    }
+
+    let mut closed: Vec<_> = sent
+        .iter()
+        .filter(|(id, _)| !current.contains_key(*id))
+        .map(|(_, update)| {
+            let mut update = update.clone();
+            update.closed = true;
+            update
+        })
+        .collect();
+    closed.sort_by(|left, right| left.id.cmp(&right.id));
+    closed.extend(updates);
+    *sent = current;
+    closed
 }
 
 // ---------------------------------------------------------------------------
@@ -472,12 +594,10 @@ mod tests {
         let manager = WebClientManager::new(PathBuf::from("/tmp"));
         for port in 0..8u16 {
             let seq = manager.inner.next_seq.fetch_add(1, Ordering::Relaxed);
-            manager
-                .inner
-                .running
-                .lock()
-                .await
-                .insert(format!("web-{port}"), running_fixture(seq, 4096 + port));
+            manager.inner.cards.lock().await.insert(
+                format!("web-{port}"),
+                CardEntry::Running(running_fixture(seq, 4096 + port)),
+            );
         }
         let ports: Vec<u16> = manager.list().await.iter().map(|c| c.port).collect();
         assert_eq!(ports, (4096..4104).collect::<Vec<_>>());
@@ -500,10 +620,10 @@ mod tests {
         let id = "web-1".to_string();
         manager
             .inner
-            .running
+            .cards
             .lock()
             .await
-            .insert(id.clone(), running_fixture(0, 4096));
+            .insert(id.clone(), CardEntry::Running(running_fixture(0, 4096)));
         let mut updates = manager.subscribe();
 
         manager
@@ -526,6 +646,122 @@ mod tests {
         );
 
         assert!(manager.set_path("nope", "/x").await.is_err());
+    }
+
+    #[tokio::test]
+    async fn opening_buffers_sink_updates_until_activation() {
+        let manager = WebClientManager::new(PathBuf::from("/tmp"));
+        let id = "web-1".to_string();
+        manager.inner.cards.lock().await.insert(
+            id.clone(),
+            CardEntry::Opening(Opening {
+                seq: 0,
+                slug: "opencode".to_string(),
+                title: None,
+                state: AgentState::Idle,
+            }),
+        );
+        let mut updates = manager.subscribe();
+
+        manager
+            .sink(id.clone())
+            .set(Some(AgentState::Running), Some("Fresh session".to_string()))
+            .await;
+        assert!(updates.try_recv().is_err(), "opening cards stay private");
+
+        let info = manager
+            .inner
+            .activate(
+                &id,
+                WebClientOpened {
+                    port: 4096,
+                    path: "/dGVzdA/session/ses_1".to_string(),
+                },
+            )
+            .await
+            .expect("opening card activates");
+        assert_eq!(info.title.as_deref(), Some("Fresh session"));
+        assert_eq!(info.state, AgentState::Running);
+        let update = updates.try_recv().expect("one complete initial update");
+        assert_eq!(update.title.as_deref(), Some("Fresh session"));
+        assert_eq!(update.port, 4096);
+        assert!(!update.closed);
+    }
+
+    #[tokio::test]
+    async fn closing_an_opening_card_prevents_late_activation() {
+        let manager = WebClientManager::new(PathBuf::from("/tmp"));
+        let id = "web-1".to_string();
+        manager.inner.cards.lock().await.insert(
+            id.clone(),
+            CardEntry::Opening(Opening {
+                seq: 0,
+                slug: "opencode".to_string(),
+                title: None,
+                state: AgentState::Idle,
+            }),
+        );
+        let mut updates = manager.subscribe();
+
+        manager.sink(id.clone()).closed().await;
+        assert!(manager
+            .inner
+            .activate(
+                &id,
+                WebClientOpened {
+                    port: 4096,
+                    path: "/dGVzdA/session/ses_1".to_string(),
+                },
+            )
+            .await
+            .is_none());
+        assert!(manager.list().await.is_empty());
+        assert!(updates.try_recv().is_err());
+    }
+
+    #[tokio::test]
+    async fn concurrent_stops_claim_the_card_once() {
+        let manager = WebClientManager::new(PathBuf::from("/tmp"));
+        let id = "web-1".to_string();
+        let mut running = running_fixture(0, 4096);
+        running.slug = "claude".to_string();
+        manager
+            .inner
+            .cards
+            .lock()
+            .await
+            .insert(id.clone(), CardEntry::Running(running));
+        let mut updates = manager.subscribe();
+
+        let (first, second) = tokio::join!(manager.stop(&id), manager.stop(&id));
+        assert_ne!(first.is_ok(), second.is_ok());
+        assert!(manager.list().await.is_empty());
+        assert!(updates.try_recv().expect("one close update").closed);
+        assert!(updates.try_recv().is_err(), "close is emitted once");
+    }
+
+    #[test]
+    fn snapshot_reconciliation_closes_missing_and_replays_current_cards() {
+        let mut sent = HashMap::from([
+            (
+                "gone".to_string(),
+                running_fixture(0, 4096).update("gone", false),
+            ),
+            (
+                "kept".to_string(),
+                running_fixture(1, 4097).update("kept", false),
+            ),
+        ]);
+        let current = vec![running_fixture(1, 4097).info("kept")];
+
+        let updates = reconcile_snapshot(&mut sent, current);
+        assert_eq!(updates.len(), 2);
+        assert_eq!(updates[0].id, "gone");
+        assert!(updates[0].closed);
+        assert_eq!(updates[1].id, "kept");
+        assert!(!updates[1].closed);
+        assert_eq!(sent.len(), 1);
+        assert!(sent.contains_key("kept"));
     }
 
     /// A weak sink must not keep the daemon's servers alive; once the manager

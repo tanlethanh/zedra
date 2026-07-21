@@ -2906,18 +2906,11 @@ async fn dispatch(
             session.touch().await;
             let mut updates = state.web_clients.subscribe();
             let snapshot = state.web_clients.list().await;
+            let watch_state = state.clone();
             let irpc_tx = msg.tx;
             tokio::spawn(async move {
-                for info in snapshot {
-                    let seed = WebClientUpdate {
-                        id: info.id,
-                        slug: info.slug,
-                        port: info.port,
-                        title: info.title,
-                        state: info.state,
-                        closed: false,
-                        path: info.path,
-                    };
+                let mut sent = HashMap::new();
+                for seed in crate::web_client::reconcile_snapshot(&mut sent, snapshot) {
                     if irpc_tx.send(seed).await.is_err() {
                         return;
                     }
@@ -2925,11 +2918,28 @@ async fn dispatch(
                 loop {
                     match updates.recv().await {
                         Ok(update) => {
-                            if irpc_tx.send(update).await.is_err() {
+                            if irpc_tx.send(update.clone()).await.is_err() {
                                 break;
                             }
+                            if update.closed {
+                                sent.remove(&update.id);
+                            } else {
+                                sent.insert(update.id.clone(), update);
+                            }
                         }
-                        Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => continue,
+                        Err(tokio::sync::broadcast::error::RecvError::Lagged(skipped)) => {
+                            tracing::warn!(
+                                skipped,
+                                "web-client: host watch lagged; reconciling snapshot"
+                            );
+                            let snapshot = watch_state.web_clients.list().await;
+                            for update in crate::web_client::reconcile_snapshot(&mut sent, snapshot)
+                            {
+                                if irpc_tx.send(update).await.is_err() {
+                                    return;
+                                }
+                            }
+                        }
                         Err(tokio::sync::broadcast::error::RecvError::Closed) => break,
                     }
                 }
