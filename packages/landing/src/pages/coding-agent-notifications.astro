@@ -1,0 +1,117 @@
+---
+import MarketingLayout from "../layouts/MarketingLayout.astro";
+
+// Intent page for the notification wedge. Claims must match shipped hook
+// notification titles: approval + completion across Claude, Codex, OpenCode.
+const title = "Coding agent notifications on your phone | Zedra";
+const description =
+  "Get a push notification when your local coding agent needs approval or finishes. Tap straight into the live OpenCode, Claude Code, or Codex session on your machine.";
+
+const faq = [
+  {
+    q: "Can I get a notification when my coding agent needs approval?",
+    a: "Yes. Run `zedra setup` on the machine where the agent runs. It installs hooks so that when OpenCode, Claude Code, or Codex asks for a permission, Zedra sends a `requires approval` push to your phone.",
+  },
+  {
+    q: "Do I get notified when the agent finishes?",
+    a: "Yes. When a turn completes, Zedra sends a `completed` notification, so you can review the result without watching the terminal.",
+  },
+  {
+    q: "What happens when I tap the notification?",
+    a: "Zedra opens the exact live session on your machine — the interactive terminal, files, and git diff — so you can answer the prompt or review the change in place.",
+  },
+  {
+    q: "Does the agent keep running while I am away?",
+    a: "Yes. The agent runs on your own machine, not on your phone or in a cloud sandbox. You unblock it and it keeps going.",
+  },
+  {
+    q: "Which agents send notifications?",
+    a: "OpenCode, Claude Code, and Codex have first-class hooks for approval and completion notifications. Other terminal-based agents still run in the interactive terminal.",
+  },
+];
+
+const faqSchema = {
+  "@context": "https://schema.org",
+  "@type": "FAQPage",
+  mainEntity: faq.map((item) => ({
+    "@type": "Question",
+    name: item.q,
+    acceptedAnswer: { "@type": "Answer", text: item.a.replace(/`/g, "") },
+  })),
+};
+---
+
+<MarketingLayout
+  title={title}
+  description={description}
+  path="/coding-agent-notifications"
+  jsonLd={[faqSchema]}
+>
+  <h1>Coding agent notifications on your phone</h1>
+  <p>
+    A coding agent is most useful when it keeps moving. But it stops the moment it needs a
+    permission — and if you have left the desk, it waits. Zedra closes that gap: a push notification
+    when your local agent needs input or finishes, and a tap straight into the live session to
+    respond.
+  </p>
+
+  <h2>How it works</h2>
+  <ul>
+    <li>
+      <strong>Install hooks:</strong> <code>zedra setup</code> installs lifecycle hooks for the
+      agents on your machine. For OpenCode it is a plugin; for Claude Code and Codex it is their
+      native hook mechanism.
+    </li>
+    <li>
+      <strong>Approval push:</strong> when the agent raises a permission request, you get a
+      <code>requires approval</code> notification.
+    </li>
+    <li>
+      <strong>Completion push:</strong> when a turn ends, you get a <code>completed</code>
+      notification.
+    </li>
+    <li>
+      <strong>Tap into the session:</strong> the notification opens the running session on your
+      machine — terminal, files, and diff — so you can answer or review in place.
+    </li>
+  </ul>
+
+  <h2>Why the session matters</h2>
+  <p>
+    A notification that only shows a summary makes you walk back to your desk anyway. Zedra brings
+    you the real thing: an interactive terminal to answer the prompt, a git view to inspect the diff
+    before you approve, and the files the agent touched. You respond, the agent continues running on
+    the original machine.
+  </p>
+
+  <h2>Set it up per agent</h2>
+  <ul>
+    <li><a href="/opencode/">OpenCode from your phone</a> — the local-first wedge, with plugin-based notifications.</li>
+    <li><a href="/claude-code/">Claude Code from your phone</a></li>
+    <li><a href="/codex/">Codex CLI from your phone</a></li>
+  </ul>
+
+  <h2>Local-first by design</h2>
+  <p>
+    The agent, your code, and your credentials stay on your machine. Zedra connects over a direct,
+    end-to-end encrypted tunnel, with an encrypted relay fallback when a network blocks the direct
+    path — no VPN and no port forwarding. See <a href="/docs/security/">security &amp; architecture</a>.
+  </p>
+
+  <h2>FAQ</h2>
+  <div class="mk-faq">
+    {
+      faq.map((item) => (
+        <details>
+          <summary>{item.q}</summary>
+          <p set:html={item.a.replace(/`([^`]+)`/g, "<code>$1</code>")} />
+        </details>
+      ))
+    }
+  </div>
+
+  <p>
+    Read more in <a href="/mobile-coding-agents/">mobile coding agents</a> or start with
+    <a href="/opencode/">OpenCode from your phone</a>.
+  </p>
+</MarketingLayout>

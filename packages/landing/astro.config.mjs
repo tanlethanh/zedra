@@ -76,6 +76,7 @@ export default defineConfig({
         {
           label: "Guides",
           items: [
+            { label: "Run OpenCode from phone", slug: "docs/guides/run-opencode-from-phone" },
             { label: "Run Claude Code from phone", slug: "docs/guides/run-claude-code-from-phone" },
             { label: "Run Codex CLI from phone", slug: "docs/guides/run-codex-cli-from-phone" },
             {
