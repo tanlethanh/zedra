@@ -131,6 +131,10 @@ pub struct AgentConfig {
     pub bin: Option<String>,
     /// Full launch command run verbatim (e.g. `hermes --tui`); wins over `bin`.
     pub launch_cmd: Option<String>,
+    /// Full resume command; `{session_id}` is replaced with the shell-quoted
+    /// session id (e.g. `claude --dangerously-skip-permissions --resume
+    /// {session_id}`). Wins over the adapter's default resume.
+    pub resume_cmd: Option<String>,
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Deserialize)]
@@ -239,9 +243,22 @@ fn parse_with_unknown(contents: &str) -> Result<(GlobalConfig, Vec<String>), ser
     Ok((cfg, unknown))
 }
 
+/// Placeholder in `agents.overrides.<slug>.resume_cmd` replaced with the
+/// shell-quoted session id when building a resume command.
+pub const AGENT_SESSION_ID_PLACEHOLDER: &str = "{session_id}";
+
 impl GlobalConfig {
     pub fn agent(&self, slug: &str) -> Option<&AgentConfig> {
         self.agents.overrides.get(slug)
+    }
+
+    /// Resume command override for `slug` with [`AGENT_SESSION_ID_PLACEHOLDER`]
+    /// replaced by `quoted_session_id` (already shell-quoted). `None` when the
+    /// agent has no `resume_cmd`, so the caller uses the adapter default.
+    pub fn agent_resume_cmd(&self, slug: &str, quoted_session_id: &str) -> Option<String> {
+        self.agent(slug)
+            .and_then(|c| c.resume_cmd.clone())
+            .map(|tpl| tpl.replace(AGENT_SESSION_ID_PLACEHOLDER, quoted_session_id))
     }
 
     /// True when `slug` is listed under `agents.disabled` (case-insensitive).
@@ -462,5 +479,19 @@ mod tests {
             cfg.agent("b").and_then(|a| a.bin.clone()),
             Some("/x/b".to_string())
         );
+    }
+
+    #[test]
+    fn resume_cmd_override_substitutes_session_id() {
+        let cfg = parse(
+            "agents:\n  overrides:\n    claude:\n      resume_cmd: claude --dangerously-skip-permissions --resume {session_id}\n",
+        )
+        .unwrap();
+        assert_eq!(
+            cfg.agent_resume_cmd("claude", "ses-123"),
+            Some("claude --dangerously-skip-permissions --resume ses-123".to_string())
+        );
+        // No `resume_cmd` configured → None, so the caller uses the adapter default.
+        assert_eq!(cfg.agent_resume_cmd("codex", "ses-123"), None);
     }
 }

@@ -263,7 +263,13 @@ pub fn resume_launch_command(slug: &str, session_id: &str) -> Option<String> {
     if session_id.trim().is_empty() {
         return None;
     }
-    actor(slug)?.resume_launch_command(&shell_quote(session_id))
+    let actor = actor(slug)?;
+    let quoted = shell_quote(session_id);
+    // Config override wins over the adapter default (e.g. to add flags like
+    // `--dangerously-skip-permissions`). Global-only via `agents.overrides`.
+    crate::global_config::get()
+        .agent_resume_cmd(slug, &quoted)
+        .or_else(|| actor.resume_launch_command(&quoted))
 }
 
 /// Agents whose sessions ignore the workdir (Hermes); cached results stay

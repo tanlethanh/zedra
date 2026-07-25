@@ -30,6 +30,7 @@ agents:
       launch_cmd: hermes --tui
     claude:
       bin: /opt/homebrew/bin/claude
+      resume_cmd: claude --dangerously-skip-permissions --resume {session_id}
 workspace:
   name: My Project
 git:
@@ -94,6 +95,7 @@ A flag or environment variable always overrides both files. Each file fills in w
 - **`overrides`** — per-agent launch overrides, keyed by slug (`claude`, `codex`, `opencode`, `hermes`, `pi`, `maki`). Global file only:
   - **`bin`** — executable to launch instead of the one on `PATH`.
   - **`launch_cmd`** — full command, run verbatim. Wins over `bin`. Use it to add flags (`hermes --tui`).
+  - **`resume_cmd`** — full command for resuming a session, wins over the built-in resume. `{session_id}` is replaced with the session id. Use it to add flags (`claude --dangerously-skip-permissions --resume {session_id}`).
 
 ## `workspace`
 
