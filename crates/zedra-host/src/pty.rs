@@ -94,7 +94,14 @@ impl ShellSession {
         // Build a sanitized environment: start clean, allow only safe variables.
         // This prevents daemon secrets (AWS keys, tokens, etc.) from leaking into shells.
         cmd.env_clear();
+        let config = crate::global_config::get();
         for key in allowed_env_vars() {
+            if let Ok(val) = std::env::var(key) {
+                cmd.env(key, val);
+            }
+        }
+        // Opt-in passthrough: forward extra host env names into the shell.
+        for key in &config.terminal.env_passthrough {
             if let Ok(val) = std::env::var(key) {
                 cmd.env(key, val);
             }
@@ -103,6 +110,10 @@ impl ShellSession {
         // Always set a known-good TERM; override any inherited value.
         cmd.env("TERM", "xterm-256color");
         cmd.env("COLORTERM", "truecolor");
+        // Configured env overrides the passthrough/allowlist; per-request env wins last.
+        for (key, val) in &config.terminal.env {
+            cmd.env(key, val);
+        }
         for (key, val) in &opts.env {
             cmd.env(key, val);
         }
@@ -141,6 +152,7 @@ impl ShellSession {
 fn default_shell() -> String {
     windows_shell_from_env(&["ZEDRA_SHELL"])
         .or_else(|| windows_shell_from_env(&["ZEDRA_LAUNCH_SHELL"]))
+        .or_else(|| crate::global_config::get().terminal.shell.clone())
         .or_else(detect_parent_shell)
         .or_else(|| windows_shell_from_env(&["SHELL"]))
         .or_else(|| windows_shell_from_env(&["COMSPEC", "ComSpec"]))
@@ -149,7 +161,13 @@ fn default_shell() -> String {
 
 #[cfg(not(windows))]
 fn default_shell() -> String {
-    std::env::var("SHELL").unwrap_or_else(|_| "/bin/bash".to_string())
+    // Explicit config beats the inherited `$SHELL` so a user can pin a shell.
+    crate::global_config::get()
+        .terminal
+        .shell
+        .clone()
+        .or_else(|| std::env::var("SHELL").ok())
+        .unwrap_or_else(|| "/bin/bash".to_string())
 }
 
 #[cfg(windows)]

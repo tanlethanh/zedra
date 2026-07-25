@@ -250,7 +250,8 @@ fn lock_file_path(workdir: &Path) -> Result<PathBuf> {
     Ok(path)
 }
 
-fn lock_config_dir(workdir: &Path) -> Result<PathBuf> {
+/// Directory holding this workspace's lock file and co-located daemon state.
+pub fn lock_config_dir(workdir: &Path) -> Result<PathBuf> {
     Ok(identity::zedra_config_dir()?
         .join("workspaces")
         .join(lock_path_hash(workdir)))

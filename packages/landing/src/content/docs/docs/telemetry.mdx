@@ -35,7 +35,14 @@ zedra start --no-telemetry
 ZEDRA_TELEMETRY=0 zedra start
 ```
 
-Either turns telemetry off before any event is sent.
+To disable it for every workspace without passing a flag each time, set `telemetry.disabled` in `~/.config/zedra/config.yaml`:
+
+```yaml
+telemetry:
+  disabled: true
+```
+
+See [Configuration](/docs/configuration) for the full config file. Any of these turns telemetry off before an event is sent.
 
 ### Exclude telemetry when building from source
 

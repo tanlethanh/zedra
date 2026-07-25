@@ -97,7 +97,8 @@ impl GitRepo {
         // `-z` gives NUL-delimited records with unquoted paths; the default
         // line format quotes paths containing spaces/special chars, which
         // would otherwise corrupt every downstream lookup by that path.
-        let out = self.git(&["status", "--porcelain=v1", "-z", "--untracked-files=all"])?;
+        let untracked = crate::global_config::get().git.untracked_flag();
+        let out = self.git(&["status", "--porcelain=v1", "-z", untracked])?;
         let mut entries = Vec::new();
         let mut fields = out.split('\0').filter(|f| !f.is_empty());
         while let Some(record) = fields.next() {

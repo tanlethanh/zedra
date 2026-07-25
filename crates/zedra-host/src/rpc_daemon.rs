@@ -122,10 +122,16 @@ struct HostEnvInfo {
 
 fn collect_host_env(workdir: &std::path::Path) -> HostEnvInfo {
     HostEnvInfo {
-        hostname: hostname::get()
-            .ok()
-            .and_then(|h| h.into_string().ok())
-            .unwrap_or_else(|| "unknown".to_string()),
+        hostname: crate::global_config::get()
+            .workspace
+            .host_label
+            .clone()
+            .unwrap_or_else(|| {
+                hostname::get()
+                    .ok()
+                    .and_then(|h| h.into_string().ok())
+                    .unwrap_or_else(|| "unknown".to_string())
+            }),
         username: current_username(),
         workdir: paths::user_path_string(workdir),
         home_dir: current_home_dir(),
@@ -2168,9 +2174,11 @@ async fn finish_auth(
             } else {
                 // No existing session — create a fresh default one.
                 let workdir = &state.workdir;
-                let name = workdir
-                    .file_name()
-                    .and_then(|n| n.to_str())
+                let name = crate::global_config::get()
+                    .workspace
+                    .name
+                    .as_deref()
+                    .or_else(|| workdir.file_name().and_then(|n| n.to_str()))
                     .unwrap_or("default");
                 let session_was_existing = registry.get_by_name(name).await.is_some();
                 let s = registry.create_named(name, workdir.to_path_buf()).await;
@@ -2254,17 +2262,26 @@ pub async fn create_terminal(
     rows: u16,
     mut opts: SpawnOptions,
 ) -> Result<String> {
-    if session.terminals.lock().await.len() >= MAX_TERMINALS_PER_SESSION {
-        anyhow::bail!(
+    let max_terminals = crate::global_config::get()
+        .terminal
+        .max_terminals_limit(MAX_TERMINALS_PER_SESSION);
+    // Reserve a slot atomically so concurrent creates can't both pass a stale
+    // capacity check during the spawn gap. Held until after insert_terminal.
+    let _reservation = match session.try_reserve_terminal(max_terminals).await {
+        Some(reservation) => reservation,
+        None => anyhow::bail!(
             "session {} already has {} terminals (limit {})",
             session.id,
-            MAX_TERMINALS_PER_SESSION,
-            MAX_TERMINALS_PER_SESSION,
-        );
-    }
+            max_terminals,
+            max_terminals,
+        ),
+    };
 
     let id = session.next_terminal_id().await;
     opts.env.push(("ZEDRA_TERMINAL_ID".to_string(), id.clone()));
+    // Lets `zedra update` recognize (and not kill) the daemon owning its terminal.
+    opts.env
+        .push(("ZEDRA_HOST_PID".to_string(), std::process::id().to_string()));
     if let Some(workdir) = &opts.workdir {
         opts.env.push((
             "ZEDRA_WORKDIR".to_string(),
