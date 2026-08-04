@@ -51,12 +51,12 @@ def hasZedraReleaseSigning =
 
 android {
     namespace = 'dev.zedra.app'
-    compileSdk = 35
+    compileSdk = 36
 
     defaultConfig {
         applicationId = "dev.zedra.app"
         minSdk = 23
-        targetSdk = 35
+        targetSdk = 36
         versionCode = 5
         versionName = "0.5"
         manifestPlaceholders = [
@@ -190,6 +190,8 @@ dependencies {
     // Build-time only: drives the icon SVG -> VectorDrawable conversion task.
     iconConverter 'com.android.tools:sdk-common:31.13.2'
 
+    // EdgeToEdge.enable replaces the deprecated Window.setStatusBarColor path.
+    implementation 'androidx.activity:activity:1.8.0'
     implementation 'androidx.core:core-splashscreen:1.0.1'
     implementation 'androidx.appcompat:appcompat:1.6.1'
     implementation 'androidx.webkit:webkit:1.15.0'

@@ -413,6 +413,14 @@ app still builds, but push registration reports an error instead of a token.
 10. Expected: the scanner stays open and the camera still scans
 11. Rotate the device on iOS and confirm the square guide and button re-center
 
+## 1d. Android SDK 36 Window Behavior
+
+1. Build and install on an Android 16 (API 36) device or emulator
+2. Open the QR scanner and confirm the camera preview reaches the top and bottom screen edges with fully transparent status and navigation bars, icons legible over the preview
+3. Repeat on an Android 10 (API 29) device or emulator — same edge-to-edge result, no opaque bar strip
+4. Launch the app on a large-screen device (tablet or unfolded foldable, sw ≥ 600dp) running Android 16 and rotate it
+5. Expected: the app stays portrait — `PROPERTY_COMPAT_ALLOW_RESTRICTED_RESIZABILITY` keeps the lock honored
+
 ## 1c-Open. Open Project On A Connected Host
 
 1. Start a host daemon and pair the app with it, so at least one workspace is Connected
