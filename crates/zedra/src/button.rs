@@ -8,6 +8,30 @@ const DEFAULT_NATIVE_FLOATING_BUTTON_ICON_SIZE: f32 = 16.0;
 
 /// An outlined button - bordered, centered text.
 pub fn outline_button(cx: &App, id: impl Into<ElementId>, label: &str) -> Stateful<Div> {
+    outline_button_shell(cx, id).child(label.to_string())
+}
+
+/// [`outline_button`] with a leading icon; the icon inherits the label color.
+pub fn outline_icon_button(
+    cx: &App,
+    id: impl Into<ElementId>,
+    icon_path: &'static str,
+    label: &str,
+) -> Stateful<Div> {
+    outline_button_shell(cx, id)
+        .gap(px(theme::SPACING_XS))
+        .child(
+            svg()
+                .left(-px(theme::SPACING_SM))
+                .path(icon_path)
+                .size(px(theme::ICON_SM))
+                .flex_shrink_0()
+                .text_color(rgb(theme::text_muted(cx))),
+        )
+        .child(label.to_string())
+}
+
+fn outline_button_shell(cx: &App, id: impl Into<ElementId>) -> Stateful<Div> {
     div()
         .id(id)
         .flex()
@@ -22,7 +46,6 @@ pub fn outline_button(cx: &App, id: impl Into<ElementId>, label: &str) -> Statef
         .text_color(rgb(theme::text_primary(cx)))
         .text_size(px(theme::FONT_BODY))
         .font_weight(FontWeight::MEDIUM)
-        .child(label.to_string())
 }
 
 struct NativeFloatingButtonState {

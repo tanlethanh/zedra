@@ -505,20 +505,31 @@ impl Render for QuickActionPanel {
 
         if !self.workspaces.read(cx).connected_hosts(cx).is_empty() {
             actions = actions.child(
-                crate::button::outline_button(cx, "quick-action-open-project", "Open Project")
-                    .on_press(cx.listener(|this, _event, _window, cx| {
-                        this.handle_open_project(cx);
-                    })),
+                crate::button::outline_icon_button(
+                    cx,
+                    "quick-action-open-project",
+                    "icons/folder-plus.svg",
+                    "Open Project",
+                )
+                .on_press(cx.listener(|this, _event, _window, cx| {
+                    this.handle_open_project(cx);
+                })),
             );
         }
 
-        content = content.child(actions.child(
-            crate::button::outline_button(cx, "quick-action-scan-qr", "Scan QR Code").on_press(
-                cx.listener(|this, _event, _window, cx| {
+        content = content.child(
+            actions.child(
+                crate::button::outline_icon_button(
+                    cx,
+                    "quick-action-scan-qr",
+                    "icons/scan-line.svg",
+                    "Scan QR Code",
+                )
+                .on_press(cx.listener(|this, _event, _window, cx| {
                     this.handle_scan_qr(cx);
-                }),
+                })),
             ),
-        ));
+        );
 
         content = content
             .child(div().flex_1())

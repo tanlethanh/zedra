@@ -5,7 +5,7 @@ use gpui::*;
 use zedra_session::ConnectPhase;
 use zedra_telemetry::*;
 
-use crate::button::outline_button;
+use crate::button::outline_icon_button;
 use crate::fonts;
 use crate::platform_bridge::{self, AlertButton, HapticFeedback};
 use crate::theme;
@@ -424,17 +424,22 @@ impl Render for HomeView {
 
         if !self.workspaces.read(cx).connected_hosts(cx).is_empty() {
             actions = actions.child(
-                outline_button(cx, "home-open-project", "Open Project")
-                    .w_full()
-                    .on_press(cx.listener(|_this, _event, _window, cx| {
-                        cx.emit(HomeEvent::NavigateToOpenProject);
-                    })),
+                outline_icon_button(
+                    cx,
+                    "home-open-project",
+                    "icons/folder-plus.svg",
+                    "Open Project",
+                )
+                .w_full()
+                .on_press(cx.listener(|_this, _event, _window, cx| {
+                    cx.emit(HomeEvent::NavigateToOpenProject);
+                })),
             );
         }
 
         content = content.child(
             actions.child(
-                outline_button(cx, "home-scan-qr", "Scan QR Code")
+                outline_icon_button(cx, "home-scan-qr", "icons/scan-line.svg", "Scan QR Code")
                     .w_full()
                     .on_press(cx.listener(|this, _event, _window, _cx| {
                         this.handle_scan_qr();

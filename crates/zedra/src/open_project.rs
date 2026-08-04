@@ -332,7 +332,7 @@ fn action_bar(
         .right_0()
         .px(px(theme::SUBSCREEN_PADDING_X))
         .pt(px(theme::SPACING_SM))
-        .pb(px(bottom_inset))
+        .pb(px(bottom_inset.max(theme::SPACING_LG)))
         .bg(rgb(theme::bg_surface(cx)))
         .border_t_1()
         .border_color(rgb(theme::border_subtle(cx)))
