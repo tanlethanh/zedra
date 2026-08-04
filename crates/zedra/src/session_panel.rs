@@ -243,17 +243,19 @@ fn disconnect_button(cx: &mut Context<SessionPanel>) -> impl IntoElement {
     div()
         .id("session-disconnect-btn")
         .flex_shrink_0()
-        .p(px(6.0))
+        .py(px(6.0))
+        .pl(px(6.0))
+        // No right padding: keeps the icon flush with the chevron below it.
         .rounded(px(6.0))
         .cursor_pointer()
-        .hit_slop(px(8.0))
+        .hit_slop(px(12.0))
         .on_press(cx.listener(|_this, _event, window, cx| {
             window.dispatch_action(workspace_action::RequestDisconnect.boxed_clone(), cx);
         }))
         .child(
             svg()
                 .path("icons/log-out.svg")
-                .size(px(theme::ICON_SM))
+                .size(px(theme::ICON_XS))
                 .text_color(rgb(theme::accent_red(cx))),
         )
 }
