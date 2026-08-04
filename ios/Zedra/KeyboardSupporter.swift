@@ -31,36 +31,49 @@ final class KeyboardSupporter: NSObject {
     private var repeatingKey: String?
     private var isDarkTheme = true
 
-    func makeAccessoryView(width: CGFloat, sendKey: @escaping (String) -> Void) -> UIView {
+    static let barHeight: CGFloat = 44.0
+
+    /// Builds the key bar. `bottomPadding` > 0 pins it above the safe area instead
+    /// of riding the keyboard, so the background extends under the home indicator
+    /// and the keyboard corner fills are left out.
+    func makeAccessoryView(
+        width: CGFloat,
+        bottomPadding: CGFloat = 0.0,
+        sendKey: @escaping (String) -> Void
+    ) -> UIView {
         stopRepeating()
         self.sendKey = sendKey
         buttons.removeAll()
 
-        let height: CGFloat = 44.0
-        let bar = UIView(frame: CGRect(x: 0, y: 0, width: width, height: height))
+        let height = Self.barHeight
+        let bar = UIView(frame: CGRect(x: 0, y: 0, width: width, height: height + bottomPadding))
         bar.clipsToBounds = false
 
         let border = UIView(frame: CGRect(x: 0, y: 0, width: width, height: 0.33))
         bar.addSubview(border)
         topBorder = border
 
-        // The system keyboard has rounded top corners, which can expose the window
-        // background beside an inputAccessoryView. Fill only those side gaps.
-        let cornerFillWidth: CGFloat = 18.0
-        let cornerFillHeight: CGFloat = 12.0
-        let leftFill = UIView(frame: CGRect(x: 0, y: height, width: cornerFillWidth, height: cornerFillHeight))
-        let rightFill = UIView(
-            frame: CGRect(
-                x: width - cornerFillWidth,
-                y: height,
-                width: cornerFillWidth,
-                height: cornerFillHeight
+        if bottomPadding == 0.0 {
+            // The system keyboard has rounded top corners, which can expose the window
+            // background beside an inputAccessoryView. Fill only those side gaps.
+            let cornerFillWidth: CGFloat = 18.0
+            let cornerFillHeight: CGFloat = 12.0
+            let leftFill = UIView(
+                frame: CGRect(x: 0, y: height, width: cornerFillWidth, height: cornerFillHeight)
             )
-        )
-        bar.addSubview(leftFill)
-        bar.addSubview(rightFill)
-        leftKeyboardCornerFill = leftFill
-        rightKeyboardCornerFill = rightFill
+            let rightFill = UIView(
+                frame: CGRect(
+                    x: width - cornerFillWidth,
+                    y: height,
+                    width: cornerFillWidth,
+                    height: cornerFillHeight
+                )
+            )
+            bar.addSubview(leftFill)
+            bar.addSubview(rightFill)
+            leftKeyboardCornerFill = leftFill
+            rightKeyboardCornerFill = rightFill
+        }
 
         let buttonWidth = width / CGFloat(keySpecs.count)
 

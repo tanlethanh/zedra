@@ -117,6 +117,9 @@ pub struct TerminalView {
     /// Cached from terminal mode; updated each render so parent views can read without
     /// creating a GPUI dependency on the inner terminal entity.
     pub is_alt_screen: bool,
+    /// With a key bar pinned below the terminal, dismissing the keyboard must not
+    /// drop focus — the bar keeps sending keystrokes to this terminal.
+    pub retains_focus_without_keyboard: bool,
     terminal_theme: TerminalTheme,
     _event_task: Task<()>,
     _subscriptions: Vec<Subscription>,
@@ -186,6 +189,7 @@ impl TerminalView {
             keyboard_content_offset: px(0.0),
             suppress_touch_scroll_until: None,
             is_alt_screen: false,
+            retains_focus_without_keyboard: false,
             terminal_theme: TerminalTheme::dark(),
             _event_task: event_task,
             _subscriptions: vec![],
@@ -284,6 +288,12 @@ impl TerminalView {
 
     pub fn is_focused(&self, window: &Window) -> bool {
         self.focus_handle.is_focused(window)
+    }
+
+    /// Focus without raising the software keyboard — the terminal uses manual focus,
+    /// so the keyboard only appears where it is requested explicitly.
+    pub fn focus_without_keyboard(&self, window: &mut Window, cx: &mut Context<Self>) {
+        self.focus_handle.focus(window, cx);
     }
 
     pub fn dismiss_dictation_preview(&mut self, cx: &mut Context<Self>) {
@@ -535,7 +545,9 @@ impl TerminalView {
         if is_focused && keyboard_visible {
             // window.blur only blurs focus, not the keyboard — hide it explicitly.
             window.hide_soft_keyboard();
-            window.blur();
+            if !self.retains_focus_without_keyboard {
+                window.blur();
+            }
             cx.notify();
             return;
         }

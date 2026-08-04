@@ -20,6 +20,7 @@ use crate::platform_bridge::{
 use crate::settings::{ThemeStateEvent, theme_state as theme_entity};
 use crate::telemetry::view_telemetry;
 use crate::terminal_state::TerminalState;
+use crate::ui::any_drawer_open;
 use crate::workspace_state::{WorkspaceState, WorkspaceStateEvent};
 
 pub const TERMINAL_PENDING_ID: &str = "___PENDING___";
@@ -126,6 +127,33 @@ impl WorkspaceTerminal {
             force,
             cx,
         );
+    }
+
+    /// Keeps terminal focus in step with the pinned key bar: the bar sends keystrokes
+    /// to whatever the terminal input handler is attached to, so the terminal holds
+    /// focus for as long as the bar is on screen for it, and gives it up otherwise.
+    fn sync_key_bar_focus(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let enabled = crate::settings::key_bar_always_visible();
+        self.terminal_view.update(cx, |terminal_view, _cx| {
+            terminal_view.retains_focus_without_keyboard = enabled;
+        });
+        if !enabled {
+            return;
+        }
+
+        let is_active = self.workspace_state.read(cx).active_main_view_terminal_id()
+            == Some(self.terminal_id.as_str());
+        let should_hold_focus = is_active && !any_drawer_open();
+        let is_focused = self.terminal_view.read(cx).is_focused(window);
+
+        if should_hold_focus && !is_focused {
+            self.terminal_view.update(cx, |terminal_view, cx| {
+                terminal_view.focus_without_keyboard(window, cx);
+            });
+        } else if !should_hold_focus && is_focused {
+            window.hide_soft_keyboard();
+            window.focus(&self.container_focus, cx);
+        }
     }
 
     pub fn deactivate(&mut self, cx: &mut Context<Self>) {
@@ -428,7 +456,17 @@ impl WorkspaceTerminal {
             },
         );
 
-        let mut subscriptions = vec![attach_sub, terminal_events_sub, keyboard_offset_hook];
+        // Which main view is active decides whether this terminal holds focus, and
+        // that change does not re-render this view on its own.
+        let main_view_sub = cx.observe_in(&workspace_state, window, |this, _, window, cx| {
+            this.sync_key_bar_focus(window, cx);
+        });
+        let mut subscriptions = vec![
+            attach_sub,
+            terminal_events_sub,
+            keyboard_offset_hook,
+            main_view_sub,
+        ];
         if let Some(theme_state) = theme_entity(cx) {
             subscriptions.push(
                 cx.subscribe(&theme_state, |this, _, _: &ThemeStateEvent, cx| {
@@ -605,8 +643,30 @@ impl Render for WorkspaceTerminal {
         let terminal_owns_keyboard = self.terminal_view.read(cx).is_focused(window)
             && window.is_soft_keyboard_visible()
             && window.has_active_keyboard_accessory();
+        // Drawer state and the settings toggle both reach this view only as a redraw,
+        // so reconcile focus here rather than from a subscription.
+        let key_bar_enabled = crate::settings::key_bar_always_visible();
+        let holds_focus = self.terminal_view.read(cx).is_focused(window);
+        let should_hold_focus = key_bar_enabled && !any_drawer_open();
+        if self.terminal_view.read(cx).retains_focus_without_keyboard != key_bar_enabled
+            || (key_bar_enabled && should_hold_focus != holds_focus)
+        {
+            let this = cx.entity();
+            window.defer(cx, move |window, cx| {
+                this.update(cx, |this, cx| this.sync_key_bar_focus(window, cx));
+            });
+        }
+
+        // The pinned bar replaces the keyboard accessory once the keyboard is
+        // down, so exactly one of the two ever reserves space.
+        let pinned_key_bar_visible =
+            !window.is_soft_keyboard_visible() && !any_drawer_open() && key_bar_enabled;
+        // Reserve the bar's space whenever the setting is on, even while the bar is
+        // hidden behind a drawer — otherwise terminal content jumps on every toggle.
         let keyboard_inset = if terminal_owns_keyboard {
             Self::keyboard_inset()
+        } else if key_bar_enabled && !window.is_soft_keyboard_visible() {
+            crate::key_bar::pinned_key_bar_inset()
         } else {
             px(0.0)
         };
@@ -655,6 +715,12 @@ impl Render for WorkspaceTerminal {
                 div.pb(keyboard_inset)
             })
             .child(self.terminal_view.clone())
+            .when(pinned_key_bar_visible, |container| {
+                container.child(crate::key_bar::pinned_key_bar((
+                    "terminal-pinned-key-bar",
+                    cx.entity_id(),
+                )))
+            })
             .when(self.scroll_to_bottom_button_visible, move |container| {
                 container.child(
                     native_floating_button(

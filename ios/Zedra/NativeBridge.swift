@@ -107,6 +107,11 @@ func ios_set_keyboard_accessory_theme(_ isDark: Bool) {
     NativePresentationTheme.setDark(isDark)
 }
 
+@_cdecl("ios_set_pinned_key_bar_visible")
+func ios_set_pinned_key_bar_visible(_ visible: Bool) {
+    GPUIRuntimeController.setPinnedKeyBarVisible(visible)
+}
+
 #if !ZEDRA_NO_TELEMETRY
 @_cdecl("zedra_firebase_initialize")
 func zedra_firebase_initialize_bridge() {

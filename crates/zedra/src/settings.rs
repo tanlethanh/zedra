@@ -1,4 +1,5 @@
 use std::path::PathBuf;
+use std::sync::atomic::{AtomicI8, Ordering};
 
 use gpui::{App, Context, Entity, EventEmitter, Global, WeakEntity};
 use serde::{Deserialize, Serialize};
@@ -20,6 +21,10 @@ struct AppSettings {
     /// Water droplet effect. `None`/absent = disabled (default-off).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     droplet_enabled: Option<bool>,
+    /// Keep the terminal key bar on screen while the keyboard is collapsed.
+    /// `None`/absent = enabled (default-on).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    key_bar_always_visible: Option<bool>,
 }
 
 pub enum ThemeStateEvent {
@@ -192,6 +197,42 @@ pub fn set_droplet_enabled(enabled: bool) {
     settings.droplet_enabled = Some(enabled);
     if let Err(err) = write_settings(&settings) {
         warn!(err = %err, "settings: failed to save droplet preference");
+    }
+}
+
+/// Runtime gate for the pinned key bar. `-1` = not loaded from disk yet.
+static KEY_BAR_ALWAYS_VISIBLE: AtomicI8 = AtomicI8::new(-1);
+
+/// Whether the terminal key bar stays on screen once the keyboard collapses.
+/// Default on. Cached in an atomic because the terminal reads it every render.
+pub fn key_bar_always_visible() -> bool {
+    match KEY_BAR_ALWAYS_VISIBLE.load(Ordering::Relaxed) {
+        0 => false,
+        1 => true,
+        _ => {
+            let enabled = read_key_bar_always_visible();
+            KEY_BAR_ALWAYS_VISIBLE.store(enabled as i8, Ordering::Relaxed);
+            enabled
+        }
+    }
+}
+
+fn read_key_bar_always_visible() -> bool {
+    match read_settings() {
+        Ok(settings) => settings.key_bar_always_visible.unwrap_or(true),
+        Err(err) => {
+            info!(err = %err, "settings: using default key bar preference");
+            true
+        }
+    }
+}
+
+pub fn set_key_bar_always_visible(enabled: bool) {
+    KEY_BAR_ALWAYS_VISIBLE.store(enabled as i8, Ordering::Relaxed);
+    let mut settings = read_settings().unwrap_or_default();
+    settings.key_bar_always_visible = Some(enabled);
+    if let Err(err) = write_settings(&settings) {
+        warn!(err = %err, "settings: failed to save key bar preference");
     }
 }
 

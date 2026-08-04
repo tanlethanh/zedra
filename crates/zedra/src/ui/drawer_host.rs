@@ -1,9 +1,19 @@
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::time::Duration;
 
 use gpui::prelude::FluentBuilder;
 use gpui::*;
 
 use crate::theme;
+
+/// Drawer hosts currently open, across every host in the app. Views that must
+/// yield to a drawer (the pinned terminal key bar) hold no handle to each host,
+/// so open-ness is tracked globally.
+static OPEN_DRAWERS: AtomicUsize = AtomicUsize::new(0);
+
+pub fn any_drawer_open() -> bool {
+    OPEN_DRAWERS.load(Ordering::Relaxed) > 0
+}
 
 const DRAWER_DRAG_START_THRESHOLD: f32 = 10.0;
 const DRAWER_VERTICAL_CANCEL_RATIO: f32 = 1.25;
@@ -158,6 +168,31 @@ impl DrawerHost {
         }
         self.start_snap(0.0, window, cx);
         cx.emit(DrawerEvent::Closed);
+    }
+
+    fn state_is_open(state: DrawerState) -> bool {
+        matches!(state, DrawerState::Opened | DrawerState::Snapping)
+    }
+
+    /// Single writer for `drawer_state` so the global open count stays accurate.
+    /// A flip refreshes every window: views that gate on `any_drawer_open` observe
+    /// no entity of ours.
+    fn set_drawer_state(&mut self, state: DrawerState, cx: &mut App) {
+        if self.drawer_state == state {
+            return;
+        }
+        let was_open = Self::state_is_open(self.drawer_state);
+        self.drawer_state = state;
+        let is_open = Self::state_is_open(state);
+        if was_open == is_open {
+            return;
+        }
+        if is_open {
+            OPEN_DRAWERS.fetch_add(1, Ordering::Relaxed);
+        } else {
+            OPEN_DRAWERS.fetch_sub(1, Ordering::Relaxed);
+        }
+        cx.refresh_windows();
     }
 
     pub fn is_open(&self) -> bool {
@@ -378,11 +413,12 @@ impl DrawerHost {
 
         if (current_offset - target).abs() < 1.0 {
             self.drawer_offset = target;
-            self.drawer_state = if target > 0.0 {
+            let state = if target > 0.0 {
                 DrawerState::Opened
             } else {
                 DrawerState::Closed
             };
+            self.set_drawer_state(state, cx);
             self.snap_target = None;
             self.snap_started_at = None;
             self._snap_task = None;
@@ -395,11 +431,12 @@ impl DrawerHost {
         self.snap_target = Some(target);
         self.snap_started_at = Some(std::time::Instant::now());
         self.animation_id += 1;
-        self.drawer_state = if target > 0.0 {
+        let state = if target > 0.0 {
             DrawerState::Snapping
         } else {
             DrawerState::Closing
         };
+        self.set_drawer_state(state, cx);
 
         self._snap_task = Some(cx.spawn(async move |this, cx| {
             cx.background_executor()
@@ -407,11 +444,12 @@ impl DrawerHost {
                 .await;
             this.update(cx, |this, cx| {
                 this.drawer_offset = target;
-                this.drawer_state = if target > 0.0 {
+                let state = if target > 0.0 {
                     DrawerState::Opened
                 } else {
                     DrawerState::Closed
                 };
+                this.set_drawer_state(state, cx);
                 this.snap_target = None;
                 this.snap_started_at = None;
                 cx.notify();
@@ -420,6 +458,14 @@ impl DrawerHost {
         }));
 
         cx.notify();
+    }
+}
+
+impl Drop for DrawerHost {
+    fn drop(&mut self) {
+        if Self::state_is_open(self.drawer_state) {
+            OPEN_DRAWERS.fetch_sub(1, Ordering::Relaxed);
+        }
     }
 }
 
@@ -754,7 +800,7 @@ mod tests {
             .update(&mut cx, |drawer_host, window, cx| {
                 let width = f32::from(drawer_host.drawer_width);
                 drawer_host.drawer_offset = width;
-                drawer_host.drawer_state = DrawerState::Opened;
+                drawer_host.set_drawer_state(DrawerState::Opened, cx);
                 drawer_host.set_pending_gesture(1, point(px(255.0), px(212.0)), DragOrigin::Panel);
 
                 assert!(matches!(

@@ -1128,6 +1128,31 @@ printf '\033]8;;file:///tmp/zedra-long-code.rs:41:1\033\\/tmp/zedra-long-code.rs
 6. Keep the same terminal active, show the software keyboard again, then press `Tab`, `Enter`, and an arrow key in the accessory bar
 7. Expected: each key still reaches the PTY after reconnect; the accessory bar does not keep sending to a stale terminal channel
 
+## 11g. Pinned Key Bar With The Keyboard Collapsed
+
+1. Connect to a session on iOS and on Android, then open the terminal view without tapping the terminal
+2. Expected: the key bar sits above the home indicator or navigation bar, styled exactly like the keyboard accessory bar
+3. Tap `Esc`, `Tab`, `Enter`, and each arrow in the pinned bar
+4. Expected: each key reaches the PTY exactly once with the keyboard still down
+5. Press and hold a pinned arrow, then release it
+6. Expected: the arrow repeats while held and stops on release
+7. Tap the terminal to raise the keyboard
+8. Expected: the pinned bar disappears as the keyboard accessory bar takes over; exactly one bar is visible at any time
+9. Dismiss the keyboard again
+10. Expected: the pinned bar returns and terminal content stays fully visible above it, never clipped behind it
+11. Open the workspace drawer
+12. Expected: the pinned bar hides while the drawer is open, the terminal gives up focus, and both return when the drawer closes — with the keyboard still down
+13. Navigate away from the terminal (settings, file preview, workspace list)
+14. Expected: the pinned bar hides immediately on every non-terminal screen and the terminal is no longer focused; returning to it refocuses without raising the keyboard
+15. Open the floating file search or the git commit message input over the terminal
+16. Expected: focus and the keyboard go to that input, and the terminal keeps no focus of its own
+17. Open a terminal, tap it to raise the keyboard, then tap again to dismiss it
+18. Expected: the keyboard drops but the terminal stays focused (active cursor), pinned keys keep reaching the PTY, and a further tap raises the keyboard again
+19. Set Settings → Terminal → Always show keypad to Off, then return to the terminal with the keyboard down
+20. Expected: no pinned bar; tap-to-dismiss drops both keyboard and focus as before, and the keyboard accessory bar still appears when the keyboard is raised
+21. Rotate the device with the pinned bar visible
+22. Expected: the bar spans the new width with evenly spaced keys
+
 ## 12. Quick Action Terminal Navigation
 
 1. Connect to a session with at least two open terminals

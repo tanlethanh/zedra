@@ -17,6 +17,10 @@ static SCREEN_SCALE: AtomicU32 = AtomicU32::new(f32::to_bits(3.0));
 /// Updated by UIKeyboardWillShow/WillHide notifications via Obj-C → FFI.
 static KEYBOARD_HEIGHT_PX: AtomicU32 = AtomicU32::new(0);
 
+/// Height of the pinned key bar in physical pixels, including safe-area padding.
+/// 0 = hidden. Pushed by UIKit once the bar is laid out.
+static PINNED_KEY_BAR_HEIGHT_PX: AtomicU32 = AtomicU32::new(0);
+
 /// Safe area insets in physical pixels (points × scale), matching the Android convention.
 static SAFE_AREA_TOP: AtomicU32 = AtomicU32::new(0);
 static SAFE_AREA_BOTTOM: AtomicU32 = AtomicU32::new(0);
@@ -37,6 +41,15 @@ pub extern "C" fn zedra_ios_set_screen_scale(scale: f32) {
 #[unsafe(no_mangle)]
 pub extern "C" fn zedra_ios_set_keyboard_height(height_px: u32) {
     KEYBOARD_HEIGHT_PX.store(height_px, Ordering::Relaxed);
+    super::app::notify_main_window();
+}
+
+/// Called from Swift when the pinned key bar is shown, hidden, or re-laid out.
+///
+/// `height_px` is the bar's full height (including safe-area padding) × scale, 0 when hidden.
+#[unsafe(no_mangle)]
+pub extern "C" fn zedra_ios_set_pinned_key_bar_height(height_px: u32) {
+    PINNED_KEY_BAR_HEIGHT_PX.store(height_px, Ordering::Relaxed);
     super::app::notify_main_window();
 }
 
@@ -192,6 +205,8 @@ unsafe extern "C" {
     fn ios_system_prefers_dark_theme() -> i32;
     /// Apply the app appearance to the native keyboard accessory bar.
     fn ios_set_keyboard_accessory_theme(is_dark: bool);
+    /// Show or hide the key bar pinned above the safe area when the keyboard is down.
+    fn ios_set_pinned_key_bar_visible(visible: bool);
     /// Acquire an image natively. source: 0 = photo library, 1 = clipboard.
     /// Delivers exactly one of zedra_ios_image_acquire_{result,cancel,error}(callback_id, ..).
     fn ios_acquire_image(callback_id: u32, source: i32);
@@ -228,6 +243,14 @@ impl PlatformBridge for IosBridge {
             }
             gpui_ios_is_keyboard_visible(window)
         }
+    }
+
+    fn set_pinned_key_bar_visible(&self, visible: bool) {
+        unsafe { ios_set_pinned_key_bar_visible(visible) };
+    }
+
+    fn pinned_key_bar_height(&self) -> u32 {
+        PINNED_KEY_BAR_HEIGHT_PX.load(Ordering::Relaxed)
     }
 
     fn launch_qr_scanner(&self) {

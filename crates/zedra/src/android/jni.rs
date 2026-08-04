@@ -41,6 +41,13 @@ static MAIN_ACTIVITY_CLASS: Mutex<Option<GlobalRef>> = Mutex::new(None);
 const MAIN_ACTIVITY_CLASS_NAME: &str = "dev/zedra/app/MainActivity";
 static INIT: Once = Once::new();
 static FILES_DIR: Mutex<Option<String>> = Mutex::new(None);
+/// Whether the terminal wants the pinned key bar on screen. Polled from Kotlin.
+static PINNED_KEY_BAR_REQUESTED: std::sync::atomic::AtomicBool =
+    std::sync::atomic::AtomicBool::new(false);
+/// Height of the pinned key bar in physical pixels, including safe-area padding.
+/// 0 = hidden. Pushed by `MainActivity` once the bar is laid out.
+static PINNED_KEY_BAR_HEIGHT_PX: std::sync::atomic::AtomicU32 =
+    std::sync::atomic::AtomicU32::new(0);
 static APP_VERSION: Mutex<Option<String>> = Mutex::new(None);
 static APP_BUILD_NUMBER: Mutex<Option<String>> = Mutex::new(None);
 static OS_VERSION: Mutex<Option<String>> = Mutex::new(None);
@@ -602,6 +609,26 @@ pub extern "system" fn Java_dev_zedra_app_MainActivity_nativeKeyboardAccessoryKe
 }
 
 #[unsafe(no_mangle)]
+pub extern "system" fn Java_dev_zedra_app_MainActivity_nativePinnedKeyBarVisible(
+    _env: JNIEnv,
+    _class: JClass,
+) -> jboolean {
+    PINNED_KEY_BAR_REQUESTED.load(std::sync::atomic::Ordering::Relaxed) as jboolean
+}
+
+#[unsafe(no_mangle)]
+pub extern "system" fn Java_dev_zedra_app_MainActivity_nativeSetPinnedKeyBarHeight(
+    _env: JNIEnv,
+    _class: JClass,
+    height_px: jint,
+) {
+    PINNED_KEY_BAR_HEIGHT_PX.store(
+        height_px.max(0) as u32,
+        std::sync::atomic::Ordering::Relaxed,
+    );
+}
+
+#[unsafe(no_mangle)]
 pub extern "system" fn Java_dev_zedra_app_MainActivity_nativeKeyboardAccessoryVisible(
     _env: JNIEnv,
     _class: JClass,
@@ -738,6 +765,17 @@ pub fn hide_keyboard() {
             }
         });
     });
+}
+
+/// Stores the request only. `MainActivity` polls it from its per-frame accessory
+/// update, matching `nativeKeyboardAccessoryVisible` — a Rust→Java push can be
+/// dropped when the call lands at a bad moment, and a lost show never recovers.
+pub fn set_pinned_key_bar_visible(visible: bool) {
+    PINNED_KEY_BAR_REQUESTED.store(visible, std::sync::atomic::Ordering::Relaxed);
+}
+
+pub fn get_pinned_key_bar_height() -> u32 {
+    PINNED_KEY_BAR_HEIGHT_PX.load(std::sync::atomic::Ordering::Relaxed)
 }
 
 pub fn launch_qr_scanner() {

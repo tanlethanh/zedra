@@ -32,6 +32,14 @@ impl PlatformBridge for AndroidBridge {
         jni::get_keyboard_height() > 0
     }
 
+    fn set_pinned_key_bar_visible(&self, visible: bool) {
+        jni::set_pinned_key_bar_visible(visible)
+    }
+
+    fn pinned_key_bar_height(&self) -> u32 {
+        jni::get_pinned_key_bar_height()
+    }
+
     fn launch_qr_scanner(&self) {
         jni::launch_qr_scanner()
     }

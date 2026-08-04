@@ -78,6 +78,7 @@ pub struct SettingsView {
     delta_busy: bool,
     telemetry_enabled: bool,
     droplet_enabled: bool,
+    key_bar_always_visible: bool,
     _delta_observe: Subscription,
 }
 
@@ -103,6 +104,7 @@ impl SettingsView {
             delta_busy: false,
             telemetry_enabled: settings::read_telemetry_enabled(),
             droplet_enabled: settings::read_droplet_enabled(),
+            key_bar_always_visible: settings::key_bar_always_visible(),
             _delta_observe: observe,
         }
     }
@@ -431,6 +433,16 @@ impl SettingsView {
         cx.notify();
     }
 
+    fn set_key_bar_always_visible(&mut self, enabled: bool, cx: &mut Context<Self>) {
+        if self.key_bar_always_visible == enabled {
+            return;
+        }
+        platform_bridge::trigger_haptic(HapticFeedback::SelectionChanged);
+        self.key_bar_always_visible = enabled;
+        settings::set_key_bar_always_visible(enabled);
+        cx.notify();
+    }
+
     fn open_telemetry_docs(&self) {
         platform_bridge::trigger_haptic(HapticFeedback::ImpactLight);
         platform_bridge::bridge().open_url(TELEMETRY_DOCS_URL);
@@ -592,6 +604,7 @@ impl Render for SettingsView {
         let preference = self.theme_state.read(cx).preference();
         let telemetry_enabled = self.telemetry_enabled;
         let droplet_enabled = self.droplet_enabled;
+        let key_bar_always_visible = self.key_bar_always_visible;
 
         div()
             .id("settings-view")
@@ -719,6 +732,17 @@ impl Render for SettingsView {
                                     }),
                                 ))
                             })
+                            .child(section_header(cx, "Terminal"))
+                            .child(key_bar_toggle(
+                                cx,
+                                key_bar_always_visible,
+                                cx.listener(|this, _event, _window, cx| {
+                                    this.set_key_bar_always_visible(true, cx);
+                                }),
+                                cx.listener(|this, _event, _window, cx| {
+                                    this.set_key_bar_always_visible(false, cx);
+                                }),
+                            ))
                             .child(section_header(cx, "Privacy"))
                             .child(telemetry_toggle(
                                 cx,
@@ -1017,6 +1041,30 @@ fn droplet_toggle(
         "settings-droplet-toggle",
         "Water droplet",
         "A playful droplet to flick around",
+        theme::text_secondary(cx),
+        control,
+    )
+}
+
+fn key_bar_toggle(
+    cx: &App,
+    enabled: bool,
+    on_enable: impl Fn(&PressEvent, &mut Window, &mut App) + 'static,
+    on_disable: impl Fn(&PressEvent, &mut Window, &mut App) + 'static,
+) -> impl IntoElement {
+    let control = segmented_toggle(
+        cx,
+        "settings-key-bar-on",
+        "settings-key-bar-off",
+        enabled,
+        on_enable,
+        on_disable,
+    );
+    toggle_row(
+        cx,
+        "settings-key-bar-toggle",
+        "Always show keypad",
+        "Esc, Tab, and arrows stay up when the keyboard is down",
         theme::text_secondary(cx),
         control,
     )

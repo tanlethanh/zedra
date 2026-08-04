@@ -10,6 +10,11 @@ private func gpui_ios_handle_keyboard_accessory_action(
     _ windowPtr: UnsafeMutableRawPointer?, _ action: UnsafePointer<CChar>?
 ) -> Bool
 
+@_silgen_name("gpui_ios_handle_key_bar_action")
+private func gpui_ios_handle_key_bar_action(
+    _ windowPtr: UnsafeMutableRawPointer?, _ action: UnsafePointer<CChar>?
+) -> Bool
+
 @_silgen_name("gpui_ios_hide_keyboard")
 private func gpui_ios_hide_keyboard(_ windowPtr: UnsafeMutableRawPointer?)
 
@@ -41,6 +46,15 @@ final class GPUIRuntimeController: NSObject {
     private var gpuiWindow: UnsafeMutableRawPointer?
     private var displayLink: CADisplayLink?
     private let keyboardAccessoryController = KeyboardSupporter()
+    /// Second instance of the same bar, hosted above the safe area while the
+    /// keyboard is down. Separate instance because each one owns its own buttons
+    /// and repeat timer.
+    private let pinnedKeyBarController = KeyboardSupporter()
+    private var pinnedKeyBarView: UIView?
+    private var pinnedKeyBarVisible = false
+    // Keep the keys clear of the home indicator's swipe region without spending the
+    // whole 34pt safe-area inset on empty space.
+    private static let maxPinnedKeyBarBottomPadding: CGFloat = 22.0
 
     /// Dismiss the main GPUI window's software keyboard. Manual-focus surfaces
     /// (the terminal) keep `keyboard_session_requested` set, so a native sheet
@@ -107,15 +121,20 @@ final class GPUIRuntimeController: NSObject {
     func applicationDidBecomeActive() {
         gpui_ios_did_become_active(gpuiApp)
         pushSafeAreaInsets()
+        // Rust pushes bar visibility once; re-apply in case the window was not
+        // attached yet when it did.
+        updatePinnedKeyBar(visible: pinnedKeyBarVisible)
     }
 
     func applicationWillResignActive() {
         keyboardAccessoryController.stopRepeating()
+        pinnedKeyBarController.stopRepeating()
         gpui_ios_will_resign_active(gpuiApp)
     }
 
     func applicationDidEnterBackground() {
         keyboardAccessoryController.stopRepeating()
+        pinnedKeyBarController.stopRepeating()
         gpui_ios_did_enter_background(gpuiApp)
         zedra_ios_app_did_enter_background()
         stopDisplayLink()
@@ -123,6 +142,7 @@ final class GPUIRuntimeController: NSObject {
 
     func applicationWillTerminate() {
         keyboardAccessoryController.stopRepeating()
+        pinnedKeyBarController.stopRepeating()
         stopDisplayLink()
         zedra_ios_app_will_terminate()
         gpui_ios_will_terminate(gpuiApp)
@@ -173,6 +193,10 @@ final class GPUIRuntimeController: NSObject {
     private func orientationDidChange() {
         pushSafeAreaInsets()
         pushWindowSize()
+        // The bar is laid out with frames for a fixed width; rebuild it on rotation.
+        pinnedKeyBarView?.removeFromSuperview()
+        pinnedKeyBarView = nil
+        updatePinnedKeyBar(visible: pinnedKeyBarVisible)
     }
 
     private func sendKeyboardAccessoryKey(_ key: String) {
@@ -215,6 +239,60 @@ final class GPUIRuntimeController: NSObject {
     static func setKeyboardAccessoryTheme(isDark: Bool) {
         DispatchQueue.main.async {
             activeController?.keyboardAccessoryController.applyTheme(isDark: isDark)
+            activeController?.pinnedKeyBarController.applyTheme(isDark: isDark)
+        }
+    }
+
+    static func setPinnedKeyBarVisible(_ visible: Bool) {
+        DispatchQueue.main.async {
+            activeController?.updatePinnedKeyBar(visible: visible)
+        }
+    }
+
+    private func updatePinnedKeyBar(visible: Bool) {
+        pinnedKeyBarVisible = visible
+        guard visible else {
+            pinnedKeyBarController.stopRepeating()
+            pinnedKeyBarView?.isHidden = true
+            zedra_ios_set_pinned_key_bar_height(0)
+            return
+        }
+        guard let window = uiWindow else { return }
+
+        let width = window.bounds.width
+        // The full safe-area inset (34pt) leaves a large empty band under the keys;
+        // clear the home indicator and no more.
+        let bottomPadding = min(window.safeAreaInsets.bottom, Self.maxPinnedKeyBarBottomPadding)
+        let height = KeyboardSupporter.barHeight + bottomPadding
+        let bar =
+            pinnedKeyBarView
+            ?? {
+                let bar = pinnedKeyBarController.makeAccessoryView(
+                    width: width,
+                    bottomPadding: bottomPadding
+                ) { [weak self] key in
+                    self?.sendPinnedKeyBarKey(key)
+                }
+                window.addSubview(bar)
+                pinnedKeyBarView = bar
+                return bar
+            }()
+        bar.frame = CGRect(x: 0, y: window.bounds.height - height, width: width, height: height)
+        bar.isHidden = false
+        window.bringSubviewToFront(bar)
+        zedra_ios_set_pinned_key_bar_height(UInt32(height * UIScreen.main.scale))
+    }
+
+    /// The pinned bar runs with no keyboard session, so the accessory entry point
+    /// rejects it; `handle_key_bar_action` reaches the same input handler, which
+    /// encodes keys against the terminal's live mode.
+    private func sendPinnedKeyBarKey(_ key: String) {
+        let handled =
+            key.withCString { action in
+                gpui_ios_handle_key_bar_action(gpuiWindow, action)
+            }
+        if !handled {
+            key.withCString { zedra_ios_send_key_input($0) }
         }
     }
 
