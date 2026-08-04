@@ -181,11 +181,12 @@ public class QRScannerActivity extends AppCompatActivity {
                 ProcessCameraProvider cameraProvider = cameraProviderFuture.get();
 
                 // Preview use case — connect to the PreviewView surface.
-                // Use a low resolution to minimize GPU memory consumption;
-                // the camera preview competes with Vulkan for the same shared
-                // memory pool on Mali UMA GPUs.
+                // 720p is the floor that still looks sharp once PreviewView crops it to
+                // fill the screen; lower reads as a blurry, zoomed-in image. Keep it here
+                // — the preview competes with Vulkan for the same shared memory pool on
+                // Mali UMA GPUs.
                 Preview preview = new Preview.Builder()
-                        .setTargetResolution(new Size(640, 480))
+                        .setTargetResolution(new Size(1280, 720))
                         .build();
                 preview.setSurfaceProvider(previewView.getSurfaceProvider());
 
