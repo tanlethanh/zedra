@@ -205,6 +205,8 @@ pub struct WorkspaceState {
     pub workdir: String,
     pub homedir: String,
     pub hostname: String,
+    #[serde(default)]
+    pub username: String,
     // Workspace-relative docs tree directories hidden by the user.
     #[serde(default)]
     pub docs_tree_collapsed_dirs: Vec<String>,
@@ -244,6 +246,7 @@ struct WorkspaceStateSyncSnapshot {
     workdir: String,
     homedir: String,
     hostname: String,
+    username: String,
     connect_phase: Option<ConnectPhase>,
     active_terminal_id: Option<String>,
     terminal_ids: Vec<String>,
@@ -265,6 +268,7 @@ impl PartialEq for WorkspaceState {
             && self.workdir == other.workdir
             && self.homedir == other.homedir
             && self.hostname == other.hostname
+            && self.username == other.username
             && self.docs_tree_collapsed_dirs == other.docs_tree_collapsed_dirs
             && self.web_tunnels == other.web_tunnels
             && self.delta_host_pubkey == other.delta_host_pubkey
@@ -319,6 +323,7 @@ impl WorkspaceState {
             workdir: self.workdir.clone(),
             homedir: self.homedir.clone(),
             hostname: self.hostname.clone(),
+            username: self.username.clone(),
             connect_phase: self.connect_phase.clone(),
             active_terminal_id: self.active_terminal_id.clone(),
             terminal_ids: self.terminal_ids.clone(),
@@ -403,6 +408,9 @@ impl WorkspaceState {
         let snap = &session_state.snapshot;
         if !snap.hostname.is_empty() {
             self.hostname = snap.hostname.clone();
+        }
+        if !snap.username.is_empty() {
+            self.username = snap.username.clone();
         }
         if !snap.workdir.is_empty() {
             self.workdir = snap.workdir.clone();

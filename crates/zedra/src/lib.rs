@@ -27,6 +27,7 @@ pub mod vfx;
 
 // Sceens
 pub mod home_view;
+pub mod open_project;
 pub mod settings_view;
 
 // Semantic components

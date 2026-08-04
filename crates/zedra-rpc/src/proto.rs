@@ -255,6 +255,17 @@ pub enum ZedraProto {
     /// Kept at enum tail because protocol variants are append-only.
     #[rpc(tx = oneshot::Sender<WebClientSetPathResult>)]
     WebClientSetPath(WebClientSetPathReq),
+
+    /// Browse directories under the host user's home for the remote project picker.
+    /// Escapes this daemon's workdir jail by design, so it is home-jailed instead.
+    /// Kept at enum tail because protocol variants are append-only.
+    #[rpc(tx = oneshot::Sender<HostDirListResult>)]
+    HostDirList(HostDirListReq),
+
+    /// Start a detached daemon for another workdir and return its pairing ticket.
+    /// Kept at enum tail because protocol variants are append-only.
+    #[rpc(tx = oneshot::Sender<HostWorkspaceOpenResult>)]
+    HostWorkspaceOpen(HostWorkspaceOpenReq),
 }
 
 // ---------------------------------------------------------------------------
@@ -282,6 +293,8 @@ pub const FS_DOCS_TREE_MAX_LIMIT: u32 = 1000;
 pub const FS_DOCS_TREE_MAX_OFFSET: u32 = 5_000;
 /// Maximum filesystem entries visited while rebuilding one docs tree snapshot.
 pub const FS_DOCS_TREE_MAX_VISITED_ENTRIES: u32 = 10_000;
+/// Maximum directory entries returned by one `HostDirList` request.
+pub const HOST_DIR_LIST_MAX_ENTRIES: usize = 300;
 /// Maximum byte chunk forwarded through one web tunnel stream frame.
 pub const WEB_TUNNEL_MAX_CHUNK_BYTES: usize = 32 * 1024;
 
@@ -1573,6 +1586,53 @@ pub struct LspHoverReq {
 #[derive(Debug, Serialize, Deserialize)]
 pub struct LspHoverResult {
     pub contents: String,
+}
+
+// ---------------------------------------------------------------------------
+// Remote project opening (host-level, outside the workdir jail)
+// ---------------------------------------------------------------------------
+
+/// Empty `path` means the host user's home directory.
+#[derive(Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct HostDirListReq {
+    pub path: String,
+}
+
+#[derive(Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct HostDirListResult {
+    /// Absolute path that was listed.
+    pub path: String,
+    /// Same path with the home prefix replaced by `~`, for display.
+    pub display_path: String,
+    /// Absolute parent path, absent at the home root (browsing stops there).
+    pub parent: Option<String>,
+    pub entries: Vec<HostDirEntry>,
+    pub truncated: bool,
+    pub error: Option<String>,
+}
+
+#[derive(Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct HostDirEntry {
+    pub name: String,
+    pub path: String,
+    /// A zedra daemon already holds this workdir's lock.
+    pub is_running: bool,
+}
+
+#[derive(Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct HostWorkspaceOpenReq {
+    pub workdir: String,
+}
+
+#[derive(Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct HostWorkspaceOpenResult {
+    /// `zedra://connect?ticket=…` for the opened workspace's daemon.
+    pub pairing_url: String,
+    /// Canonicalized workdir the daemon runs in.
+    pub workdir: String,
+    /// True when a daemon was already running and no new one was spawned.
+    pub already_running: bool,
+    pub error: Option<String>,
 }
 
 // ---------------------------------------------------------------------------

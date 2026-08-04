@@ -457,6 +457,22 @@ CLI `--version` probes are slow and cached separately from the synchronous agent
 
 ---
 
+## 5.10 Remote Project Opening
+
+- `HostDirList(HostDirListReq) -> HostDirListResult`
+- `HostWorkspaceOpen(HostWorkspaceOpenReq) -> HostWorkspaceOpenResult`
+
+### Remote open conventions
+
+- These two RPCs are the **only** ones outside the daemon's workdir jail (§3.2). They carry their own jail instead: the host user's home directory, resolved after `canonicalize()`, so symlinks cannot escape it. Both reject paths outside home.
+- `HostDirList{path}` lists **directories only**, hiding dot-directories, sorted case-insensitively, capped at `HOST_DIR_LIST_MAX_ENTRIES` (300) with `truncated` set when entries were dropped. Empty `path` means home. `parent` is absent at home, which is where browsing stops.
+- Each `HostDirEntry` reports `is_running` (a live daemon holds that workdir's lock), read from the lock file under `~/.config/zedra/workspaces/`. Nothing is read *inside* a listed directory, which keeps the listing clear of macOS TCC prompts — a detached daemon has no way to answer one, and a denial is silent. Use `peek_lock_info`, never `read_lock_info`: the latter creates a workspace config dir per probed path.
+- `HostWorkspaceOpen{workdir}` runs `zedra start --detach --workdir <workdir>` on the host, waits for the new daemon to publish its localhost API, and returns that daemon's own `pairing_url`. When a daemon already holds the workdir it is reused and `already_running` is `true`. Relaunch flags come from the target workspace's `launch.yaml`.
+- The returned ticket is an ordinary one-time pairing ticket, so the client connects through the same path as a scanned QR. Endpoint identity is per workdir, so the opened project is a **new** endpoint, not the caller's.
+- Authorization is the existing session auth: a paired client can already run arbitrary commands through `TermCreate`, so no extra gate. `pairing_url` embeds a handshake secret — never log it.
+
+---
+
 ## 6) Host Events
 
 Current host event variants:
@@ -647,6 +663,15 @@ Any protocol-layer change must include all applicable steps:
 ---
 
 ## 11) Protocol Changelog
+
+### 2026-08-04 (remote project opening)
+
+- Appended `HostDirList` and `HostWorkspaceOpen` request variants at the enum
+  tail (§5.10). No ALPN bump: the request set stays append-only and both
+  response types are new, so no type a `v3` client decodes changed.
+- Older hosts reject the unknown discriminant; the client disables both RPCs on
+  the first incompatible error (`SessionHandle::remote_open_supported`) and the
+  app hides the "Open Project" entry point when no host is connected.
 
 ### 2026-08-04
 

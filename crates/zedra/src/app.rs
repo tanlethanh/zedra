@@ -7,6 +7,7 @@ use crate::app_action::SystemBack;
 use crate::deeplink::{self, DeeplinkAction};
 use crate::fonts;
 use crate::home_view::{HomeEvent, HomeView};
+use crate::open_project::{OpenProjectEvent, OpenProjectView};
 use crate::platform_bridge;
 use crate::quick_action_panel::{QuickActionEvent, QuickActionPanel};
 use crate::settings::{ThemeState, ThemeStateEvent};
@@ -21,6 +22,7 @@ use crate::workspaces::{Workspaces, WorkspacesEvent};
 #[derive(Clone, Copy, PartialEq, Debug)]
 enum AppScreen {
     Home,
+    OpenProject,
     Settings,
     WebTunnel,
     Workspace,
@@ -28,7 +30,8 @@ enum AppScreen {
 
 fn app_view_descriptor(screen: AppScreen) -> Option<ViewDescriptor> {
     match screen {
-        AppScreen::Home => Some(view_telemetry::HOME),
+        // Open project is a Home subscreen; report it as Home.
+        AppScreen::Home | AppScreen::OpenProject => Some(view_telemetry::HOME),
         // Web tunnel is a Settings subscreen; report it as Settings.
         AppScreen::Settings | AppScreen::WebTunnel => Some(view_telemetry::SETTINGS),
         AppScreen::Workspace => None,
@@ -46,6 +49,7 @@ pub struct ZedraApp {
     home_view: Entity<HomeView>,
     settings_view: Entity<SettingsView>,
     web_tunnel_manager: Entity<WebTunnelManager>,
+    open_project_view: Entity<OpenProjectView>,
     workspaces: Entity<Workspaces>,
     quick_action_drawer: Entity<DrawerHost>,
     droplet_overlay: Entity<DropletOverlay>,
@@ -144,6 +148,7 @@ impl ZedraApp {
                     Some("home") => AppScreen::Home,
                     Some("settings") => AppScreen::Settings,
                     Some("web-tunnel") => AppScreen::WebTunnel,
+                    Some("open-project") => AppScreen::OpenProject,
                     other => {
                         return serde_json::json!({"ok": false, "error": format!("unknown screen {other:?}")});
                     }
@@ -192,6 +197,10 @@ impl ZedraApp {
 
         let web_tunnel_manager = cx.new(|cx| WebTunnelManager::new(workspaces.clone(), cx));
 
+        let open_project_view = cx.new(|cx| OpenProjectView::new(workspaces.clone(), cx));
+        let sub = cx.subscribe(&open_project_view, Self::on_open_project_event);
+        subscriptions.push(sub);
+
         let sub = cx.subscribe(&theme_state, Self::on_theme_changed);
         subscriptions.push(sub);
 
@@ -238,6 +247,7 @@ impl ZedraApp {
             home_view,
             settings_view,
             web_tunnel_manager,
+            open_project_view,
             workspaces,
             quick_action_drawer,
             droplet_overlay,
@@ -315,6 +325,30 @@ impl ZedraApp {
             HomeEvent::NavigateToSettings => {
                 self.set_screen(AppScreen::Settings, cx);
             }
+            HomeEvent::NavigateToOpenProject => {
+                self.present_open_project(cx);
+            }
+        }
+    }
+
+    fn present_open_project(&mut self, cx: &mut Context<Self>) {
+        self.open_project_view.update(cx, |view, cx| view.reset(cx));
+        self.set_screen(AppScreen::OpenProject, cx);
+    }
+
+    fn on_open_project_event(
+        &mut self,
+        _: Entity<OpenProjectView>,
+        event: &OpenProjectEvent,
+        cx: &mut Context<Self>,
+    ) {
+        match event {
+            OpenProjectEvent::Close => {
+                self.set_screen(AppScreen::Home, cx);
+            }
+            OpenProjectEvent::NavigateToWorkspace => {
+                self.set_screen(AppScreen::Workspace, cx);
+            }
         }
     }
 
@@ -365,6 +399,9 @@ impl ZedraApp {
             }
             QuickActionEvent::NavigateToWorkspace => {
                 self.set_screen(AppScreen::Workspace, cx);
+            }
+            QuickActionEvent::NavigateToOpenProject => {
+                self.present_open_project(cx);
             }
             QuickActionEvent::OpenTerminal { tid, ws_index } => {
                 self.set_screen(AppScreen::Workspace, cx);
@@ -565,6 +602,16 @@ impl ZedraApp {
                 self.set_screen(AppScreen::Settings, cx);
                 true
             }
+            AppScreen::OpenProject => {
+                if self
+                    .open_project_view
+                    .update(cx, |view, cx| view.step_back(cx))
+                {
+                    return true;
+                }
+                self.set_screen(AppScreen::Home, cx);
+                true
+            }
             AppScreen::Workspace => self.workspaces.update(cx, |workspaces, cx| {
                 workspaces.handle_system_back(window, cx)
             }),
@@ -593,6 +640,7 @@ impl ZedraApp {
             AppScreen::Home => self.home_view.clone().into(),
             AppScreen::Settings => self.settings_view.clone().into(),
             AppScreen::WebTunnel => self.web_tunnel_manager.clone().into(),
+            AppScreen::OpenProject => self.open_project_view.clone().into(),
             AppScreen::Workspace => self
                 .workspaces
                 .read(cx)

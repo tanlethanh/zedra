@@ -22,6 +22,8 @@ pub enum HomeEvent {
     /// Navigate to a workspace (app should switch screen).
     NavigateToWorkspace,
     NavigateToSettings,
+    /// Open another project on a connected host.
+    NavigateToOpenProject,
 }
 
 impl EventEmitter<HomeEvent> for HomeView {}
@@ -413,12 +415,31 @@ impl Render for HomeView {
             content = content.child(install_guide(self.selected_guide_tab, cx));
         }
 
+        let mut actions = div()
+            .id("home-actions")
+            .w(px(theme::HOME_CARD_WIDTH))
+            .flex()
+            .flex_col()
+            .gap(px(theme::SPACING_SM));
+
+        if !self.workspaces.read(cx).connected_hosts(cx).is_empty() {
+            actions = actions.child(
+                outline_button(cx, "home-open-project", "Open Project")
+                    .w_full()
+                    .on_press(cx.listener(|_this, _event, _window, cx| {
+                        cx.emit(HomeEvent::NavigateToOpenProject);
+                    })),
+            );
+        }
+
         content = content.child(
-            outline_button(cx, "home-scan-qr", "Scan QR Code")
-                .w(px(theme::HOME_CARD_WIDTH))
-                .on_press(cx.listener(|this, _event, _window, _cx| {
-                    this.handle_scan_qr();
-                })),
+            actions.child(
+                outline_button(cx, "home-scan-qr", "Scan QR Code")
+                    .w_full()
+                    .on_press(cx.listener(|this, _event, _window, _cx| {
+                        this.handle_scan_qr();
+                    })),
+            ),
         );
 
         let bottom_inset = platform_bridge::home_indicator_inset();
@@ -426,12 +447,12 @@ impl Render for HomeView {
         let footer = div()
             .id("home-footer")
             .absolute()
-            .bottom(px(bottom_inset + 20.0))
+            .bottom(px(bottom_inset + theme::SPACING_LG))
             .w_full()
             .flex()
             .flex_col()
             .items_center()
-            .gap(px(theme::SPACING_MD))
+            .gap(px(theme::SPACING_SM))
             .child(
                 div()
                     .flex()

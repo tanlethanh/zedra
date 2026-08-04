@@ -285,6 +285,12 @@ fn overwrite_lock(path: &Path, info: &LockInfo) -> std::io::Result<()> {
     Ok(())
 }
 
+/// Read a workspace's lock without `lock_file_path`'s directory creation, for
+/// probing many candidate workdirs (e.g. the remote project picker).
+pub fn peek_lock_info(workdir: &Path) -> Option<LockInfo> {
+    read_lock_file(&lock_config_dir(workdir).ok()?.join("daemon.lock"))
+}
+
 /// Parse the lock file; returns `None` if missing or malformed.
 fn read_lock_file(path: &Path) -> Option<LockInfo> {
     let contents = std::fs::read_to_string(path).ok()?;

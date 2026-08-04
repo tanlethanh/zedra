@@ -413,6 +413,35 @@ app still builds, but push registration reports an error instead of a token.
 10. Expected: the scanner stays open and the camera still scans
 11. Rotate the device on iOS and confirm the square guide and button re-center
 
+## 1c-Open. Open Project On A Connected Host
+
+1. Start a host daemon and pair the app with it, so at least one workspace is Connected
+2. On Home, confirm an "Open Project" button sits directly above "Scan QR Code"; with no connected workspace, confirm it is absent
+3. Tap "Open Project"
+4. Expected: a full-screen overlay opens with a back chevron on the left of the header and a close (X) button on the right
+5. Expected: with one connected host the host list is skipped and the host's home directory is listed straight away; with two connected hosts (different hostnames) a host list shows first
+6. Expected: hosts read as `user@hostname`, falling back to the hostname alone if the host reported no username
+7. Expected: only directories are listed in a compact list, dot-directories are hidden, every row uses the same folder icon, and a folder that already runs a daemon is marked "running"
+8. On macOS, confirm listing home raises no "would like to access files in your Documents folder" prompt
+9. Confirm `~/.config/zedra/workspaces/` gained no new directories from browsing
+10. Drill into a sub-folder, then press the back chevron (or system back on Android)
+11. Expected: the header title is the current directory (`~/...`) with `user@hostname` beneath it, and back walks up one directory at a time; at home, back leaves the screen — it never lists above the host user's home directory
+12. Tap the close button from a nested directory
+13. Expected: the screen closes straight to Home without walking back up
+14. Expected: a floating bar is pinned to the bottom showing the exact command the host will run — `zedra start --detach --workdir <path>` — above the "Open this folder" button
+15. Scroll the directory list to the end
+16. Expected: the last row scrolls clear of the floating bar and stays tappable
+17. Tap "Open this folder" and confirm the alert
+18. Expected: the alert names the host and repeats the same command; cancelling leaves the screen unchanged
+19. Confirm the open
+20. Expected: the screen shows "Starting the host daemon…", then the app navigates to the newly opened workspace and connects
+21. On the host, run `zedra list`
+22. Expected: a second daemon is running for the chosen workdir
+23. Return Home, tap "Open Project", and open the same folder again
+24. Expected: no second daemon is spawned; the app switches to the existing workspace
+25. Repeat step 3 from the workspaces drawer's "Open Project" button (above its "Scan QR Code")
+26. Expected: the drawer closes and the same screen opens
+
 ## 1a-Android. System Back Navigation
 
 1. On Android, connect to a workspace and open Quick Actions from the workspace header

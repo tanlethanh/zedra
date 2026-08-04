@@ -34,6 +34,15 @@ pub(crate) enum OpenConnectingForState {
     InvalidState,
 }
 
+/// A connected machine, identified by hostname, with a session that can serve
+/// host-level RPCs (directory browsing, opening another project).
+#[derive(Clone)]
+pub struct ConnectedHost {
+    /// `user@host` when the host reported a username, else the hostname alone.
+    pub hostname: String,
+    pub session: zedra_session::SessionHandle,
+}
+
 pub struct Workspaces {
     /// Workspace entries, one per state.
     /// The entry is lazily loaded from the state when first opened,
@@ -75,6 +84,36 @@ impl Workspaces {
 
     pub fn active(&self) -> Option<&Entity<Workspace>> {
         self.active_index.and_then(|i| self.entries.get(i))
+    }
+
+    /// Live workspaces that can serve host-level requests, one per machine.
+    /// Endpoints are per-workdir, so hostname is the only machine identity the
+    /// app has; the first healthy workspace of a hostname represents it.
+    pub fn connected_hosts(&self, cx: &App) -> Vec<ConnectedHost> {
+        let mut hosts: Vec<ConnectedHost> = Vec::new();
+        for entry in &self.entries {
+            let workspace = entry.read(cx);
+            let state = workspace.workspace_state(cx);
+            if !matches!(
+                state.connect_phase,
+                Some(ConnectPhase::Connected) | Some(ConnectPhase::Idle { .. })
+            ) {
+                continue;
+            }
+            let hostname = match (state.username.is_empty(), state.hostname.is_empty()) {
+                (_, true) => state.display_name().to_string(),
+                (true, false) => state.hostname.clone(),
+                (false, false) => format!("{}@{}", state.username, state.hostname),
+            };
+            if hosts.iter().any(|host| host.hostname == hostname) {
+                continue;
+            }
+            hosts.push(ConnectedHost {
+                hostname,
+                session: workspace.session_handle().clone(),
+            });
+        }
+        hosts
     }
 
     pub fn active_index(&self) -> Option<usize> {

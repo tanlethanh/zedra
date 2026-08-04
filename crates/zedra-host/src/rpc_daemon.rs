@@ -2963,6 +2963,25 @@ async fn dispatch(
             });
         }
 
+        // -- Remote project opening (home-jailed, not workdir-jailed) --
+        ZedraMessage::HostDirList(msg) => {
+            session.touch().await;
+            let path = msg.path.clone();
+            let result = tokio::task::spawn_blocking(move || crate::remote_open::list_dirs(&path))
+                .await
+                .unwrap_or_else(|e| crate::remote_open::dir_list_error(e.to_string()));
+            let _ = msg.tx.send(result).await;
+        }
+
+        ZedraMessage::HostWorkspaceOpen(msg) => {
+            session.touch().await;
+            let result = crate::remote_open::open_workspace(&msg.workdir).await;
+            if let Some(error) = &result.error {
+                tracing::warn!("HostWorkspaceOpen: {} failed: {error}", msg.workdir);
+            }
+            let _ = msg.tx.send(result).await;
+        }
+
         ZedraMessage::FsRead(msg) => {
             session.rpc_fs_reads.fetch_add(1, Ordering::Relaxed);
             let path = match resolve_path(&state.workdir, &msg.path) {

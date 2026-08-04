@@ -3,6 +3,7 @@
 pub mod agent;
 pub mod api;
 pub mod client;
+pub mod daemon_launch;
 pub mod delta;
 pub mod docs_tree;
 pub mod fs;
@@ -21,6 +22,7 @@ pub mod net_monitor;
 pub mod paths;
 pub mod pty;
 pub mod qr;
+pub mod remote_open;
 pub mod rpc_daemon;
 pub mod session_registry;
 pub mod sqlite_readonly;

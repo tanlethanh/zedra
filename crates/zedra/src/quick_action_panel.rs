@@ -17,6 +17,7 @@ pub enum QuickActionEvent {
     Close,
     GoHome,
     NavigateToWorkspace,
+    NavigateToOpenProject,
     OpenTerminal { tid: String, ws_index: usize },
     CloseTerminal { tid: String, ws_index: usize },
     OpenWebClient { id: String, ws_index: usize },
@@ -151,6 +152,11 @@ impl QuickActionPanel {
             };
             pending.set(action);
         });
+    }
+
+    fn handle_open_project(&self, cx: &mut Context<Self>) {
+        cx.emit(QuickActionEvent::Close);
+        cx.emit(QuickActionEvent::NavigateToOpenProject);
     }
 
     fn handle_scan_qr(&self, cx: &mut Context<Self>) {
@@ -489,14 +495,30 @@ impl Render for QuickActionPanel {
             );
         }
 
-        content = content.child(
-            crate::button::outline_button(cx, "quick-action-scan-qr", "Scan QR Code")
-                .mx(px(16.0))
-                .mt(px(12.0))
-                .on_press(cx.listener(|this, _event, _window, cx| {
+        let mut actions = div()
+            .id("quick-action-actions")
+            .mx(px(16.0))
+            .mt(px(12.0))
+            .flex()
+            .flex_col()
+            .gap(px(theme::SPACING_SM));
+
+        if !self.workspaces.read(cx).connected_hosts(cx).is_empty() {
+            actions = actions.child(
+                crate::button::outline_button(cx, "quick-action-open-project", "Open Project")
+                    .on_press(cx.listener(|this, _event, _window, cx| {
+                        this.handle_open_project(cx);
+                    })),
+            );
+        }
+
+        content = content.child(actions.child(
+            crate::button::outline_button(cx, "quick-action-scan-qr", "Scan QR Code").on_press(
+                cx.listener(|this, _event, _window, cx| {
                     this.handle_scan_qr(cx);
-                })),
-        );
+                }),
+            ),
+        ));
 
         content = content
             .child(div().flex_1())

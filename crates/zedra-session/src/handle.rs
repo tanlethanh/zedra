@@ -37,6 +37,7 @@ struct SessionHandleInner {
     fs_search_rpc_supported: AtomicBool,
     fs_upload_rpc_supported: AtomicBool,
     set_app_state_rpc_supported: AtomicBool,
+    remote_open_rpc_supported: AtomicBool,
     /// Runtime the terminal pump tasks spawn onto. Set by `Session::new` so
     /// `attach_remote` works even when a method is awaited from the GPUI thread.
     runtime: Mutex<Option<tokio::runtime::Handle>>,
@@ -77,6 +78,7 @@ impl SessionHandle {
             fs_search_rpc_supported: AtomicBool::new(true),
             fs_upload_rpc_supported: AtomicBool::new(true),
             set_app_state_rpc_supported: AtomicBool::new(true),
+            remote_open_rpc_supported: AtomicBool::new(true),
             runtime: Mutex::new(None),
         }))
     }
@@ -579,6 +581,61 @@ impl SessionHandle {
 
     fn downgrade_set_app_state_rpc(&self, err: &str) -> bool {
         self.downgrade_rpc(&self.0.set_app_state_rpc_supported, "SetAppState", err)
+    }
+
+    fn downgrade_remote_open_rpc(&self, err: &str) -> bool {
+        self.downgrade_rpc(&self.0.remote_open_rpc_supported, "remote open", err)
+    }
+
+    // ─── RPC: remote project opening ────────────────────────────────────
+
+    /// True until an older host rejects one of the remote-open RPCs.
+    pub fn remote_open_supported(&self) -> bool {
+        self.0.remote_open_rpc_supported.load(Ordering::Acquire)
+    }
+
+    /// List directories under the host's home dir. Empty `path` means home.
+    pub async fn host_dir_list(&self, path: &str) -> Result<HostDirListResult> {
+        if !self.remote_open_supported() {
+            return Err(anyhow::anyhow!("opening projects is unsupported by host"));
+        }
+        match self
+            .call(HostDirListReq {
+                path: path.to_string(),
+            })
+            .await
+        {
+            Ok(result) => match result.error {
+                Some(error) => Err(anyhow::anyhow!(error)),
+                None => Ok(result),
+            },
+            Err(error) => {
+                self.downgrade_remote_open_rpc(&error.to_string());
+                Err(error)
+            }
+        }
+    }
+
+    /// Start (or reuse) a daemon for `workdir` and return its pairing URL.
+    pub async fn host_workspace_open(&self, workdir: &str) -> Result<HostWorkspaceOpenResult> {
+        if !self.remote_open_supported() {
+            return Err(anyhow::anyhow!("opening projects is unsupported by host"));
+        }
+        match self
+            .call(HostWorkspaceOpenReq {
+                workdir: workdir.to_string(),
+            })
+            .await
+        {
+            Ok(result) => match result.error {
+                Some(error) => Err(anyhow::anyhow!(error)),
+                None => Ok(result),
+            },
+            Err(error) => {
+                self.downgrade_remote_open_rpc(&error.to_string());
+                Err(error)
+            }
+        }
     }
 
     // ─── RPC: git ────────────────────────────────────────────────────────────
