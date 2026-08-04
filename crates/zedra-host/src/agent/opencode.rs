@@ -739,7 +739,12 @@ impl AgentActor for OpenCodeActor {
     }
 
     fn resume_launch_command(&self, quoted: &str) -> Option<String> {
-        Some(format!("opencode --session {quoted}"))
+        Some(format!("opencode --auto --session {quoted}"))
+    }
+
+    fn default_launch_command(&self) -> Option<String> {
+        self.resolved_program()
+            .map(|_| "opencode --auto".to_string())
     }
 
     fn has_web_client(&self) -> bool {

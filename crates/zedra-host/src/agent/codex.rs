@@ -697,8 +697,17 @@ impl AgentActor for CodexActor {
         setup_status(available, false, plugin_installed, hooks_installed, None)
     }
 
+    // `--no-alt-screen` runs the TUI inline so the mobile terminal keeps
+    // native scrollback.
     fn resume_launch_command(&self, quoted: &str) -> Option<String> {
-        Some(format!("codex resume {quoted}"))
+        Some(format!(
+            "codex resume --no-alt-screen --dangerously-bypass-approvals-and-sandbox {quoted}"
+        ))
+    }
+
+    fn default_launch_command(&self) -> Option<String> {
+        self.resolved_program()
+            .map(|_| "codex --no-alt-screen --dangerously-bypass-approvals-and-sandbox".to_string())
     }
 
     fn subscription_plan<'a>(&'a self) -> ActorFuture<'a, Option<Vec<AgentInfoField>>> {

@@ -10,6 +10,10 @@ use zedra_rpc::proto::*;
 
 macro_rules! simple_actor {
     ($name:ident, $slug:literal, $display:literal, $icon:literal, [$($program:literal),+ $(,)?], [$($alias:literal),* $(,)?]) => {
+        simple_actor!($name, $slug, $display, $icon, [$($program),+], [$($alias),*], "");
+    };
+    // Trailing literal: flags appended to the launch command (permission bypass).
+    ($name:ident, $slug:literal, $display:literal, $icon:literal, [$($program:literal),+ $(,)?], [$($alias:literal),* $(,)?], $launch_args:literal) => {
         pub(super) struct $name;
 
         impl $crate::agent::AgentActor for $name {
@@ -18,11 +22,22 @@ macro_rules! simple_actor {
             fn icon_name(&self) -> &'static str { $icon }
             fn programs(&self) -> &'static [&'static str] { &[$($program),+] }
             fn detect_aliases(&self) -> &'static [&'static str] { &[$($alias),*] }
+
+            fn default_launch_command(&self) -> Option<String> {
+                self.resolved_program().map(|program| {
+                    if $launch_args.is_empty() {
+                        program.to_string()
+                    } else {
+                        format!("{program} {}", $launch_args)
+                    }
+                })
+            }
         }
     };
 }
 
 mod amp;
+mod antigravity;
 pub mod cache;
 pub(crate) mod claude;
 mod claude_probe;
@@ -34,6 +49,7 @@ mod cursor;
 pub mod detect;
 mod gemini;
 mod goose;
+mod grok;
 pub mod hermes;
 pub mod hook;
 mod installed;
@@ -554,6 +570,12 @@ pub(crate) trait AgentActor: Sync {
         None
     }
 
+    /// Shell command that starts a fresh session, used when the config has no
+    /// `launch_cmd`/`bin` override. `None` when the CLI is not on PATH.
+    fn default_launch_command(&self) -> Option<String> {
+        self.resolved_program().map(str::to_string)
+    }
+
     /// Whether this agent has a web UI the app can open as a web-client card
     /// (e.g. `opencode serve`). Advertises the affordance to the app; only
     /// agents that return `true` implement [`web_client_open`](Self::web_client_open).
@@ -698,23 +720,27 @@ pub(crate) trait AgentActor: Sync {
     }
 }
 
-static ACTORS: [&dyn AgentActor; 20] = [
+// Registry order is the app's agent-picker order; `agents.order` in the user
+// config reorders it.
+static ACTORS: [&dyn AgentActor; 22] = [
     &claude::ClaudeActor,
     &codex::CodexActor,
     &opencode::OpenCodeActor,
-    &amp::AmpActor,
-    &cline::ClineActor,
+    &pi::PiActor,
     &cursor::CursorActor,
+    &grok::GrokActor,
+    &antigravity::AntigravityActor,
     &copilot::CopilotActor,
-    &gemini::GeminiActor,
-    &goose::GooseActor,
     &hermes::HermesActor,
+    &openclaw::OpenClawActor,
+    &amp::AmpActor,
+    &gemini::GeminiActor,
+    &cline::ClineActor,
+    &goose::GooseActor,
     &junie::JunieActor,
     &kilocode::KiloCodeActor,
     &maki::MakiActor,
-    &openclaw::OpenClawActor,
     &openhands::OpenHandsActor,
-    &pi::PiActor,
     &qoder::QoderActor,
     &qwen::QwenActor,
     &trae::TraeActor,
@@ -730,11 +756,14 @@ pub(crate) fn actors() -> &'static [&'static dyn AgentActor] {
 /// agent's hooks and resume commands still work if run manually.
 pub(crate) fn enabled_actors() -> Vec<&'static dyn AgentActor> {
     let config = crate::global_config::get();
-    actors()
+    let mut actors: Vec<_> = actors()
         .iter()
         .copied()
         .filter(|actor| !config.agent_disabled(actor.slug()))
-        .collect()
+        .collect();
+    // Stable sort keeps registry order for agents absent from `agents.order`.
+    actors.sort_by_key(|actor| config.agent_order_rank(actor.slug()));
+    actors
 }
 
 fn sessions_for_actor_blocking(
@@ -852,7 +881,11 @@ mod tests {
                 continue;
             };
             resumable += 1;
-            let program = command.split_whitespace().next().unwrap_or_default();
+            // Commands may lead with `KEY=value` env assignments before the binary.
+            let program = command
+                .split_whitespace()
+                .find(|token| !token.contains('='))
+                .unwrap_or_default();
             assert!(
                 actor.programs().contains(&program),
                 "`{slug}` resume `{command}` does not launch one of its programs"

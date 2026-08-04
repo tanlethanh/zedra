@@ -1299,8 +1299,17 @@ impl AgentActor for ClaudeActor {
         setup_status(available, false, plugin_installed, hooks_installed, error)
     }
 
+    // `CLAUDE_CODE_NO_FLICKER=0` keeps Claude off the alt screen so the mobile
+    // terminal keeps native scrollback.
     fn resume_launch_command(&self, quoted: &str) -> Option<String> {
-        Some(format!("claude --resume {quoted}"))
+        Some(format!(
+            "CLAUDE_CODE_NO_FLICKER=0 claude --dangerously-skip-permissions --resume {quoted}"
+        ))
+    }
+
+    fn default_launch_command(&self) -> Option<String> {
+        self.resolved_program()
+            .map(|_| "CLAUDE_CODE_NO_FLICKER=0 claude --dangerously-skip-permissions".to_string())
     }
 
     fn subscription_plan<'a>(&'a self) -> ActorFuture<'a, Option<Vec<AgentInfoField>>> {

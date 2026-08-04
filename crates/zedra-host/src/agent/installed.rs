@@ -9,8 +9,10 @@ pub fn list_installed_agents() -> AgentInstalledListResult {
         .into_iter()
         .filter_map(|actor| {
             std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-                let launch_cmd =
-                    crate::global_config::agent_launch_cmd(actor.slug(), actor.resolved_program());
+                let launch_cmd = crate::global_config::agent_launch_cmd(
+                    actor.slug(),
+                    actor.default_launch_command().as_deref(),
+                );
                 InstalledAgentEntry {
                     slug: actor.slug().to_string(),
                     display_name: actor.display_name().to_string(),

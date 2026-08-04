@@ -4,5 +4,6 @@ simple_actor!(
     "Cursor Agent",
     "cursor",
     ["cursor-agent", "cursor"],
-    ["cursor-agent", "cursor agent", "cursoragent"]
+    ["cursor-agent", "cursor agent", "cursoragent"],
+    "--force"
 );

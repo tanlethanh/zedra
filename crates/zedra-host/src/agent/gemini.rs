@@ -4,5 +4,6 @@ simple_actor!(
     "Gemini",
     "gemini",
     ["gemini"],
-    ["gemini", "geminicli"]
+    ["gemini", "geminicli"],
+    "--yolo"
 );

@@ -15,6 +15,11 @@ size. Every host feature — detection, discovery, sessions, setup, account
 data — resolves through that registry; never add per-agent `match` arms to
 the REST API, host cache, CLI scans, hook dispatch, or installed-agent list.
 
+`ACTORS` order is the order the app's agent picker shows — put new agents where
+they belong, not at the end. Users reorder with `agents.order` in the config
+(listed slugs first, the rest keep registry order); `enabled_actors()` is the
+single seam that applies both `order` and `disabled`.
+
 Most agents are detect-only: they show up in terminals, version probes, and
 the installed-agent list, nothing more. `simple_actor!` is all they need:
 
@@ -47,6 +52,61 @@ list. Override only what the provider supports:
 | Setup & hooks | `setup`, `setup_summary`, `supports_setup_cli`, `setup_cli`, `receive_hook`, `hook_test_payload` | `setup` is the only mutable op: writes the hook runner + provider config, returns the paths |
 | Account & usage | `account_fields`, `subscription_plan`, `account_usage`, `extra`, `config_files` | Async plan/usage default to `None`; skip the overrides when local-only |
 | Behavior flags | `is_global`, `shows_detail` | `is_global`: sessions ignore the workdir (Hermes); `shows_detail`: listed on the app's manage screen |
+
+### Launch commands
+
+`default_launch_command` is the shell command the app runs to start a fresh
+session; `resume_launch_command` resumes one. Both default to the resolved
+program name, and both are overridden by `agents.overrides.<slug>.launch_cmd` /
+`resume_cmd` in the global config. They run as shell script lines, so a
+`KEY=value` prefix sets environment for the agent.
+
+Zedra launches agents with permission prompts bypassed by default. A phone is
+a poor place to answer approval dialogs — the session stalls until the user
+comes back, which defeats the point of supervising agents from mobile. The host
+is the user's own machine and the pairing is authenticated, so the trust
+boundary is the host, not the prompt. Users who want prompts back set
+`launch_cmd`/`resume_cmd` overrides in the global config.
+
+Detect-only agents get their flags from the trailing `simple_actor!` argument;
+managed agents override `default_launch_command` (and put the flag in
+`resume_launch_command` too).
+
+| Agent | Flag | Notes |
+| --- | --- | --- |
+| claude | `--dangerously-skip-permissions` | Also `CLAUDE_CODE_NO_FLICKER=0` to stay off the alt screen, so the mobile terminal keeps native scrollback |
+| codex | `--dangerously-bypass-approvals-and-sandbox` | Applies to `codex` and `codex resume` |
+| opencode | `--auto` | Auto-approves permissions that are not explicitly denied |
+| hermes | `--yolo` | Bypasses dangerous-command approval |
+| antigravity | `--dangerously-skip-permissions` | CLI binary is `agy` |
+| cursor | `--force` | `--yolo` is an alias for it |
+| copilot | `--allow-all` | Equals `--allow-all-tools --allow-all-paths --allow-all-urls` |
+| grok | `--always-approve` | Also `--no-alt-screen` |
+| gemini | `--yolo` | Downgraded to prompting in an untrusted folder; trust it once interactively or set `GEMINI_CLI_TRUST_WORKSPACE=true` |
+| amp | none | Bypass is a config setting (`amp.dangerouslyAllowAll`), not a flag |
+| openclaw, pi, maki | none | No such flag in their CLIs |
+
+### Alt screen
+
+The alternate screen destroys the mobile terminal's native scrollback: the app
+can only scroll what the TUI redraws. Agents that expose an inline mode get it
+in their launch command; the rest keep their default.
+
+| Agent | Inline mode | Default behavior |
+| --- | --- | --- |
+| claude | `CLAUDE_CODE_NO_FLICKER=0` | Inline |
+| codex | `--no-alt-screen` | Inline |
+| grok | `--no-alt-screen` (also `--minimal`) | Inline |
+| pi, cursor | none needed | Already inline |
+| opencode | `--mini` only | Alt screen — `--mini` is a reduced interface, not a rendering toggle, so it stays opt-in via `launch_cmd` |
+| amp, copilot | none | Alt screen |
+| hermes | `--cli` (classic REPL) | Config-driven (`display.interface`) |
+
+Verify a CLI's behavior by running it under a pty and looking for the
+`\e[?1049h` (alt screen enter) sequence rather than trusting its help text.
+
+Bypassing approvals also means the agent's approval hook never fires, so
+`WaitingApproval` will not appear for these sessions.
 
 Provider-specific hook templates live in the actor's file; `agent/cli.rs`
 keeps only shared plumbing (workdir hook script, checked file writers).

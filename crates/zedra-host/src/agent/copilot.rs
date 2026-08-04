@@ -4,5 +4,6 @@ simple_actor!(
     "GitHub Copilot",
     "githubcopilot",
     ["copilot", "github-copilot-cli"],
-    ["copilot", "githubcopilot"]
+    ["copilot", "githubcopilot"],
+    "--allow-all"
 );

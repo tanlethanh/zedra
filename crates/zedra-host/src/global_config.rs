@@ -118,6 +118,9 @@ pub struct AgentsConfig {
     pub session_limit: Option<u32>,
     /// Registry slugs hidden from agent lists and skipped in scans.
     pub disabled: Vec<String>,
+    /// Registry slugs listed first, in this order (agent picker order);
+    /// unlisted agents keep their registry order behind them.
+    pub order: Vec<String>,
     /// Per-agent launch overrides keyed by registry slug (e.g. `hermes`).
     pub overrides: HashMap<String, AgentConfig>,
     /// Default for `--usage-refresh-secs` (live-usage poll cadence; 0 disables).
@@ -261,6 +264,16 @@ impl GlobalConfig {
             .map(|tpl| tpl.replace(AGENT_SESSION_ID_PLACEHOLDER, quoted_session_id))
     }
 
+    /// Rank of `slug` in `agents.order` (case-insensitive); unlisted agents
+    /// rank after every listed one.
+    pub fn agent_order_rank(&self, slug: &str) -> usize {
+        self.agents
+            .order
+            .iter()
+            .position(|s| s.eq_ignore_ascii_case(slug))
+            .unwrap_or(usize::MAX)
+    }
+
     /// True when `slug` is listed under `agents.disabled` (case-insensitive).
     pub fn agent_disabled(&self, slug: &str) -> bool {
         self.agents
@@ -300,6 +313,9 @@ impl GlobalConfig {
             .usage_refresh_secs
             .or(self.agents.usage_refresh_secs);
         extend_unique(&mut self.agents.disabled, over.agents.disabled);
+        if !over.agents.order.is_empty() {
+            self.agents.order = over.agents.order;
+        }
 
         self.workspace.name = over.workspace.name.or(self.workspace.name);
         self.workspace.host_label = over.workspace.host_label.or(self.workspace.host_label);
@@ -479,6 +495,15 @@ mod tests {
             cfg.agent("b").and_then(|a| a.bin.clone()),
             Some("/x/b".to_string())
         );
+    }
+
+    #[test]
+    fn agent_order_ranks_listed_slugs_first() {
+        let cfg = parse("agents:\n  order:\n    - grok\n    - Claude\n").unwrap();
+        assert_eq!(cfg.agent_order_rank("grok"), 0);
+        assert_eq!(cfg.agent_order_rank("claude"), 1);
+        assert_eq!(cfg.agent_order_rank("codex"), usize::MAX);
+        assert!(cfg.agent_order_rank("grok") < cfg.agent_order_rank("codex"));
     }
 
     #[test]

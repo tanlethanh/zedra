@@ -667,7 +667,12 @@ impl AgentActor for HermesActor {
     }
 
     fn resume_launch_command(&self, quoted: &str) -> Option<String> {
-        Some(format!("hermes --resume {quoted}"))
+        Some(format!("hermes --yolo --resume {quoted}"))
+    }
+
+    fn default_launch_command(&self) -> Option<String> {
+        self.resolved_program()
+            .map(|program| format!("{program} --yolo"))
     }
 
     // No remote plan/usage endpoint: `subscription_plan`/`account_usage` keep

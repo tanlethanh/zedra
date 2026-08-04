@@ -25,6 +25,10 @@ agents:
   session_limit: 12
   disabled:
     - pi
+  order:
+    - claude
+    - codex
+    - opencode
   overrides:
     hermes:
       launch_cmd: hermes --tui
@@ -91,6 +95,7 @@ A flag or environment variable always overrides both files. Each file fills in w
 
 - **`session_limit`** — max concurrent agent sessions. Overridden by `ZEDRA_AGENT_SESSION_LIMIT`.
 - **`disabled`** — registry slugs to hide from lists and scans. Hidden agents still run if launched by hand.
+- **`order`** — registry slugs listed first, in this order, in the app's agent picker. Agents you leave out keep their built-in order behind the listed ones.
 - **`usage_refresh_secs`** — usage-poll cadence; `0` disables. Overridden by `--usage-refresh-secs`, default 300.
 - **`overrides`** — per-agent launch overrides, keyed by slug (`claude`, `codex`, `opencode`, `hermes`, `pi`, `maki`). Global file only:
   - **`bin`** — executable to launch instead of the one on `PATH`.
