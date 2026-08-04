@@ -335,6 +335,12 @@ final class KeyboardSupporter: NSObject, UITextFieldDelegate, UIGestureRecognize
     @objc
     var isComposing: Bool { composing }
 
+    /// The composer's ✕: step back to the keys, keeping the keyboard for the terminal.
+    @objc
+    private func closeComposer() {
+        setComposing(false, animated: true, keepKeyboard: true)
+    }
+
     @objc
     func cancelComposing() {
         composeField?.resignFirstResponder()
