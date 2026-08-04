@@ -9,7 +9,7 @@ use crate::transport_badge::{render_transport_badge, transport_badge};
 use crate::workspace_state::{TrackedTunnel, WorkspaceState};
 use crate::{fonts, theme, web_tunnel, workspace_action};
 use zedra_rpc::proto::{HostBatteryInfo, HostInfoSnapshot};
-use zedra_session::{SessionHandle, SessionState};
+use zedra_session::{ConnectSnapshot, SessionHandle, SessionState};
 
 pub struct SessionPanel {
     workspace_state: Entity<WorkspaceState>,
@@ -165,6 +165,10 @@ impl Render for SessionPanel {
 
         if !snap.strip_path.is_empty() {
             info = info.child(info_row(cx, "Directory", snap.strip_path.clone()));
+        }
+
+        if let Some(daemon) = daemon_label(&snap) {
+            info = info.child(info_row(cx, "Daemon", daemon));
         }
 
         // --- Connection badge ---
@@ -378,6 +382,22 @@ fn tunnel_row(
                     .text_color(rgb(theme::text_muted(cx))),
             ),
         )
+}
+
+/// `<host version> · <protocol>`; either half may be missing before sync completes.
+fn daemon_label(snap: &ConnectSnapshot) -> Option<String> {
+    let version = snap
+        .host_version
+        .as_deref()
+        .filter(|v| !v.is_empty())
+        .map(|v| format!("v{}", v.trim_start_matches('v')));
+    let proto = snap.alpn.as_deref().filter(|v| !v.is_empty());
+    match (version, proto) {
+        (Some(v), Some(p)) => Some(format!("{v} \u{00b7} {p}")),
+        (Some(v), None) => Some(v),
+        (None, Some(p)) => Some(p.to_string()),
+        (None, None) => None,
+    }
 }
 
 fn info_row(cx: &App, label: &'static str, value: String) -> Div {
