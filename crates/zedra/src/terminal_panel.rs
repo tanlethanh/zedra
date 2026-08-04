@@ -3,6 +3,7 @@ use gpui::*;
 use crate::platform_bridge::{self, HapticFeedback};
 use crate::terminal_card::{TerminalCardProps, render_terminal_card};
 use crate::terminal_state::TerminalState;
+use crate::workspace_start::render_start_actions;
 use crate::workspace_state::WorkspaceState;
 use crate::{theme, workspace_action};
 
@@ -44,6 +45,13 @@ impl Render for TerminalPanel {
             .collect();
 
         let mut content = div().pt(px(12.0)).flex().flex_col().flex_1();
+
+        if terminals.is_empty() && web_clients.is_empty() {
+            return content
+                .items_center()
+                .justify_center()
+                .child(render_start_actions(cx).top(px(32.0)));
+        }
 
         if !terminals.is_empty() {
             content = content.gap_1();

@@ -51,60 +51,67 @@ impl WorkspaceStart {
     }
 }
 
+/// Flat list of workspace entry actions, shared by the workspace placeholder
+/// and the terminals drawer tab when there is nothing to show.
+pub fn render_start_actions(cx: &App) -> Div {
+    let mut list = div()
+        .flex()
+        .flex_col()
+        .items_start()
+        .gap(px(theme::SPACING_XL));
+
+    for item in WorkspaceStart::items() {
+        let action = item.action;
+        list = list.child(
+            div()
+                .id(item.id)
+                .flex()
+                .flex_row()
+                .items_center()
+                .gap(px(theme::SPACING_LG))
+                .cursor_pointer()
+                .hit_slop(px(theme::SPACING_SM))
+                .on_press(move |_event, window, cx| {
+                    platform_bridge::trigger_haptic(HapticFeedback::ImpactLight);
+                    window.dispatch_action(action.boxed_clone(), cx);
+                })
+                .child(
+                    div()
+                        .flex()
+                        .w(px(20.0))
+                        .h(px(20.0))
+                        .items_center()
+                        .justify_center()
+                        .child(
+                            svg()
+                                .path(item.icon)
+                                .size(item.icon_size)
+                                .text_color(rgb(theme::text_muted(cx))),
+                        ),
+                )
+                .child(
+                    div()
+                        .text_color(rgb(theme::text_muted(cx)))
+                        .text_size(px(theme::FONT_BODY))
+                        .child(item.label),
+                ),
+        );
+    }
+
+    list
+}
+
 impl Render for WorkspaceStart {
     fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        let mut list = div()
-            .flex()
-            .flex_col()
-            .items_start()
-            .gap(px(theme::SPACING_XL))
-            // Balance the optical center against the header above.
-            .top(px(-64.0));
-
-        for item in Self::items() {
-            let action = item.action;
-            list = list.child(
-                div()
-                    .id(item.id)
-                    .flex()
-                    .flex_row()
-                    .items_center()
-                    .gap(px(theme::SPACING_LG))
-                    .cursor_pointer()
-                    .hit_slop(px(theme::SPACING_SM))
-                    .on_press(move |_event, window, cx| {
-                        platform_bridge::trigger_haptic(HapticFeedback::ImpactLight);
-                        window.dispatch_action(action.boxed_clone(), cx);
-                    })
-                    .child(
-                        div()
-                            .flex()
-                            .w(px(20.0))
-                            .h(px(20.0))
-                            .items_center()
-                            .justify_center()
-                            .child(
-                                svg()
-                                    .path(item.icon)
-                                    .size(item.icon_size)
-                                    .text_color(rgb(theme::text_muted(cx))),
-                            ),
-                    )
-                    .child(
-                        div()
-                            .text_color(rgb(theme::text_muted(cx)))
-                            .text_size(px(theme::FONT_BODY))
-                            .child(item.label),
-                    ),
-            );
-        }
-
         div()
             .size_full()
             .flex()
             .flex_col()
             .items_center()
             .justify_center()
-            .child(list)
+            .child(
+                // Balance the optical center against the header above.
+                render_start_actions(cx).top(px(-64.0)),
+            )
     }
 }
