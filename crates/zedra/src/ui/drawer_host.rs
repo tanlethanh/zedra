@@ -69,6 +69,8 @@ pub struct DrawerHost {
     drawer: AnyView,
     drawer_side: DrawerSide,
     drawer_state: DrawerState,
+    /// Mirrors this host's contribution to `OPEN_DRAWERS`.
+    counted_open: bool,
     drawer_width: Pixels,
     /// Current visual offset: 0.0 = fully closed, drawer_width px = fully open.
     drawer_offset: f32,
@@ -108,6 +110,7 @@ impl DrawerHost {
             backdrop_opacity: 0.4,
             focus_handle: cx.focus_handle(),
             drawer_state: DrawerState::Closed,
+            counted_open: false,
             drawer_offset: 0.0,
             edge_inset: theme::DRAWER_EDGE_ZONE,
             snap_from: 0.0,
@@ -170,24 +173,30 @@ impl DrawerHost {
         cx.emit(DrawerEvent::Closed);
     }
 
-    fn state_is_open(state: DrawerState) -> bool {
-        matches!(state, DrawerState::Opened | DrawerState::Snapping)
+    /// Anything the user can see counts as open, including a drawer being dragged
+    /// out of `Closed` and one still animating shut. `any_drawer_open` drives
+    /// terminal focus and the native keypad, which must not reappear over a
+    /// visible drawer.
+    fn is_visually_open(&self) -> bool {
+        self.drawer_offset > 0.0 || matches!(self.drawer_state, DrawerState::Opened)
     }
 
     /// Single writer for `drawer_state` so the global open count stays accurate.
-    /// A flip refreshes every window: views that gate on `any_drawer_open` observe
-    /// no entity of ours.
     fn set_drawer_state(&mut self, state: DrawerState, cx: &mut App) {
-        if self.drawer_state == state {
-            return;
-        }
-        let was_open = Self::state_is_open(self.drawer_state);
         self.drawer_state = state;
-        let is_open = Self::state_is_open(state);
-        if was_open == is_open {
+        self.sync_open_count(cx);
+    }
+
+    /// Reconcile the global count after any change to state or offset. A flip
+    /// refreshes every window: views that gate on `any_drawer_open` observe no
+    /// entity of ours.
+    fn sync_open_count(&mut self, cx: &mut App) {
+        let open = self.is_visually_open();
+        if open == self.counted_open {
             return;
         }
-        if is_open {
+        self.counted_open = open;
+        if open {
             OPEN_DRAWERS.fetch_add(1, Ordering::Relaxed);
         } else {
             OPEN_DRAWERS.fetch_sub(1, Ordering::Relaxed);
@@ -373,6 +382,7 @@ impl DrawerHost {
         };
         let width = f32::from(self.drawer_width);
         self.drawer_offset = (self.drawer_offset + eff_dx).clamp(0.0, width);
+        self.sync_open_count(cx);
         self.last_drag_dx = eff_dx;
         self.last_drag_x = position_x;
         cx.notify();
@@ -463,7 +473,7 @@ impl DrawerHost {
 
 impl Drop for DrawerHost {
     fn drop(&mut self) {
-        if Self::state_is_open(self.drawer_state) {
+        if self.counted_open {
             OPEN_DRAWERS.fetch_sub(1, Ordering::Relaxed);
         }
     }

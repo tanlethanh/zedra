@@ -622,10 +622,13 @@ pub extern "system" fn Java_dev_zedra_app_MainActivity_nativeSetPinnedKeyBarHeig
     _class: JClass,
     height_px: jint,
 ) {
-    PINNED_KEY_BAR_HEIGHT_PX.store(
-        height_px.max(0) as u32,
-        std::sync::atomic::Ordering::Relaxed,
-    );
+    let height = height_px.max(0) as u32;
+    if PINNED_KEY_BAR_HEIGHT_PX.swap(height, std::sync::atomic::Ordering::Relaxed) == height {
+        return;
+    }
+    // The terminal insets itself by this value, so a static screen would keep a
+    // stale inset until some unrelated redraw. iOS notifies for the same reason.
+    gpui_android::with_platform(|platform| platform.request_frame_forced());
 }
 
 #[unsafe(no_mangle)]
