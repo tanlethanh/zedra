@@ -17,7 +17,8 @@ def requestedReleaseTask = gradle.startParameter.taskNames.any { it.toLowerCase(
 // google-services plugin hard-fails without google-services.json. Skip Firebase
 // wiring when the file is absent so debug builds work without push/telemetry,
 // but require it for release so shipped builds never lose Firebase silently.
-def hasGoogleServices = file('app/google-services.json').exists() ||
+// The plugin resolves the file against the project dir (android/), not app/.
+def hasGoogleServices = file('google-services.json').exists() ||
         file('src/debug/google-services.json').exists()
 if (requestedReleaseTask && !hasGoogleServices) {
     throw new GradleException('google-services.json is required for release builds')
