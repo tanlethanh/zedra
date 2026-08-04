@@ -15,7 +15,6 @@ use std::path::{Path, PathBuf};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use uuid::Uuid;
 
-#[cfg(test)]
 const CACHE_DIR: &str = "zedra";
 pub const UPLOADS_DIR: &str = "zedra/uploads";
 /// How long an uploaded file is kept before the cleanup sweep removes it.
@@ -39,6 +38,11 @@ fn uploads_base() -> Result<PathBuf> {
             .map(|dirs| dirs.cache_dir().to_path_buf())
             .context("could not determine cache directory for uploads")
     }
+}
+
+/// Root of Zedra's upload cache (`<cache>/zedra`), removed by `zedra uninstall`.
+pub fn cache_root() -> Result<PathBuf> {
+    Ok(uploads_base()?.join(CACHE_DIR))
 }
 
 /// Lowercases and validates a client-supplied extension against an allowlist.

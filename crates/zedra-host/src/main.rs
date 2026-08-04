@@ -278,6 +278,13 @@ enum Commands {
         yes: bool,
     },
 
+    /// Remove Zedra from this machine
+    Uninstall {
+        /// Answer yes to every confirmation
+        #[arg(long, short)]
+        yes: bool,
+    },
+
     /// Print help for zedra or a command
     Help {
         /// Command to show help for
@@ -1685,6 +1692,10 @@ async fn main() -> Result<()> {
                     std::process::exit(1);
                 }
             }
+        }
+
+        Commands::Uninstall { yes } => {
+            zedra_host::uninstall::run(yes).await?;
         }
 
         Commands::Help { command } => {

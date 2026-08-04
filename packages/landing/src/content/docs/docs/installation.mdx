@@ -64,6 +64,21 @@ In foreground, press `r` to regenerate the QR. In background, reprint it with `z
 
 Pairing is a one-time step per workspace, so you scan once per directory. The QR carries your machine's public key and a one-time secret (not your network address), so the connection persists across reconnects, even after your IP changes.
 
+## Uninstall
+
+```sh
+zedra uninstall
+```
+
+Asks before each step, does only what you accept:
+
+1. Stop running daemons. Declining cancels the uninstall.
+2. Remove Zedra plugins and hooks from each agent.
+3. Delete local state — `~/.config/zedra` and `~/.cache/zedra` (`%APPDATA%\zedra` on Windows).
+4. Delete the `zedra` binary.
+
+`--yes` accepts every prompt. Per-workspace `.zedra/` directories stay.
+
 ## Next
 
 - [Troubleshooting](/docs/troubleshooting/) if a connection fails.

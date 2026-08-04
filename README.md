@@ -52,6 +52,14 @@ $zedra-start
 
 Scan the QR code with the Zedra app. That's it.
 
+**Uninstall**
+
+```shell
+zedra uninstall
+```
+
+Stop running daemons, remove agent hooks, delete local state (`~/.config/zedra`, `~/.cache/zedra`), and delete the binary. Add `--yes` to accept all.
+
 ## How It Works
 
 1. `zedra start` runs a lightweight daemon on your desktop
