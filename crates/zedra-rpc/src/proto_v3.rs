@@ -441,6 +441,37 @@ impl From<proto::FsSearchResult> for FsSearchResult {
     }
 }
 
+/// `v3` clients look `icon_name` up as a bundled native asset. Those builds
+/// predate the slug-based asset pipeline, so their bundles only carry the old
+/// `Agent<Name>` imagesets; sending a live icon slug renders a blank icon. This
+/// is the closed set those bundles shipped — actors added after `v3` keep the
+/// live name and fall back to the client's default glyph.
+fn legacy_icon_name(slug: &str, icon_name: String) -> String {
+    match slug {
+        "claude" => "AgentClaude",
+        "codex" => "AgentCodex",
+        "opencode" => "AgentOpenCode",
+        "amp" => "AgentAmp",
+        "cline" => "AgentCline",
+        "cursor" => "AgentCursor",
+        "copilot" => "AgentCopilot",
+        "gemini" => "AgentGemini",
+        "goose" => "AgentGoose",
+        "hermes" => "AgentHermes",
+        "junie" => "AgentJunie",
+        "kilocode" => "AgentKiloCode",
+        "openclaw" => "AgentOpenClaw",
+        "openhands" => "AgentOpenHands",
+        "pi" => "AgentPi",
+        "qoder" => "AgentQoder",
+        "qwen" => "AgentQwen",
+        "trae" => "AgentTrae",
+        "zencoder" => "AgentZencoder",
+        _ => return icon_name,
+    }
+    .to_string()
+}
+
 impl From<proto::AgentInstalledListResult> for AgentInstalledListResult {
     fn from(r: proto::AgentInstalledListResult) -> Self {
         // Drops `web_client` appended at `zedra/rpc/4`.
@@ -449,9 +480,9 @@ impl From<proto::AgentInstalledListResult> for AgentInstalledListResult {
                 .agents
                 .into_iter()
                 .map(|a| InstalledAgentEntry {
+                    icon_name: legacy_icon_name(&a.slug, a.icon_name),
                     slug: a.slug,
                     display_name: a.display_name,
-                    icon_name: a.icon_name,
                     available: a.available,
                     version: a.version,
                     launch_cmd: a.launch_cmd,
@@ -890,6 +921,28 @@ mod tests {
         let bytes = postcard::to_stdvec(&v3).unwrap();
         let decoded: AgentInstalledListResult = postcard::from_bytes(&bytes).unwrap();
         assert_eq!(decoded.agents[0].slug, "opencode");
+        assert_eq!(decoded.agents[0].icon_name, "AgentOpenCode");
+    }
+
+    #[test]
+    fn installed_agent_icon_names_are_legacy_assets() {
+        // `v3` bundles only ship the pre-slug `Agent<Name>` imagesets, for the
+        // managed agents and the CLI-only ones alike.
+        assert_eq!(legacy_icon_name("codex", "openai".into()), "AgentCodex");
+        assert_eq!(
+            legacy_icon_name("hermes", "hermesagent".into()),
+            "AgentHermes"
+        );
+        assert_eq!(
+            legacy_icon_name("copilot", "githubcopilot".into()),
+            "AgentCopilot"
+        );
+        assert_eq!(
+            legacy_icon_name("kilocode", "kilocode".into()),
+            "AgentKiloCode"
+        );
+        // An actor added after `v3` has no legacy asset; keep the live name.
+        assert_eq!(legacy_icon_name("maki", "maki".into()), "maki");
     }
 
     #[test]
