@@ -24,6 +24,31 @@ pub fn subscreen_page(
         .child(subscreen_scroll_body(body))
 }
 
+/// Same shell, but the body owns its own scrolling (virtualized lists).
+pub fn subscreen_page_unscrolled(
+    page_id: &'static str,
+    bg: impl Into<gpui::Fill>,
+    header: impl IntoElement,
+    body: impl IntoElement,
+) -> impl IntoElement {
+    div()
+        .id(page_id)
+        .size_full()
+        .min_h_0()
+        .bg(bg)
+        .flex()
+        .flex_col()
+        .child(subscreen_header_band(header))
+        .child(
+            div()
+                .flex_1()
+                .min_h_0()
+                .min_w_0()
+                .w_full()
+                .child(subscreen_content_column(body).size_full()),
+        )
+}
+
 fn subscreen_header_band(header: impl IntoElement) -> impl IntoElement {
     div()
         .id("subscreen-header-band")

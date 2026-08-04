@@ -399,6 +399,20 @@ app still builds, but push registration reports an error instead of a token.
 13. Expected: file explorer root entries and git status are already loaded without waiting for the first drawer open to trigger them
 14. Navigate to terminal — verify PTY works (shell prompt, keystrokes echo)
 
+## 1c. QR From Photo Library
+
+1. Run `zedra qr --workdir .` and screenshot the QR code, then save it to the device photo library
+2. Open the app and tap "Scan QR Code"
+3. Expected: a square viewfinder guide with corner brackets is centered over the camera preview
+4. Tap "Upload Image" below the square
+5. Pick the QR screenshot
+6. Expected: the scanner closes and the app connects exactly as with a camera scan
+7. Reopen the scanner, tap "Upload Image", and pick a photo with no QR code
+8. Expected: iOS shows a "No QR Code Found" alert, Android shows a "No Zedra QR code in that image" toast, and the scanner stays open with the camera live
+9. Reopen the scanner, tap "Upload Image", and cancel the picker
+10. Expected: the scanner stays open and the camera still scans
+11. Rotate the device on iOS and confirm the square guide and button re-center
+
 ## 1a-Android. System Back Navigation
 
 1. On Android, connect to a workspace and open Quick Actions from the workspace header
@@ -1504,6 +1518,27 @@ Expected:
     lines up with the metadata column; narrow error text must not shrink-wrap
     the header (see `docs/CONVENTIONS.md` GPUI flex width rules and
     `ui::subscreen_layout`).
+
+## 18c. Unified Session List Virtualization
+
+1. Connect to a workspace with several agents that each have many sessions
+   (raise the host cap first if needed:
+   `ZEDRA_AGENT_SESSION_LIMIT=200 zedra start`), so `View sessions` holds a few
+   hundred rows.
+2. Open the workspace drawer Terminals tab and tap `View sessions`.
+3. Expected: the list appears without a long freeze, and the header band stays
+   pinned while only the list scrolls (the page itself no longer scrolls).
+4. Flick-scroll the list top to bottom and back.
+5. Expected: scrolling stays smooth with no blank bands at the fling edge; day
+   headers stay attached above their sessions; the last row clears the home
+   indicator.
+6. Tap a resumable row after scrolling far down.
+7. Expected: haptic fires and the session resumes in a new terminal — row tap
+   targets must not drift after virtualized recycling.
+8. Tap Refresh, then scroll again.
+9. Expected: the list returns to the top with correct row heights (no stale
+   measurements from the previous load), and loading/error/empty states render
+   as padded text without a scrollbar.
 
 ## 19. Xcode Rust Build Target
 

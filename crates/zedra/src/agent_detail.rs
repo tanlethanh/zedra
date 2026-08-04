@@ -1,12 +1,12 @@
 use gpui::prelude::FluentBuilder;
 use gpui::*;
 use tracing::error;
-use zedra_rpc::proto::{AgentFile, AgentSessionSummary, AgentSummary, HostEvent};
+use zedra_rpc::proto::{AgentFile, AgentSummary, HostEvent};
 use zedra_session::{Session, SessionHandle};
 
 use crate::agent_ui::{
-    AgentSessionListProps, cli_version_display, group_sessions_by_day, render_agent_session_list,
-    render_extra_row, render_usage_row, setup_label,
+    AgentSessionListProps, AgentSessionSection, cli_version_display, group_sessions_by_day,
+    render_agent_session_list, render_extra_row, render_usage_row, setup_label,
 };
 use crate::file_preview_view::FilePreviewView;
 use crate::fonts;
@@ -29,7 +29,8 @@ enum LoadState {
 pub struct AgentDetail {
     slug: String,
     agent: Option<AgentSummary>,
-    sessions: Vec<AgentSessionSummary>,
+    /// Grouped once per load; `render` must stay free of sorting and grouping.
+    sections: Vec<AgentSessionSection>,
     /// Read-only config/memory files (Hermes). Empty for agents without a set.
     files: Vec<AgentFile>,
     /// Persistent preview for the native file sheet; its content swaps per tap.
@@ -54,7 +55,7 @@ impl AgentDetail {
         let mut view = Self {
             slug,
             agent: None,
-            sessions: Vec::new(),
+            sections: Vec::new(),
             files: Vec::new(),
             file_preview,
             agent_state: LoadState::Loading,
@@ -145,12 +146,12 @@ impl AgentDetail {
                 }
                 match sessions {
                     Ok(sessions) => {
-                        this.sessions = sessions;
+                        this.sections = group_sessions_by_day(sessions);
                         this.session_state = LoadState::Ready;
                     }
                     Err(err) => {
                         error!(agent = slug, "agent detail sessions failed: {}", err);
-                        this.sessions.clear();
+                        this.sections.clear();
                         this.session_state = LoadState::Error(err.to_string());
                     }
                 }
@@ -279,7 +280,6 @@ impl AgentDetail {
 impl Render for AgentDetail {
     fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let agent = self.agent.clone();
-        let sessions = self.sessions.clone();
         let agent_state = self.agent_state.clone();
         let session_state = self.session_state.clone();
         let title = self.header_title();
@@ -315,13 +315,11 @@ impl Render for AgentDetail {
                         })
                         .child(render_agent_session_list(
                             AgentSessionListProps {
-                                sections: group_sessions_by_day(sessions),
+                                sections: &self.sections,
                                 loading: sessions_loading,
                                 error: sessions_error,
                                 empty_message: "No sessions found for this agent.",
                                 resume_on_tap: true,
-                                scroll_container: false,
-                                horizontal_padding: false,
                             },
                             cx,
                         )),

@@ -1,14 +1,19 @@
 use gpui::*;
+use std::rc::Rc;
 use tracing::error;
 use zedra_session::SessionHandle;
 
 use crate::agent_ui::{
-    AgentSessionListProps, AgentSessionSection, group_sessions_by_day, render_agent_session_list,
+    AgentSessionRow, flatten_session_sections, group_sessions_by_day, new_session_list_state,
+    render_virtualized_agent_session_list, reset_session_list_state,
 };
 use crate::fonts;
 use crate::platform_bridge::{self, HapticFeedback};
 use crate::theme;
-use crate::ui::{chevron_back_button, subscreen_page, subscreen_refresh_button};
+use crate::ui::{
+    chevron_back_button, subscreen_empty_text, subscreen_padded_body, subscreen_page_unscrolled,
+    subscreen_refresh_button,
+};
 use crate::workspace_action;
 
 #[derive(Clone, Debug)]
@@ -20,7 +25,8 @@ enum LoadState {
 
 pub struct AgentSessions {
     session_handle: SessionHandle,
-    sections: Vec<AgentSessionSection>,
+    rows: Rc<Vec<AgentSessionRow>>,
+    list_state: ListState,
     load_state: LoadState,
     loading_epoch: u64,
     _tasks: Vec<Task<()>>,
@@ -30,7 +36,8 @@ impl AgentSessions {
     pub fn new(session_handle: SessionHandle, cx: &mut Context<Self>) -> Self {
         let mut view = Self {
             session_handle,
-            sections: Vec::new(),
+            rows: Rc::new(Vec::new()),
+            list_state: new_session_list_state(0),
             load_state: LoadState::Loading,
             loading_epoch: 0,
             _tasks: Vec::new(),
@@ -42,7 +49,7 @@ impl AgentSessions {
     fn load(&mut self, refresh: bool, cx: &mut Context<Self>) {
         self.loading_epoch = self.loading_epoch.wrapping_add(1);
         let epoch = self.loading_epoch;
-        self.sections.clear();
+        self.set_rows(Vec::new());
         self.load_state = LoadState::Loading;
         cx.notify();
 
@@ -77,10 +84,10 @@ impl AgentSessions {
                 if this.loading_epoch != epoch {
                     return;
                 }
-                this.sections = group_sessions_by_day(sessions);
+                this.set_rows(flatten_session_sections(group_sessions_by_day(sessions)));
                 this.load_state = if errors.is_empty() {
                     LoadState::Ready
-                } else if this.sections.is_empty() {
+                } else if this.rows.is_empty() {
                     LoadState::Error(errors.join("; "))
                 } else {
                     error!("agent sessions partial failure: {}", errors.join("; "));
@@ -91,28 +98,37 @@ impl AgentSessions {
         });
         self._tasks.push(task);
     }
+
+    /// `ListState` caches row measurements, so it must be reset whenever the
+    /// row set changes or heights carry over from the previous load.
+    fn set_rows(&mut self, rows: Vec<AgentSessionRow>) {
+        reset_session_list_state(&self.list_state, rows.len());
+        self.rows = Rc::new(rows);
+    }
 }
 
 impl Render for AgentSessions {
     fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        let body = render_agent_session_list(
-            AgentSessionListProps {
-                sections: self.sections.clone(),
-                loading: matches!(self.load_state, LoadState::Loading),
-                error: match &self.load_state {
-                    LoadState::Error(message) => Some(message.clone()),
-                    _ => None,
-                },
-                empty_message: "No sessions found for this workspace.",
-                resume_on_tap: true,
-                scroll_container: false,
-                horizontal_padding: true,
-            },
-            cx,
-        )
-        .into_any_element();
+        let body: AnyElement = match &self.load_state {
+            LoadState::Loading => {
+                subscreen_padded_body(subscreen_empty_text("Loading…", cx)).into_any_element()
+            }
+            LoadState::Error(message) => {
+                subscreen_padded_body(subscreen_empty_text(message.clone(), cx)).into_any_element()
+            }
+            LoadState::Ready if self.rows.is_empty() => subscreen_padded_body(
+                subscreen_empty_text("No sessions found for this workspace.", cx),
+            )
+            .into_any_element(),
+            LoadState::Ready => render_virtualized_agent_session_list(
+                Rc::clone(&self.rows),
+                self.list_state.clone(),
+                true,
+            )
+            .into_any_element(),
+        };
         let header = render_session_header(cx).into_any_element();
-        subscreen_page("agent-sessions", rgb(theme::bg_primary(cx)), header, body)
+        subscreen_page_unscrolled("agent-sessions", rgb(theme::bg_primary(cx)), header, body)
     }
 }
 

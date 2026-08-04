@@ -2,6 +2,7 @@
 use chrono::{DateTime, Utc};
 use gpui::prelude::FluentBuilder;
 use gpui::*;
+use std::rc::Rc;
 use zedra_rpc::proto::{
     AgentInfoField, AgentSessionSummary, AgentSetupState, AgentSummary, AgentUsageSnapshot,
 };
@@ -9,6 +10,11 @@ use zedra_rpc::proto::{
 use crate::fonts;
 use crate::platform_bridge::{self, HapticFeedback};
 use crate::{theme, workspace_action};
+
+// Enough offscreen rows to keep fast mobile scrolls smooth without measuring
+// every session up front.
+const SESSION_LIST_OVERDRAW_PX: f32 = 800.0;
+const SESSION_LIST_BOTTOM_INSET: f32 = 30.0;
 
 // ---------------------------------------------------------------------------
 // Display helpers
@@ -398,15 +404,12 @@ fn format_reset_duration_dh(resets_at: i64) -> Option<String> {
 // Session card
 // ---------------------------------------------------------------------------
 
-pub struct SessionCardProps {
-    pub session: AgentSessionSummary,
+pub struct SessionCardProps<'a> {
+    pub session: &'a AgentSessionSummary,
     pub resume_on_tap: bool,
 }
 
-pub fn render_session_card<C: 'static>(
-    props: SessionCardProps,
-    cx: &mut Context<C>,
-) -> Stateful<Div> {
+pub fn render_session_card(props: SessionCardProps<'_>, cx: &App) -> Stateful<Div> {
     let session = props.session;
     let can_resume = session.resume.available;
     let slug = session.slug.clone();
@@ -431,10 +434,10 @@ pub fn render_session_card<C: 'static>(
         .items_center()
         .gap(px(10.0))
         .when(props.resume_on_tap && can_resume, |el| {
-            el.cursor_pointer().on_press(cx.listener({
+            el.cursor_pointer().on_press({
                 let session_id = session_id.clone();
                 let slug = slug.clone();
-                move |_this, _event, window, cx| {
+                move |_event, window, cx| {
                     platform_bridge::trigger_haptic(HapticFeedback::ImpactLight);
                     window.dispatch_action(
                         workspace_action::ResumeAgentSession {
@@ -445,7 +448,7 @@ pub fn render_session_card<C: 'static>(
                         cx,
                     );
                 }
-            }))
+            })
         })
         .id(item_id)
         .child(
@@ -462,8 +465,8 @@ pub fn render_session_card<C: 'static>(
                 .flex()
                 .flex_col()
                 .gap(px(4.0))
-                .child(session_title_row(&session, cx))
-                .child(session_meta_row(&session, cx)),
+                .child(session_title_row(session, cx))
+                .child(session_meta_row(session, cx)),
         )
 }
 
@@ -627,34 +630,25 @@ pub fn group_sessions_by_day(sessions: Vec<AgentSessionSummary>) -> Vec<AgentSes
     sections
 }
 
-pub struct AgentSessionListProps {
-    pub sections: Vec<AgentSessionSection>,
+pub struct AgentSessionListProps<'a> {
+    pub sections: &'a [AgentSessionSection],
     pub loading: bool,
     pub error: Option<String>,
     pub empty_message: &'static str,
     pub resume_on_tap: bool,
-    /// When true, the list fills remaining height and scrolls internally.
-    pub scroll_container: bool,
-    /// When true, applies horizontal padding on the list container.
-    pub horizontal_padding: bool,
 }
 
-pub fn render_agent_session_list<C: 'static>(
-    props: AgentSessionListProps,
-    cx: &mut Context<C>,
-) -> impl IntoElement {
+/// Eager list for short, embedded session lists (one agent, host-capped).
+/// Long, standalone lists use [`render_virtualized_agent_session_list`].
+pub fn render_agent_session_list(props: AgentSessionListProps<'_>, cx: &App) -> impl IntoElement {
     let mut list = div()
         .id("agent-session-list")
         .w_full()
         .min_w_0()
-        .pb(px(theme::SPACING_MD));
-    if props.horizontal_padding {
-        list = list.px(px(theme::SUBSCREEN_PADDING_X));
-    }
-    if props.scroll_container {
-        list = list.flex_1().min_h_0().overflow_y_scroll();
-    }
-    list = list.flex().flex_col().gap(px(theme::SPACING_SM));
+        .pb(px(theme::SPACING_MD))
+        .flex()
+        .flex_col()
+        .gap(px(theme::SPACING_SM));
 
     if props.loading {
         return list.child(list_empty_text("Loading…", cx));
@@ -668,7 +662,7 @@ pub fn render_agent_session_list<C: 'static>(
 
     for section in props.sections {
         list = list.child(section_header(&section.label, cx));
-        for session in section.sessions {
+        for session in &section.sessions {
             list = list.child(render_session_card(
                 SessionCardProps {
                     session,
@@ -679,6 +673,76 @@ pub fn render_agent_session_list<C: 'static>(
         }
     }
     list
+}
+
+/// One virtualized row: either a day header or a session card.
+pub enum AgentSessionRow {
+    Header(SharedString),
+    Session(AgentSessionSummary),
+}
+
+pub fn flatten_session_sections(sections: Vec<AgentSessionSection>) -> Vec<AgentSessionRow> {
+    let mut rows = Vec::new();
+    for section in sections {
+        rows.push(AgentSessionRow::Header(SharedString::from(section.label)));
+        rows.extend(section.sessions.into_iter().map(AgentSessionRow::Session));
+    }
+    rows
+}
+
+pub fn new_session_list_state(row_count: usize) -> ListState {
+    ListState::new(
+        session_list_item_count(row_count),
+        ListAlignment::Top,
+        px(SESSION_LIST_OVERDRAW_PX),
+    )
+}
+
+pub fn reset_session_list_state(state: &ListState, row_count: usize) {
+    state.reset(session_list_item_count(row_count));
+}
+
+fn session_list_item_count(row_count: usize) -> usize {
+    row_count + 1
+}
+
+/// Virtualized session list: only visible rows are built per frame. Fills its
+/// parent, which must give it a definite height and own no scroll of its own.
+pub fn render_virtualized_agent_session_list(
+    rows: Rc<Vec<AgentSessionRow>>,
+    state: ListState,
+    resume_on_tap: bool,
+) -> impl IntoElement {
+    let row_count = rows.len();
+    list(state, move |ix, _window, cx| {
+        let Some(row) = rows.get(ix) else {
+            return if ix == row_count {
+                div().h(px(SESSION_LIST_BOTTOM_INSET)).into_any_element()
+            } else {
+                Empty.into_any_element()
+            };
+        };
+        let content = match row {
+            AgentSessionRow::Header(label) => section_header(label, cx).into_any_element(),
+            AgentSessionRow::Session(session) => render_session_card(
+                SessionCardProps {
+                    session,
+                    resume_on_tap,
+                },
+                cx,
+            )
+            .into_any_element(),
+        };
+        div()
+            .w_full()
+            .min_w_0()
+            .px(px(theme::SUBSCREEN_PADDING_X))
+            .pb(px(theme::SPACING_SM))
+            .child(content)
+            .into_any_element()
+    })
+    .with_sizing_behavior(ListSizingBehavior::Auto)
+    .size_full()
 }
 
 fn section_header(label: &str, cx: &App) -> Div {
