@@ -12,8 +12,8 @@
 // `v3`->`v4` divergence: agents moved from the `AgentKind` enum to slug strings
 // (`AgentCapabilities` removed), `TerminalSyncEntry` gained `agent_slug`,
 // `AgentUsageSnapshot` gained `extra`, `HostEvent` gained
-// `TerminalAgentChanged`, and `FsSearchEntry` gained `worktree`. Everything
-// else is byte-identical.
+// `TerminalAgentChanged`, `FsSearchEntry` gained `worktree`, and
+// `InstalledAgentEntry` gained `web_client`. Everything else is byte-identical.
 
 use chrono::{DateTime, Utc};
 use irpc::channel::{mpsc, oneshot};
@@ -108,7 +108,7 @@ pub enum ZedraProtoV3 {
     AgentSessions(AgentSessionsReq),
     #[rpc(tx = oneshot::Sender<proto::AgentResumeResult>)]
     AgentResume(AgentResumeReq),
-    #[rpc(tx = oneshot::Sender<proto::AgentInstalledListResult>)]
+    #[rpc(tx = oneshot::Sender<AgentInstalledListResult>)]
     AgentInstalledList(proto::AgentInstalledListReq),
     #[rpc(tx = oneshot::Sender<proto::TermCreateResult>)]
     TermCreateV2(proto::TermCreateReqV2),
@@ -318,6 +318,22 @@ pub struct FsSearchResult {
     pub error: Option<String>,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct InstalledAgentEntry {
+    pub slug: String,
+    pub display_name: String,
+    pub icon_name: String,
+    pub available: bool,
+    pub version: Option<String>,
+    pub launch_cmd: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct AgentInstalledListResult {
+    pub agents: Vec<InstalledAgentEntry>,
+    pub error: Option<String>,
+}
+
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct AgentUsageSnapshot {
     pub context_used_percent: Option<f32>,
@@ -420,6 +436,27 @@ impl From<proto::FsSearchResult> for FsSearchResult {
                 })
                 .collect(),
             truncated: r.truncated,
+            error: r.error,
+        }
+    }
+}
+
+impl From<proto::AgentInstalledListResult> for AgentInstalledListResult {
+    fn from(r: proto::AgentInstalledListResult) -> Self {
+        // Drops `web_client` appended at `zedra/rpc/4`.
+        Self {
+            agents: r
+                .agents
+                .into_iter()
+                .map(|a| InstalledAgentEntry {
+                    slug: a.slug,
+                    display_name: a.display_name,
+                    icon_name: a.icon_name,
+                    available: a.available,
+                    version: a.version,
+                    launch_cmd: a.launch_cmd,
+                })
+                .collect(),
             error: r.error,
         }
     }
@@ -656,9 +693,6 @@ impl ZedraMessageV3 {
             }
             ZedraMessageV3::TermReorder(m) => M::TermReorder((m.inner, m.tx, m.rx).into()),
             ZedraMessageV3::FsDocsTree(m) => M::FsDocsTree((m.inner, m.tx, m.rx).into()),
-            ZedraMessageV3::AgentInstalledList(m) => {
-                M::AgentInstalledList((m.inner, m.tx, m.rx).into())
-            }
             ZedraMessageV3::TermCreateV2(m) => M::TermCreateV2((m.inner, m.tx, m.rx).into()),
             ZedraMessageV3::SetAppState(m) => M::SetAppState((m.inner, m.tx, m.rx).into()),
             ZedraMessageV3::SetClientDeltaInfo(m) => {
@@ -697,6 +731,9 @@ impl ZedraMessageV3 {
             ZedraMessageV3::AgentList(m) => {
                 M::AgentList((m.inner, m.tx.with_map(AgentListResult::from), m.rx).into())
             }
+            ZedraMessageV3::AgentInstalledList(m) => M::AgentInstalledList(
+                (m.inner, m.tx.with_map(AgentInstalledListResult::from), m.rx).into(),
+            ),
             // Stream: drop events the old client cannot decode.
             ZedraMessageV3::Subscribe(m) => {
                 M::Subscribe((m.inner, m.tx.with_filter_map(host_event_v3), m.rx).into())
@@ -764,6 +801,95 @@ mod tests {
         let bytes = postcard::to_stdvec(&v3).unwrap();
         let decoded: FsSearchResult = postcard::from_bytes(&bytes).unwrap();
         assert_eq!(decoded.entries[0].rel_path, "src/main.rs");
+    }
+
+    /// Golden bytes for types `v3` reuses from `proto`. A reused type that gains
+    /// a field breaks shipped `v3` clients (postcard is positional and rejects
+    /// trailing bytes), so a diff here means: freeze the type in this module and
+    /// map it, then update the fixture.
+    #[test]
+    fn reused_types_keep_their_v3_bytes() {
+        let cases: Vec<(&str, Vec<u8>)> = vec![
+            (
+                "TermListResult",
+                postcard::to_stdvec(&proto::TermListResult {
+                    terminals: vec![proto::TermListEntry {
+                        id: "t1".into(),
+                        position: 3,
+                    }],
+                })
+                .unwrap(),
+            ),
+            (
+                "SessionListResult",
+                postcard::to_stdvec(&proto::SessionListResult {
+                    sessions: vec![proto::SessionListEntry {
+                        id: "s1".into(),
+                        name: None,
+                        workdir: Some("/w".into()),
+                        terminal_count: 2,
+                        uptime_secs: 5,
+                        idle_secs: 1,
+                        is_occupied: false,
+                    }],
+                })
+                .unwrap(),
+            ),
+            (
+                "AgentFilesResult",
+                postcard::to_stdvec(&proto::AgentFilesResult {
+                    files: vec![proto::AgentFile {
+                        label: "SOUL.md".into(),
+                        path: "/w/SOUL.md".into(),
+                        content: "hi".into(),
+                        truncated: false,
+                        missing: false,
+                    }],
+                    error: None,
+                })
+                .unwrap(),
+            ),
+            (
+                "AgentResumeResult",
+                postcard::to_stdvec(&proto::AgentResumeResult {
+                    terminal_id: "t1".into(),
+                    error: None,
+                })
+                .unwrap(),
+            ),
+        ];
+        let expected: [&[u8]; 4] = [
+            &[1, 2, 116, 49, 3],
+            &[1, 2, 115, 49, 0, 1, 2, 47, 119, 2, 5, 1, 0],
+            &[
+                1, 7, 83, 79, 85, 76, 46, 109, 100, 10, 47, 119, 47, 83, 79, 85, 76, 46, 109, 100,
+                2, 104, 105, 0, 0, 0,
+            ],
+            &[2, 116, 49, 0],
+        ];
+        for ((name, actual), want) in cases.iter().zip(expected) {
+            assert_eq!(actual.as_slice(), want, "{name} wire bytes changed");
+        }
+    }
+
+    #[test]
+    fn installed_agent_entry_drops_v4_web_client() {
+        let v4 = proto::AgentInstalledListResult {
+            agents: vec![proto::InstalledAgentEntry {
+                slug: "opencode".into(),
+                display_name: "opencode".into(),
+                icon_name: "opencode".into(),
+                available: true,
+                version: None,
+                launch_cmd: Some("opencode".into()),
+                web_client: true,
+            }],
+            error: None,
+        };
+        let v3: AgentInstalledListResult = v4.into();
+        let bytes = postcard::to_stdvec(&v3).unwrap();
+        let decoded: AgentInstalledListResult = postcard::from_bytes(&bytes).unwrap();
+        assert_eq!(decoded.agents[0].slug, "opencode");
     }
 
     #[test]

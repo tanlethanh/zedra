@@ -559,7 +559,8 @@ Behavioral degradation for `v3` clients (all non-fatal): agents moved from the
 `AgentKind` enum to slug strings at `v4`, so actors outside the frozen five
 (`claude`/`codex`/`opencode`/`pi`/`hermes`) are filtered out and the removed
 `AgentCapabilities` is synthesized; the `agent_slug` field on `TerminalSyncEntry`,
-the `extra` usage lines, and the `v4`-only `TerminalAgentChanged` event are
+`FsSearchEntry.worktree`, `InstalledAgentEntry.web_client`, the `extra` usage
+lines, and the `v4`-only `TerminalAgentChanged`/`WebViewRequested` events are
 dropped (an unknown discriminant would be undecodable and kill the stream, §2.4).
 
 Exit: drop a frozen module + its `alpns(...)` entry once that version's traffic
@@ -646,6 +647,16 @@ Any protocol-layer change must include all applicable steps:
 ---
 
 ## 11) Protocol Changelog
+
+### 2026-08-04
+
+- Fixed a `zedra/rpc/3` regression: `InstalledAgentEntry.web_client` (added with
+  the web-client work) reached `v3` clients through the reused
+  `proto::AgentInstalledListResult`, so `AgentInstalledList` responses carried a
+  trailing byte per entry and failed to decode. `proto_v3.rs` now freezes
+  `InstalledAgentEntry`/`AgentInstalledListResult` and maps the field away.
+- Added golden-byte tests over the response types `v3` reuses from `proto`, so a
+  reused type that gains a field fails a test instead of shipping.
 
 ### 2026-07-05
 
