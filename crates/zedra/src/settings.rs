@@ -17,7 +17,7 @@ struct AppSettings {
     /// Opt-out flag for anonymous telemetry. `None`/absent = enabled (default-on).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     telemetry_enabled: Option<bool>,
-    /// Water droplet effect. `None`/absent = enabled (default-on).
+    /// Water droplet effect. `None`/absent = disabled (default-off).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     droplet_enabled: Option<bool>,
 }
@@ -176,13 +176,13 @@ pub fn set_telemetry_enabled(enabled: bool) {
     }
 }
 
-/// Whether the water droplet effect is enabled. Default on.
+/// Whether the water droplet effect is enabled. Default off.
 pub fn read_droplet_enabled() -> bool {
     match read_settings() {
-        Ok(settings) => settings.droplet_enabled.unwrap_or(true),
+        Ok(settings) => settings.droplet_enabled.unwrap_or(false),
         Err(err) => {
             info!(err = %err, "settings: using default droplet preference");
-            true
+            false
         }
     }
 }

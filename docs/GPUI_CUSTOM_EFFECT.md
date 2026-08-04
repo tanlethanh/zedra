@@ -134,7 +134,7 @@ and stays element-local, like existing drag interactions — it is not
 
 ## Settings toggle
 
-The droplet ships as a user-facing setting, default on.
+The droplet ships as a user-facing setting, default off.
 
 - `crates/zedra/src/settings.rs`: `read_droplet_enabled()` /
   `set_droplet_enabled()`, copying the `telemetry_enabled` pattern.
