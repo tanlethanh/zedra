@@ -205,6 +205,9 @@ pub struct WorkspaceState {
     pub workdir: String,
     pub homedir: String,
     pub hostname: String,
+    /// Host operating system as reported by sync, e.g. `macos`. Drives the
+    /// platform-specific keypad slot.
+    pub host_os: Option<String>,
     #[serde(default)]
     pub username: String,
     // Workspace-relative docs tree directories hidden by the user.
@@ -246,6 +249,7 @@ struct WorkspaceStateSyncSnapshot {
     workdir: String,
     homedir: String,
     hostname: String,
+    host_os: Option<String>,
     username: String,
     connect_phase: Option<ConnectPhase>,
     active_terminal_id: Option<String>,
@@ -323,6 +327,7 @@ impl WorkspaceState {
             workdir: self.workdir.clone(),
             homedir: self.homedir.clone(),
             hostname: self.hostname.clone(),
+            host_os: self.host_os.clone(),
             username: self.username.clone(),
             connect_phase: self.connect_phase.clone(),
             active_terminal_id: self.active_terminal_id.clone(),
@@ -408,6 +413,9 @@ impl WorkspaceState {
         let snap = &session_state.snapshot;
         if !snap.hostname.is_empty() {
             self.hostname = snap.hostname.clone();
+        }
+        if snap.os.is_some() {
+            self.host_os = snap.os.clone();
         }
         if !snap.username.is_empty() {
             self.username = snap.username.clone();

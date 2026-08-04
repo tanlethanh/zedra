@@ -112,6 +112,16 @@ func ios_set_pinned_key_bar_visible(_ visible: Bool) {
     GPUIRuntimeController.setPinnedKeyBarVisible(visible)
 }
 
+@_cdecl("ios_cancel_keypad_composer")
+func ios_cancel_keypad_composer() {
+    GPUIRuntimeController.cancelKeypadComposer()
+}
+
+@_cdecl("ios_set_keypad_layout")
+func ios_set_keypad_layout(_ extended: Bool, _ cmdSlot: Bool) {
+    GPUIRuntimeController.setKeypadLayout(extended: extended, cmdSlot: cmdSlot)
+}
+
 #if !ZEDRA_NO_TELEMETRY
 @_cdecl("zedra_firebase_initialize")
 func zedra_firebase_initialize_bridge() {

@@ -541,6 +541,7 @@ impl TerminalView {
         let is_focused = self.focus_handle.is_focused(window);
         let keyboard_visible = window.is_soft_keyboard_visible();
         window.prevent_default();
+        cx.emit(TerminalEvent::SurfaceTapped);
 
         if is_focused && keyboard_visible {
             // window.blur only blurs focus, not the keyboard — hide it explicitly.

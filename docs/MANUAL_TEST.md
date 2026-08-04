@@ -1153,6 +1153,37 @@ printf '\033]8;;file:///tmp/zedra-long-code.rs:41:1\033\\/tmp/zedra-long-code.rs
 21. Rotate the device with the pinned bar visible
 22. Expected: the bar spans the new width with evenly spaced keys
 
+## 11h. Extended Keypad
+
+1. Set Settings → Terminal → Extended keypad to On, then open a terminal
+2. Expected: the keypad shows two rows — `Esc Shift Tab / - ↑ ⏎` over `⌫ Ctrl Alt Cmd ← ↓ →` — and terminal content sits above both rows
+3. Connect to a macOS host, then to a Linux host
+4. Expected: the fourth key of the bottom row is `Cmd` on macOS and `|` on Linux, updating on reconnect without restarting the app
+5. Tap `/` and `-`
+6. Expected: each character reaches the PTY exactly once
+7. Press and hold `⌫`
+8. Expected: characters delete one at a time and the repeat stops on release
+9. Tap `Ctrl` once, then tap `←` on the keypad
+10. Expected: `Ctrl` highlights faintly while armed, the terminal receives Ctrl+Left, and the highlight clears
+11. Tap `Ctrl` once, then type `c` on the software keyboard
+12. Expected: the running command is interrupted, exactly as a hardware Ctrl+C would
+13. Double-tap `Ctrl`, then press several keys
+14. Expected: `Ctrl` stays solidly highlighted and applies to every key until tapped a third time
+15. Arm `Alt` and `Shift` together, then press a key
+16. Expected: both modifiers apply to that key and both clear afterwards
+17. In an editor such as `vim`, arm nothing and press the arrows
+18. Expected: arrows navigate normally, including in app-cursor mode
+19. Drag left slowly across the keypad and hold mid-drag
+20. Expected: the keys slide out and the composing field slides in with the finger; releasing before halfway springs back to the keys with no keystroke sent
+21. Drag left past halfway and release
+22. Expected: the composer settles into place and the software keyboard opens
+23. Compose a multi-word message using IME features (autocorrect, prediction, a non-Latin IME), then tap `Send`
+24. Expected: nothing reaches the PTY while composing; on send the whole line arrives at the prompt without being run, and the field clears
+25. Drag right to return, then drag starting from inside the text field
+26. Expected: the first drag returns to the keys; the drag inside the field places the cursor instead of moving the page
+27. Set Extended keypad back to Off
+28. Expected: the single-row keypad returns immediately on both the pinned and keyboard-attached bars
+
 ## 12. Quick Action Terminal Navigation
 
 1. Connect to a session with at least two open terminals

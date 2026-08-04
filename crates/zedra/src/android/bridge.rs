@@ -36,6 +36,14 @@ impl PlatformBridge for AndroidBridge {
         jni::set_pinned_key_bar_visible(visible)
     }
 
+    fn set_keypad_layout(&self, extended: bool, cmd_slot: bool) {
+        jni::set_keypad_layout(extended, cmd_slot)
+    }
+
+    fn cancel_keypad_composer(&self) {
+        jni::cancel_keypad_composer()
+    }
+
     fn pinned_key_bar_height(&self) -> u32 {
         jni::get_pinned_key_bar_height()
     }

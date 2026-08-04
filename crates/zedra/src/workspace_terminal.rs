@@ -43,7 +43,6 @@ enum PasteMenuAction {
 
 pub struct WorkspaceTerminal {
     terminal_id: String,
-    #[allow(dead_code)]
     workspace_state: Entity<WorkspaceState>,
     terminal_state: Entity<TerminalState>,
     session_handle: SessionHandle,
@@ -367,6 +366,12 @@ impl WorkspaceTerminal {
                         },
                     );
                 }
+                TerminalEvent::StickyModifiersChanged(mask) => {
+                    crate::key_bar::set_modifier_mask(*mask);
+                }
+                TerminalEvent::SurfaceTapped => {
+                    platform_bridge::bridge().cancel_keypad_composer();
+                }
                 TerminalEvent::AltScreenChanged(is_alt) => {
                     this.is_alt_screen = *is_alt;
                     cx.notify();
@@ -657,10 +662,18 @@ impl Render for WorkspaceTerminal {
             });
         }
 
-        // The pinned bar replaces the keyboard accessory once the keyboard is
-        // down, so exactly one of the two ever reserves space.
-        let pinned_key_bar_visible =
-            !window.is_soft_keyboard_visible() && !any_drawer_open() && key_bar_enabled;
+        // The keypad is available whenever the terminal owns the screen; the key rows
+        // themselves hide while any keyboard is up, including the composer's own.
+        let keypad_available = key_bar_enabled && !any_drawer_open();
+        let pinned_key_bar_visible = keypad_available && !window.is_soft_keyboard_visible();
+
+        // Deferred so render itself stays free of native side effects; both calls
+        // are change-gated, so the deferred closure is a no-op on most frames.
+        let host_os = self.workspace_state.read(cx).host_os.clone();
+        window.defer(cx, move |_, _| {
+            crate::key_bar::sync_keypad_layout(host_os.as_deref());
+            crate::key_bar::sync_keys_visible(pinned_key_bar_visible);
+        });
         // Reserve the bar's space whenever the setting is on, even while the bar is
         // hidden behind a drawer — otherwise terminal content jumps on every toggle.
         let keyboard_inset = if terminal_owns_keyboard {
@@ -715,7 +728,7 @@ impl Render for WorkspaceTerminal {
                 div.pb(keyboard_inset)
             })
             .child(self.terminal_view.clone())
-            .when(pinned_key_bar_visible, |container| {
+            .when(keypad_available, |container| {
                 container.child(crate::key_bar::pinned_key_bar((
                     "terminal-pinned-key-bar",
                     cx.entity_id(),

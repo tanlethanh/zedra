@@ -3,7 +3,7 @@ use std::ops::Range;
 use gpui::*;
 use smallvec::SmallVec;
 
-use crate::keyboard_accessory::AccessoryKey;
+use crate::keyboard_accessory::{self, AccessoryKey};
 use crate::selection::TerminalSelectionDocument;
 use crate::terminal::Terminal;
 
@@ -619,6 +619,27 @@ impl InputHandler for TerminalInputHandler {
     }
 
     fn insert_text(&mut self, text: &str, _window: &mut Window, cx: &mut App) {
+        // A modifier armed on the keypad turns the next committed character into a
+        // keystroke, so Ctrl on the bar + `c` on the IME reaches the PTY as Ctrl+C.
+        if let Some(ch) = keyboard_accessory::single_char(text) {
+            let armed = self
+                .entity
+                .read_with(cx, |term, _cx| term.sticky_modifier_mask() != 0)
+                .unwrap_or(false);
+            if armed {
+                let entity = self.entity.clone();
+                let _ = entity.update(cx, |term, cx| {
+                    let keystroke =
+                        term.sticky_keystroke(keyboard_accessory::literal_keystroke(ch));
+                    term.clear_text_input_context();
+                    term.handle_keystroke(&keystroke);
+                    term.consume_sticky_modifiers();
+                    cx.notify();
+                });
+                return;
+            }
+        }
+
         let text = text.to_string();
         if self.clear_selection_for_text_input(cx) {
             if text.is_empty() {
@@ -1090,13 +1111,34 @@ impl InputHandler for TerminalInputHandler {
         _window: &mut Window,
         cx: &mut App,
     ) -> bool {
-        let Some(keystroke) = AccessoryKey::from_name(action).map(|action| action.keystroke())
-        else {
+        let entity = self.entity.clone();
+
+        // Modifier keys only mutate sticky state; nothing reaches the PTY yet.
+        if let Some(modifier) = action
+            .strip_prefix("mod:")
+            .and_then(keyboard_accessory::ModifierKey::from_name)
+        {
+            return entity
+                .update(cx, |term, _cx| term.cycle_sticky_modifier(modifier))
+                .is_ok();
+        }
+
+        let keystroke = if let Some(literal) = action.strip_prefix("char:") {
+            match keyboard_accessory::single_char(literal) {
+                Some(ch) => keyboard_accessory::literal_keystroke(ch),
+                None => return false,
+            }
+        } else if let Some(key) = AccessoryKey::from_name(action) {
+            key.keystroke()
+        } else {
             return false;
         };
-        let entity = self.entity.clone();
+
         entity
-            .update(cx, |term, _cx| term.handle_keystroke(&keystroke))
+            .update(cx, |term, _cx| {
+                term.handle_keystroke(&term.sticky_keystroke(keystroke));
+                term.consume_sticky_modifiers();
+            })
             .is_ok()
     }
 

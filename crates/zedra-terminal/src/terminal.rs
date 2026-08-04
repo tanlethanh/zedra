@@ -32,6 +32,11 @@ pub enum TerminalEvent {
     OscEvent(OscEvent),
     OpenHyperlink(TerminalHyperlink),
     AltScreenChanged(bool),
+    /// The user tapped the terminal surface.
+    SurfaceTapped,
+    /// Armed/locked keypad modifiers changed; the encoding is documented on
+    /// `keyboard_accessory::sticky_modifier_mask`.
+    StickyModifiersChanged(u32),
     DictationPreviewChanged(Option<String>),
     ScrollbackPositionChanged {
         display_offset: usize,
@@ -208,6 +213,9 @@ pub struct Terminal {
     synchronized_update_timeout_task: Option<Task<()>>,
     selection_range: Option<Range<usize>>,
     theme: TerminalTheme,
+    /// Armed/locked keypad modifiers for this terminal. Per-terminal rather than
+    /// process-wide so arming Ctrl in one terminal cannot leak into another.
+    sticky_modifiers: u32,
 }
 
 impl Terminal {
@@ -245,6 +253,7 @@ impl Terminal {
             pending_sync_deadline: None,
             synchronized_update_timeout_task: None,
             selection_range: None,
+            sticky_modifiers: 0,
             theme,
         };
         terminal
@@ -499,6 +508,44 @@ impl Terminal {
     }
 
     /// Handle a keystroke, converting to escape sequence and sending via SSH or RPC session
+    pub fn sticky_modifier_mask(&self) -> u32 {
+        self.sticky_modifiers
+    }
+
+    /// Tap arms a modifier, tapping again locks it, a third tap clears it.
+    pub fn cycle_sticky_modifier(&mut self, key: crate::keyboard_accessory::ModifierKey) {
+        self.set_sticky_modifiers(crate::keyboard_accessory::cycled_mask(
+            self.sticky_modifiers,
+            key,
+        ));
+    }
+
+    /// Drop armed modifiers once a key has consumed them; locked ones persist.
+    pub fn consume_sticky_modifiers(&mut self) {
+        self.set_sticky_modifiers(crate::keyboard_accessory::consumed_mask(
+            self.sticky_modifiers,
+        ));
+    }
+
+    fn set_sticky_modifiers(&mut self, mask: u32) {
+        if self.sticky_modifiers == mask {
+            return;
+        }
+        self.sticky_modifiers = mask;
+        let _ = self
+            .event_tx
+            .send(TerminalEvent::StickyModifiersChanged(mask));
+    }
+
+    /// A keystroke with this terminal's armed modifiers folded in.
+    pub fn sticky_keystroke(&self, keystroke: Keystroke) -> Keystroke {
+        Keystroke {
+            modifiers: keystroke.modifiers
+                | crate::keyboard_accessory::modifiers_from_mask(self.sticky_modifiers),
+            ..keystroke
+        }
+    }
+
     pub fn handle_keystroke(&mut self, keystroke: &Keystroke) {
         // Try to convert keystroke to terminal escape sequence
         if let Some(bytes) = self.try_keystroke(keystroke) {
@@ -4739,5 +4786,60 @@ mod tests {
         let links = terminal.detect_plain_links();
         assert_eq!(links.len(), 1, "expected only URL match, got {:?}", links);
         assert_eq!(links[0].kind, super::DetectedLinkKind::Url);
+    }
+
+    #[test]
+    fn sticky_modifiers_clear_once_a_key_consumes_them() {
+        use crate::keyboard_accessory::ModifierKey;
+
+        let mut terminal = Terminal::new(80, 4, px(10.0), px(20.0));
+        terminal.cycle_sticky_modifier(ModifierKey::Ctrl);
+        assert!(
+            terminal
+                .sticky_keystroke(plain_keystroke("c"))
+                .modifiers
+                .control
+        );
+
+        terminal.consume_sticky_modifiers();
+        assert_eq!(
+            terminal.sticky_modifier_mask(),
+            0,
+            "armed modifier is consumed"
+        );
+        assert!(
+            !terminal
+                .sticky_keystroke(plain_keystroke("c"))
+                .modifiers
+                .control
+        );
+    }
+
+    #[test]
+    fn locked_sticky_modifier_survives_consumption() {
+        use crate::keyboard_accessory::ModifierKey;
+
+        let mut terminal = Terminal::new(80, 4, px(10.0), px(20.0));
+        // Two taps lock it; a third clears it outright.
+        terminal.cycle_sticky_modifier(ModifierKey::Ctrl);
+        terminal.cycle_sticky_modifier(ModifierKey::Ctrl);
+        terminal.consume_sticky_modifiers();
+        assert!(
+            terminal
+                .sticky_keystroke(plain_keystroke("c"))
+                .modifiers
+                .control
+        );
+
+        terminal.cycle_sticky_modifier(ModifierKey::Ctrl);
+        assert_eq!(terminal.sticky_modifier_mask(), 0);
+    }
+
+    fn plain_keystroke(key: &str) -> gpui::Keystroke {
+        gpui::Keystroke {
+            modifiers: gpui::Modifiers::default(),
+            key: key.to_string(),
+            key_char: Some(key.to_string()),
+        }
     }
 }

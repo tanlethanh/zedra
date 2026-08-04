@@ -64,6 +64,22 @@ void zedra_ios_set_screen_scale(float scale);
 void zedra_ios_set_keyboard_height(uint32_t height_px);
 
 /**
+ * Armed/locked keypad modifiers, for rendering key highlights. Bit layout is
+ * documented on `zedra_terminal::keyboard_accessory::sticky_modifier_mask`.
+ */
+uint32_t zedra_ios_key_bar_modifier_mask(void);
+
+/**
+ * Whether the extended two-row keypad is enabled, for the initial layout.
+ */
+bool zedra_ios_extended_keypad(void);
+
+/**
+ * Whether the keypad's platform slot shows Cmd rather than `|`.
+ */
+bool zedra_ios_keypad_cmd_slot(void);
+
+/**
  * Called from Swift when the pinned key bar is shown, hidden, or re-laid out.
  *
  * `height_px` is the bar's full height (including safe-area padding) × scale, 0 when hidden.
@@ -276,6 +292,11 @@ extern void ios_set_keyboard_accessory_theme(bool is_dark);
  * Show or hide the key bar pinned above the safe area when the keyboard is down.
  */
 extern void ios_set_pinned_key_bar_visible(bool visible);
+
+/**
+ * Switch the keypad layout and its platform slot.
+ */
+extern void ios_set_keypad_layout(bool extended, bool cmd_slot);
 
 /**
  * Acquire an image natively. source: 0 = photo library, 1 = clipboard.

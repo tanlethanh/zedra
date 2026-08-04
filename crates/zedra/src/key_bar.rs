@@ -5,7 +5,7 @@
 //! GPUI hides it as soon as the terminal stops being painted (navigation,
 //! terminal close), which no `WorkspaceTerminal` callback covers on its own.
 
-use std::sync::atomic::{AtomicU32, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicI8, AtomicU32, Ordering};
 
 use gpui::*;
 
@@ -18,6 +18,52 @@ pub fn pinned_key_bar(id: impl Into<ElementId>) -> PinnedKeyBar {
 /// Last non-zero bar height in physical pixels, so the space stays reserved while
 /// the bar is temporarily hidden.
 static LAST_HEIGHT_PX: AtomicU32 = AtomicU32::new(0);
+
+/// Whether the keypad's platform slot shows Cmd instead of `|`. Cmd only means
+/// anything to a macOS host, so it follows the connected host's OS.
+static CMD_SLOT: AtomicBool = AtomicBool::new(false);
+/// Last layout pushed to the native bars, encoded as extended | cmd << 1.
+/// `-1` forces the first push.
+static PUSHED_LAYOUT: AtomicI8 = AtomicI8::new(-1);
+/// Last key-row visibility pushed to the native bars. `-1` forces the first push.
+static PUSHED_KEYS_VISIBLE: AtomicI8 = AtomicI8::new(-1);
+
+/// Show or hide the key rows. Separate from availability: the composer raises its
+/// own keyboard, which hides the rows without tearing the keypad down.
+pub fn sync_keys_visible(visible: bool) {
+    if PUSHED_KEYS_VISIBLE.swap(visible as i8, Ordering::Relaxed) != visible as i8 {
+        platform_bridge::bridge().set_pinned_key_bar_visible(visible);
+    }
+}
+
+pub fn host_uses_cmd_slot() -> bool {
+    CMD_SLOT.load(Ordering::Relaxed)
+}
+
+/// Armed/locked modifiers of the active terminal, mirrored for the native bars.
+/// The terminal entity owns the state; this is only the FFI-visible copy.
+static MODIFIER_MASK: AtomicU32 = AtomicU32::new(0);
+
+pub fn modifier_mask() -> u32 {
+    MODIFIER_MASK.load(Ordering::Relaxed)
+}
+
+pub fn set_modifier_mask(mask: u32) {
+    MODIFIER_MASK.store(mask, Ordering::Relaxed);
+}
+
+/// Reconcile the native keypad layout with the current setting and host OS.
+/// Cheap enough to call every render; only a change reaches the platform.
+pub fn sync_keypad_layout(host_os: Option<&str>) {
+    let cmd_slot = host_os.is_some_and(|os| os.eq_ignore_ascii_case("macos"));
+    CMD_SLOT.store(cmd_slot, Ordering::Relaxed);
+
+    let extended = crate::settings::extended_keypad();
+    let encoded = extended as i8 | ((cmd_slot as i8) << 1);
+    if PUSHED_LAYOUT.swap(encoded, Ordering::Relaxed) != encoded {
+        platform_bridge::bridge().set_keypad_layout(extended, cmd_slot);
+    }
+}
 
 /// Height the terminal reserves for the pinned key bar, in logical pixels.
 ///
@@ -52,7 +98,15 @@ struct PinnedKeyBarState;
 
 impl Drop for PinnedKeyBarState {
     fn drop(&mut self) {
-        platform_bridge::bridge().set_pinned_key_bar_visible(false);
+        // Leaving the terminal takes the composer's keyboard with it; merely hiding
+        // the rows for a keyboard must not, which is why this lives on unmount.
+        let bridge = platform_bridge::bridge();
+        bridge.set_pinned_key_bar_visible(false);
+        bridge.cancel_keypad_composer();
+        PUSHED_KEYS_VISIBLE.store(-1, Ordering::Relaxed);
+        PUSHED_LAYOUT.store(-1, Ordering::Relaxed);
+        CMD_SLOT.store(false, Ordering::Relaxed);
+        MODIFIER_MASK.store(0, Ordering::Relaxed);
     }
 }
 
@@ -91,10 +145,7 @@ impl Element for PinnedKeyBar {
             return;
         };
         window.with_element_state(id, |state: Option<PinnedKeyBarState>, _window| {
-            let state = state.unwrap_or_else(|| {
-                platform_bridge::bridge().set_pinned_key_bar_visible(true);
-                PinnedKeyBarState
-            });
+            let state = state.unwrap_or_else(|| PinnedKeyBarState);
             ((), state)
         });
     }

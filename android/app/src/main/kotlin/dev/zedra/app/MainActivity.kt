@@ -62,6 +62,7 @@ class MainActivity : AppCompatActivity() {
     private var keyBarPollActive = false
     private var lastAccessoryHeight = -1
     private var lastPinnedHeight = -1
+    private var lastComposerCancelSeq = 0
     // GPUI draws into the SurfaceView's own surface, so the Android view tree does
     // not invalidate when the terminal mounts the bar or a drawer opens. Poll per
     // vsync instead; a view-tree pre-draw listener only fires on IME inset changes.
@@ -119,14 +120,18 @@ class MainActivity : AppCompatActivity() {
 
         rootView = FrameLayout(this)
         surfaceView = runtime.attach(rootView)
-        keyboardAccessoryBar = KeyboardAccessoryBar(this) { key ->
-            nativeKeyboardAccessoryKey(key)
-        }
+        keyboardAccessoryBar =
+            KeyboardAccessoryBar(
+                this,
+                sendKey = { key -> nativeKeyboardAccessoryKey(key) },
+                sendComposedText = { text -> nativeKeyBarComposedText(text) },
+                requestTerminalKeyboard = { surfaceView.requestKeyboard() },
+            )
         rootView.addView(
             keyboardAccessoryBar,
             FrameLayout.LayoutParams(
                 FrameLayout.LayoutParams.MATCH_PARENT,
-                (44 * resources.displayMetrics.density).toInt(),
+                keyboardAccessoryBar.desiredHeightPx,
                 Gravity.BOTTOM,
             ),
         )
@@ -317,6 +322,14 @@ class MainActivity : AppCompatActivity() {
         val pinned = keyboardImeBottom == 0 && nativePinnedKeyBarVisible()
         val visible = ridesKeyboard || pinned
 
+        val layout = nativeKeypadLayout()
+        if (keyboardAccessoryBar.setLayout(layout and 1 != 0, layout and 2 != 0)) {
+            val params = keyboardAccessoryBar.layoutParams as FrameLayout.LayoutParams
+            params.height = keyboardAccessoryBar.desiredHeightPx
+            keyboardAccessoryBar.layoutParams = params
+        }
+        keyboardAccessoryBar.setModifierMask(nativeKeyBarModifierMask())
+
         val bottomMargin = if (pinned) navigationBarBottom else keyboardImeBottom
         val params = keyboardAccessoryBar.layoutParams as FrameLayout.LayoutParams
         if (params.bottomMargin != bottomMargin) {
@@ -342,6 +355,11 @@ class MainActivity : AppCompatActivity() {
         }
         if (!visible) {
             keyboardAccessoryBar.stopRepeating()
+        }
+        val cancelSeq = nativeKeypadComposerCancelSeq()
+        if (cancelSeq != lastComposerCancelSeq) {
+            lastComposerCancelSeq = cancelSeq
+            keyboardAccessoryBar.cancelComposing()
         }
     }
 
@@ -446,6 +464,15 @@ class MainActivity : AppCompatActivity() {
         @JvmStatic external fun nativeKeyboardAccessoryVisible(): Boolean
 
         @JvmStatic external fun nativePinnedKeyBarVisible(): Boolean
+
+        @JvmStatic external fun nativeKeypadComposerCancelSeq(): Int
+
+        /** Bit 0 = extended rows, bit 1 = Cmd in the platform slot. */
+        @JvmStatic external fun nativeKeypadLayout(): Int
+
+        @JvmStatic external fun nativeKeyBarModifierMask(): Int
+
+        @JvmStatic external fun nativeKeyBarComposedText(text: String)
 
         @JvmStatic external fun nativeSetPinnedKeyBarHeight(heightPx: Int)
 

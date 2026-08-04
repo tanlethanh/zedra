@@ -44,6 +44,13 @@ pub extern "C" fn zedra_ios_set_keyboard_height(height_px: u32) {
     super::app::notify_main_window();
 }
 
+/// Armed/locked keypad modifiers, for rendering key highlights. Bit layout is
+/// documented on `zedra_terminal::keyboard_accessory::sticky_modifier_mask`.
+#[unsafe(no_mangle)]
+pub extern "C" fn zedra_ios_key_bar_modifier_mask() -> u32 {
+    crate::key_bar::modifier_mask()
+}
+
 /// Called from Swift when the pinned key bar is shown, hidden, or re-laid out.
 ///
 /// `height_px` is the bar's full height (including safe-area padding) × scale, 0 when hidden.
@@ -207,6 +214,10 @@ unsafe extern "C" {
     fn ios_set_keyboard_accessory_theme(is_dark: bool);
     /// Show or hide the key bar pinned above the safe area when the keyboard is down.
     fn ios_set_pinned_key_bar_visible(visible: bool);
+    /// Switch the keypad layout and its platform slot.
+    fn ios_set_keypad_layout(extended: bool, cmd_slot: bool);
+    /// Drop the keypad composer and the keyboard it owns.
+    fn ios_cancel_keypad_composer();
     /// Acquire an image natively. source: 0 = photo library, 1 = clipboard.
     /// Delivers exactly one of zedra_ios_image_acquire_{result,cancel,error}(callback_id, ..).
     fn ios_acquire_image(callback_id: u32, source: i32);
@@ -247,6 +258,14 @@ impl PlatformBridge for IosBridge {
 
     fn set_pinned_key_bar_visible(&self, visible: bool) {
         unsafe { ios_set_pinned_key_bar_visible(visible) };
+    }
+
+    fn cancel_keypad_composer(&self) {
+        unsafe { ios_cancel_keypad_composer() };
+    }
+
+    fn set_keypad_layout(&self, extended: bool, cmd_slot: bool) {
+        unsafe { ios_set_keypad_layout(extended, cmd_slot) };
     }
 
     fn pinned_key_bar_height(&self) -> u32 {
