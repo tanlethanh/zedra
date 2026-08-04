@@ -44,6 +44,17 @@ targets:
       path: Zedra/Info.plist
       properties:
         NSSupportsLiveActivities: true
+        # Web tunnel loads plain http://localhost:<port> in WKWebView; ATS blocks
+        # cleartext by default even to loopback. Mirrors Android's
+        # network_security_config.xml localhost/127.0.0.1 cleartext exemption.
+        NSAppTransportSecurity:
+          NSAllowsLocalNetworking: true
+          # Alias-mode tunnel serves <label>.zedra.test over cleartext http through
+          # the in-app SOCKS proxy; not covered by NSAllowsLocalNetworking.
+          NSExceptionDomains:
+            zedra.test:
+              NSExceptionAllowsInsecureHTTPLoads: true
+              NSIncludesSubdomains: true
         # Firebase default-off: nothing collects until the user is confirmed
         # opted-in at runtime via zedra_set_collection_enabled
         # (telemetry::apply_persisted_optout).
@@ -146,8 +157,8 @@ targets:
     settings:
       base:
         GENERATE_INFOPLIST_FILE: YES
-        MARKETING_VERSION: "1.4"
-        CURRENT_PROJECT_VERSION: "12"
+        MARKETING_VERSION: "1.5"
+        CURRENT_PROJECT_VERSION: "13"
         CODE_SIGN_STYLE: Automatic
         DEVELOPMENT_TEAM: GHV27CNR5U
         CODE_SIGN_ENTITLEMENTS: Zedra/Zedra.entitlements

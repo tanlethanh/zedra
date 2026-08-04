@@ -29,15 +29,16 @@
 	</array>
 	<key>CFBundleVersion</key>
 	<string>1</string>
+	<key>FIREBASE_ANALYTICS_COLLECTION_ENABLED</key>
+	<false/>
+	<key>FirebaseAutomaticScreenReportingEnabled</key>
+	<false/>
+	<key>FirebaseCrashlyticsCollectionEnabled</key>
+	<false/>
 	<key>NSAppTransportSecurity</key>
 	<dict>
-		<!-- Web tunnel loads plain http://localhost:<port> in WKWebView; ATS blocks
-		     cleartext by default even to loopback. Mirrors Android's
-		     network_security_config.xml localhost/127.0.0.1 cleartext exemption. -->
 		<key>NSAllowsLocalNetworking</key>
 		<true/>
-		<!-- Alias-mode tunnel serves the host under <label>.zedra.test over cleartext
-		     http through the in-app SOCKS proxy; not covered by NSAllowsLocalNetworking. -->
 		<key>NSExceptionDomains</key>
 		<dict>
 			<key>zedra.test</key>
@@ -51,11 +52,5 @@
 	</dict>
 	<key>NSSupportsLiveActivities</key>
 	<true/>
-	<key>FIREBASE_ANALYTICS_COLLECTION_ENABLED</key>
-	<false/>
-	<key>FirebaseCrashlyticsCollectionEnabled</key>
-	<false/>
-	<key>FirebaseAutomaticScreenReportingEnabled</key>
-	<false/>
 </dict>
 </plist>
