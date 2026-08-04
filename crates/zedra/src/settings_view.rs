@@ -78,6 +78,8 @@ pub struct SettingsView {
     delta_busy: bool,
     telemetry_enabled: bool,
     droplet_enabled: bool,
+    key_bar_always_visible: bool,
+    extended_keypad: bool,
     _delta_observe: Subscription,
 }
 
@@ -103,6 +105,8 @@ impl SettingsView {
             delta_busy: false,
             telemetry_enabled: settings::read_telemetry_enabled(),
             droplet_enabled: settings::read_droplet_enabled(),
+            key_bar_always_visible: settings::key_bar_always_visible(),
+            extended_keypad: settings::extended_keypad(),
             _delta_observe: observe,
         }
     }
@@ -431,6 +435,27 @@ impl SettingsView {
         cx.notify();
     }
 
+    fn set_extended_keypad(&mut self, enabled: bool, cx: &mut Context<Self>) {
+        if self.extended_keypad == enabled {
+            return;
+        }
+        platform_bridge::trigger_haptic(HapticFeedback::SelectionChanged);
+        self.extended_keypad = enabled;
+        settings::set_extended_keypad(enabled);
+        platform_bridge::bridge().set_keypad_layout(enabled, crate::key_bar::host_uses_cmd_slot());
+        cx.notify();
+    }
+
+    fn set_key_bar_always_visible(&mut self, enabled: bool, cx: &mut Context<Self>) {
+        if self.key_bar_always_visible == enabled {
+            return;
+        }
+        platform_bridge::trigger_haptic(HapticFeedback::SelectionChanged);
+        self.key_bar_always_visible = enabled;
+        settings::set_key_bar_always_visible(enabled);
+        cx.notify();
+    }
+
     fn open_telemetry_docs(&self) {
         platform_bridge::trigger_haptic(HapticFeedback::ImpactLight);
         platform_bridge::bridge().open_url(TELEMETRY_DOCS_URL);
@@ -592,6 +617,8 @@ impl Render for SettingsView {
         let preference = self.theme_state.read(cx).preference();
         let telemetry_enabled = self.telemetry_enabled;
         let droplet_enabled = self.droplet_enabled;
+        let key_bar_always_visible = self.key_bar_always_visible;
+        let extended_keypad = self.extended_keypad;
 
         div()
             .id("settings-view")
@@ -708,8 +735,13 @@ impl Render for SettingsView {
                                 }),
                             ))
                             .when(cfg!(target_os = "ios"), |this| {
-                                this.child(droplet_toggle(
+                                this.child(bool_setting_toggle(
                                     cx,
+                                    "settings-droplet-on",
+                                    "settings-droplet-off",
+                                    "settings-droplet-toggle",
+                                    "Water droplet",
+                                    "A playful droplet to flick around",
                                     droplet_enabled,
                                     cx.listener(|this, _event, _window, cx| {
                                         this.set_droplet_enabled(true, cx);
@@ -719,6 +751,37 @@ impl Render for SettingsView {
                                     }),
                                 ))
                             })
+                            .child(section_header(cx, "Terminal"))
+                            .child(bool_setting_toggle(
+                                cx,
+                                "settings-key-bar-on",
+                                "settings-key-bar-off",
+                                "settings-key-bar-toggle",
+                                "Always show keypad",
+                                "Esc, Tab, and arrows stay up when the keyboard is down",
+                                key_bar_always_visible,
+                                cx.listener(|this, _event, _window, cx| {
+                                    this.set_key_bar_always_visible(true, cx);
+                                }),
+                                cx.listener(|this, _event, _window, cx| {
+                                    this.set_key_bar_always_visible(false, cx);
+                                }),
+                            ))
+                            .child(bool_setting_toggle(
+                                cx,
+                                "settings-extended-keypad-on",
+                                "settings-extended-keypad-off",
+                                "settings-extended-keypad-toggle",
+                                "Extended keypad",
+                                "Adds modifiers, symbols, and a swipe-left composer",
+                                extended_keypad,
+                                cx.listener(|this, _event, _window, cx| {
+                                    this.set_extended_keypad(true, cx);
+                                }),
+                                cx.listener(|this, _event, _window, cx| {
+                                    this.set_extended_keypad(false, cx);
+                                }),
+                            ))
                             .child(section_header(cx, "Privacy"))
                             .child(telemetry_toggle(
                                 cx,
@@ -891,12 +954,7 @@ fn appearance_theme_toggle(
                     is_dark,
                     on_dark,
                 ))
-                .child(
-                    div()
-                        .w(px(1.0))
-                        .h(px(22.0))
-                        .bg(rgb(theme::border_subtle(cx))),
-                )
+                .child(div().w(px(1.0)).h_full().bg(rgb(theme::border_subtle(cx))))
                 .child(theme_toggle_segment(
                     cx,
                     "settings-theme-light",
@@ -947,7 +1005,7 @@ fn telemetry_toggle(
     enabled: bool,
     on_enable: impl Fn(&PressEvent, &mut Window, &mut App) + 'static,
     on_disable: impl Fn(&PressEvent, &mut Window, &mut App) + 'static,
-) -> impl IntoElement {
+) -> AnyElement {
     if cfg!(feature = "no-telemetry") {
         let control = div()
             .flex_none()
@@ -977,46 +1035,42 @@ fn telemetry_toggle(
             "Disabled by build flag",
             theme::text_muted(cx),
             control,
-        );
+        )
+        .into_any_element();
     }
 
-    let control = segmented_toggle(
+    bool_setting_toggle(
         cx,
         "settings-telemetry-on",
         "settings-telemetry-off",
-        enabled,
-        on_enable,
-        on_disable,
-    );
-    toggle_row(
-        cx,
         "settings-telemetry-toggle",
         "Telemetry metrics",
         "Send anonymous usage data",
-        theme::text_secondary(cx),
-        control,
+        enabled,
+        on_enable,
+        on_disable,
     )
+    .into_any_element()
 }
 
-fn droplet_toggle(
+/// A settings row whose control is an On/Off segmented toggle.
+fn bool_setting_toggle(
     cx: &App,
+    on_id: &'static str,
+    off_id: &'static str,
+    row_id: &'static str,
+    title: &'static str,
+    description: &'static str,
     enabled: bool,
     on_enable: impl Fn(&PressEvent, &mut Window, &mut App) + 'static,
     on_disable: impl Fn(&PressEvent, &mut Window, &mut App) + 'static,
 ) -> impl IntoElement {
-    let control = segmented_toggle(
-        cx,
-        "settings-droplet-on",
-        "settings-droplet-off",
-        enabled,
-        on_enable,
-        on_disable,
-    );
+    let control = segmented_toggle(cx, on_id, off_id, enabled, on_enable, on_disable);
     toggle_row(
         cx,
-        "settings-droplet-toggle",
-        "Water droplet",
-        "A playful droplet to flick around",
+        row_id,
+        title,
+        description,
         theme::text_secondary(cx),
         control,
     )
@@ -1039,12 +1093,7 @@ fn segmented_toggle(
         .flex()
         .flex_row()
         .child(toggle_segment(cx, on_id, "On", enabled, on_enable))
-        .child(
-            div()
-                .w(px(1.0))
-                .h(px(22.0))
-                .bg(rgb(theme::border_subtle(cx))),
-        )
+        .child(div().w(px(1.0)).h_full().bg(rgb(theme::border_subtle(cx))))
         .child(toggle_segment(cx, off_id, "Off", !enabled, on_disable))
         .into_any_element()
 }

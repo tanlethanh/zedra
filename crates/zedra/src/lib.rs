@@ -19,6 +19,7 @@ pub mod button;
 pub mod docs_tree;
 pub mod editor;
 pub mod fonts;
+pub mod key_bar;
 pub mod placeholder;
 pub mod settings;
 pub mod theme;

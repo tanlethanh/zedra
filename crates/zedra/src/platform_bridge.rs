@@ -1026,6 +1026,20 @@ pub trait PlatformBridge: Send + Sync + 'static {
     fn system_inset_bottom(&self) -> u32;
     fn keyboard_height(&self) -> u32;
     fn is_keyboard_visible(&self) -> bool;
+    /// Show or hide the key bar pinned above the safe area while the keyboard is
+    /// collapsed. The native side reuses the keyboard accessory bar's own view.
+    fn set_pinned_key_bar_visible(&self, _visible: bool) {}
+    /// Drop the keypad composer and the keyboard it owns. Raised when the terminal
+    /// stops owning the screen, and when the terminal surface is tapped.
+    fn cancel_keypad_composer(&self) {}
+    /// Switch the keypad between the single-row and extended two-row layouts, and
+    /// choose whether its platform slot is Cmd (macOS host) or `|`.
+    fn set_keypad_layout(&self, _extended: bool, _cmd_slot: bool) {}
+    /// Height in physical pixels of the pinned key bar, including safe-area
+    /// padding. 0 when hidden.
+    fn pinned_key_bar_height(&self) -> u32 {
+        0
+    }
     fn launch_qr_scanner(&self);
     /// Returns the native user-facing app version (e.g. Android versionName / iOS CFBundleShortVersionString).
     fn app_version(&self) -> Option<String> {

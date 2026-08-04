@@ -20,6 +20,7 @@ import android.os.VibratorManager
 import android.util.Log
 import org.json.JSONObject
 import java.io.File
+import android.view.Choreographer
 import android.view.Gravity
 import android.view.KeyEvent
 import android.view.View
@@ -57,6 +58,22 @@ class MainActivity : AppCompatActivity() {
     private lateinit var surfaceView: GpuiSurfaceView
     private lateinit var keyboardAccessoryBar: KeyboardAccessoryBar
     private var keyboardImeBottom = 0
+    private var navigationBarBottom = 0
+    private var keyBarPollActive = false
+    private var lastAccessoryHeight = -1
+    private var lastPinnedHeight = -1
+    private var lastComposerCancelSeq = 0
+    // GPUI draws into the SurfaceView's own surface, so the Android view tree does
+    // not invalidate when the terminal mounts the bar or a drawer opens. Poll per
+    // vsync instead; a view-tree pre-draw listener only fires on IME inset changes.
+    private val keyBarFrameCallback =
+        object : Choreographer.FrameCallback {
+            override fun doFrame(frameTimeNanos: Long) {
+                if (!keyBarPollActive) return
+                updateKeyboardAccessoryVisibility()
+                Choreographer.getInstance().postFrameCallback(this)
+            }
+        }
     private var pendingDeltaPushTokenCallbackId: Int? = null
     private val notificationPermissionLauncher =
         registerForActivityResult(ActivityResultContracts.RequestPermission()) { granted ->
@@ -103,22 +120,22 @@ class MainActivity : AppCompatActivity() {
 
         rootView = FrameLayout(this)
         surfaceView = runtime.attach(rootView)
-        keyboardAccessoryBar = KeyboardAccessoryBar(this) { key ->
-            nativeKeyboardAccessoryKey(key)
-        }
+        keyboardAccessoryBar =
+            KeyboardAccessoryBar(
+                this,
+                sendKey = { key -> nativeKeyboardAccessoryKey(key) },
+                sendComposedText = { text -> nativeKeyBarComposedText(text) },
+                requestTerminalKeyboard = { surfaceView.requestKeyboard() },
+            )
         rootView.addView(
             keyboardAccessoryBar,
             FrameLayout.LayoutParams(
                 FrameLayout.LayoutParams.MATCH_PARENT,
-                (44 * resources.displayMetrics.density).toInt(),
+                keyboardAccessoryBar.desiredHeightPx,
                 Gravity.BOTTOM,
             ),
         )
         installKeyboardAccessoryInsets()
-        rootView.viewTreeObserver.addOnPreDrawListener {
-            updateKeyboardAccessoryVisibility()
-            true
-        }
         sSurfaceView = surfaceView
         sActivity = this
         NativePresentations.register(this, rootView)
@@ -147,6 +164,7 @@ class MainActivity : AppCompatActivity() {
 
     override fun onResume() {
         super.onResume()
+        startKeyBarPolling()
         runtime.onResume()
         nativeSetAppForeground(true)
         if (::surfaceView.isInitialized) {
@@ -156,6 +174,7 @@ class MainActivity : AppCompatActivity() {
 
     override fun onPause() {
         super.onPause()
+        stopKeyBarPolling()
         if (::keyboardAccessoryBar.isInitialized) {
             keyboardAccessoryBar.stopRepeating()
         }
@@ -169,6 +188,7 @@ class MainActivity : AppCompatActivity() {
     }
 
     override fun onDestroy() {
+        stopKeyBarPolling()
         if (::keyboardAccessoryBar.isInitialized) {
             keyboardAccessoryBar.stopRepeating()
         }
@@ -271,17 +291,23 @@ class MainActivity : AppCompatActivity() {
         return super.dispatchKeyEvent(event)
     }
 
+    private fun startKeyBarPolling() {
+        if (keyBarPollActive) return
+        keyBarPollActive = true
+        Choreographer.getInstance().postFrameCallback(keyBarFrameCallback)
+    }
+
+    private fun stopKeyBarPolling() {
+        keyBarPollActive = false
+        Choreographer.getInstance().removeFrameCallback(keyBarFrameCallback)
+    }
+
     private fun installKeyboardAccessoryInsets() {
         ViewCompat.setOnApplyWindowInsetsListener(rootView) { _, insets ->
-            val imeBottom = insets.getInsets(WindowInsetsCompat.Type.ime()).bottom
-            keyboardImeBottom = imeBottom
-            val params = keyboardAccessoryBar.layoutParams as FrameLayout.LayoutParams
-            if (params.bottomMargin != imeBottom) {
-                params.bottomMargin = imeBottom
-                keyboardAccessoryBar.layoutParams = params
-            }
+            keyboardImeBottom = insets.getInsets(WindowInsetsCompat.Type.ime()).bottom
+            navigationBarBottom = insets.getInsets(WindowInsetsCompat.Type.systemBars()).bottom
             updateKeyboardAccessoryVisibility()
-            if (imeBottom == 0) {
+            if (keyboardImeBottom == 0) {
                 keyboardAccessoryBar.stopRepeating()
             }
             insets
@@ -289,14 +315,51 @@ class MainActivity : AppCompatActivity() {
         ViewCompat.requestApplyInsets(rootView)
     }
 
+    // The same bar serves both roles: riding the IME, or pinned above the
+    // navigation bar once the IME is gone.
     private fun updateKeyboardAccessoryVisibility() {
-        val visible = keyboardImeBottom > 0 && nativeKeyboardAccessoryVisible()
+        val ridesKeyboard = keyboardImeBottom > 0 && nativeKeyboardAccessoryVisible()
+        val pinned = keyboardImeBottom == 0 && nativePinnedKeyBarVisible()
+        val visible = ridesKeyboard || pinned
+
+        val layout = nativeKeypadLayout()
+        if (keyboardAccessoryBar.setLayout(layout and 1 != 0, layout and 2 != 0)) {
+            val params = keyboardAccessoryBar.layoutParams as FrameLayout.LayoutParams
+            params.height = keyboardAccessoryBar.desiredHeightPx
+            keyboardAccessoryBar.layoutParams = params
+        }
+        keyboardAccessoryBar.setModifierMask(nativeKeyBarModifierMask())
+
+        val bottomMargin = if (pinned) navigationBarBottom else keyboardImeBottom
+        val params = keyboardAccessoryBar.layoutParams as FrameLayout.LayoutParams
+        if (params.bottomMargin != bottomMargin) {
+            params.bottomMargin = bottomMargin
+            keyboardAccessoryBar.layoutParams = params
+        }
+
         keyboardAccessoryBar.visibility = if (visible) View.VISIBLE else View.GONE
-        surfaceView.setKeyboardAccessoryHeight(
-            if (visible) keyboardAccessoryBar.layoutParams.height else 0,
-        )
+
+        // Runs every vsync, so push heights only when they actually move.
+        val barHeight = keyboardAccessoryBar.layoutParams.height
+        // GPUI's keyboard avoidance only covers the IME-attached case; the pinned
+        // bar is reported separately so the terminal insets itself instead.
+        val accessoryHeight = if (ridesKeyboard) barHeight else 0
+        if (accessoryHeight != lastAccessoryHeight) {
+            lastAccessoryHeight = accessoryHeight
+            surfaceView.setKeyboardAccessoryHeight(accessoryHeight)
+        }
+        val pinnedHeight = if (pinned) barHeight + navigationBarBottom else 0
+        if (pinnedHeight != lastPinnedHeight) {
+            lastPinnedHeight = pinnedHeight
+            nativeSetPinnedKeyBarHeight(pinnedHeight)
+        }
         if (!visible) {
             keyboardAccessoryBar.stopRepeating()
+        }
+        val cancelSeq = nativeKeypadComposerCancelSeq()
+        if (cancelSeq != lastComposerCancelSeq) {
+            lastComposerCancelSeq = cancelSeq
+            keyboardAccessoryBar.cancelComposing()
         }
     }
 
@@ -399,6 +462,19 @@ class MainActivity : AppCompatActivity() {
         @JvmStatic external fun nativeKeyboardAccessoryKey(key: String)
 
         @JvmStatic external fun nativeKeyboardAccessoryVisible(): Boolean
+
+        @JvmStatic external fun nativePinnedKeyBarVisible(): Boolean
+
+        @JvmStatic external fun nativeKeypadComposerCancelSeq(): Int
+
+        /** Bit 0 = extended rows, bit 1 = Cmd in the platform slot. */
+        @JvmStatic external fun nativeKeypadLayout(): Int
+
+        @JvmStatic external fun nativeKeyBarModifierMask(): Int
+
+        @JvmStatic external fun nativeKeyBarComposedText(text: String)
+
+        @JvmStatic external fun nativeSetPinnedKeyBarHeight(heightPx: Int)
 
         @JvmStatic external fun nativeSystemBackPressed(): Boolean
 

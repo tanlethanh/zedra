@@ -175,6 +175,10 @@ enum NativePresentationTheme {
         isDark ? UIColor(red: 0.898, green: 0.753, blue: 0.482, alpha: 1) : UIColor(red: 0.604, green: 0.404, blue: 0, alpha: 1)
     }
 
+    static var accentBlue: UIColor {
+        isDark ? UIColor(red: 0.38, green: 0.686, blue: 0.937, alpha: 1) : UIColor(red: 0.035, green: 0.412, blue: 0.855, alpha: 1)
+    }
+
     static var accentRed: UIColor {
         isDark ? UIColor(red: 0.878, green: 0.424, blue: 0.459, alpha: 1) : UIColor(red: 0.812, green: 0.133, blue: 0.18, alpha: 1)
     }

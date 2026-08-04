@@ -41,6 +41,17 @@ static MAIN_ACTIVITY_CLASS: Mutex<Option<GlobalRef>> = Mutex::new(None);
 const MAIN_ACTIVITY_CLASS_NAME: &str = "dev/zedra/app/MainActivity";
 static INIT: Once = Once::new();
 static FILES_DIR: Mutex<Option<String>> = Mutex::new(None);
+/// Whether the terminal wants the pinned key bar on screen. Polled from Kotlin.
+static PINNED_KEY_BAR_REQUESTED: std::sync::atomic::AtomicBool =
+    std::sync::atomic::AtomicBool::new(false);
+/// Keypad layout pushed from Rust: bit 0 extended, bit 1 Cmd slot.
+static KEYPAD_LAYOUT: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
+/// Incremented whenever the composer should be dropped.
+static KEYPAD_COMPOSER_CANCEL: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
+/// Height of the pinned key bar in physical pixels, including safe-area padding.
+/// 0 = hidden. Pushed by `MainActivity` once the bar is laid out.
+static PINNED_KEY_BAR_HEIGHT_PX: std::sync::atomic::AtomicU32 =
+    std::sync::atomic::AtomicU32::new(0);
 static APP_VERSION: Mutex<Option<String>> = Mutex::new(None);
 static APP_BUILD_NUMBER: Mutex<Option<String>> = Mutex::new(None);
 static OS_VERSION: Mutex<Option<String>> = Mutex::new(None);
@@ -602,6 +613,72 @@ pub extern "system" fn Java_dev_zedra_app_MainActivity_nativeKeyboardAccessoryKe
 }
 
 #[unsafe(no_mangle)]
+pub extern "system" fn Java_dev_zedra_app_MainActivity_nativeKeypadComposerCancelSeq(
+    _env: JNIEnv,
+    _class: JClass,
+) -> jint {
+    KEYPAD_COMPOSER_CANCEL.load(std::sync::atomic::Ordering::Relaxed) as jint
+}
+
+/// Layout pushed by `set_keypad_layout`, encoded as extended | cmd_slot << 1.
+#[unsafe(no_mangle)]
+pub extern "system" fn Java_dev_zedra_app_MainActivity_nativeKeypadLayout(
+    _env: JNIEnv,
+    _class: JClass,
+) -> jint {
+    KEYPAD_LAYOUT.load(std::sync::atomic::Ordering::Relaxed) as jint
+}
+
+/// Armed/locked keypad modifiers. Bit layout is documented on
+/// `zedra_terminal::keyboard_accessory::sticky_modifier_mask`.
+#[unsafe(no_mangle)]
+pub extern "system" fn Java_dev_zedra_app_MainActivity_nativeKeyBarModifierMask(
+    _env: JNIEnv,
+    _class: JClass,
+) -> jint {
+    crate::key_bar::modifier_mask() as jint
+}
+
+/// Text composed in the keypad's IME field, submitted as one edit.
+#[unsafe(no_mangle)]
+pub extern "system" fn Java_dev_zedra_app_MainActivity_nativeKeyBarComposedText(
+    mut env: JNIEnv,
+    _class: JClass,
+    text: jni::objects::JString,
+) {
+    let Some(text) = jstring_to_string(&mut env, &text) else {
+        return;
+    };
+    if text.is_empty() {
+        return;
+    }
+    gpui_android::with_platform(|platform| platform.insert_text(&text));
+}
+
+#[unsafe(no_mangle)]
+pub extern "system" fn Java_dev_zedra_app_MainActivity_nativePinnedKeyBarVisible(
+    _env: JNIEnv,
+    _class: JClass,
+) -> jboolean {
+    PINNED_KEY_BAR_REQUESTED.load(std::sync::atomic::Ordering::Relaxed) as jboolean
+}
+
+#[unsafe(no_mangle)]
+pub extern "system" fn Java_dev_zedra_app_MainActivity_nativeSetPinnedKeyBarHeight(
+    _env: JNIEnv,
+    _class: JClass,
+    height_px: jint,
+) {
+    let height = height_px.max(0) as u32;
+    if PINNED_KEY_BAR_HEIGHT_PX.swap(height, std::sync::atomic::Ordering::Relaxed) == height {
+        return;
+    }
+    // The terminal insets itself by this value, so a static screen would keep a
+    // stale inset until some unrelated redraw. iOS notifies for the same reason.
+    gpui_android::with_platform(|platform| platform.request_frame_forced());
+}
+
+#[unsafe(no_mangle)]
 pub extern "system" fn Java_dev_zedra_app_MainActivity_nativeKeyboardAccessoryVisible(
     _env: JNIEnv,
     _class: JClass,
@@ -738,6 +815,28 @@ pub fn hide_keyboard() {
             }
         });
     });
+}
+
+/// Stores the request only. `MainActivity` polls it from its per-frame accessory
+/// update, matching `nativeKeyboardAccessoryVisible` — a Rust→Java push can be
+/// dropped when the call lands at a bad moment, and a lost show never recovers.
+pub fn set_keypad_layout(extended: bool, cmd_slot: bool) {
+    let encoded = extended as u32 | ((cmd_slot as u32) << 1);
+    KEYPAD_LAYOUT.store(encoded, std::sync::atomic::Ordering::Relaxed);
+}
+
+pub fn set_pinned_key_bar_visible(visible: bool) {
+    PINNED_KEY_BAR_REQUESTED.store(visible, std::sync::atomic::Ordering::Relaxed);
+}
+
+/// Bumped to ask Kotlin to drop the composer. A counter rather than a flag so the
+/// per-frame poll sees every request, matching how the keypad state is read.
+pub fn cancel_keypad_composer() {
+    KEYPAD_COMPOSER_CANCEL.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+}
+
+pub fn get_pinned_key_bar_height() -> u32 {
+    PINNED_KEY_BAR_HEIGHT_PX.load(std::sync::atomic::Ordering::Relaxed)
 }
 
 pub fn launch_qr_scanner() {

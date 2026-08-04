@@ -68,6 +68,7 @@ object NativePresentations {
         val accentRed: Int,
         val accentGreen: Int,
         val accentYellow: Int,
+        val accentBlue: Int,
     ) {
         companion object {
             fun dark() = NativeTheme(
@@ -81,6 +82,7 @@ object NativePresentations {
                 accentRed = Color.rgb(224, 108, 117),
                 accentGreen = Color.rgb(152, 195, 121),
                 accentYellow = Color.rgb(229, 192, 123),
+                accentBlue = Color.rgb(97, 175, 239),
             )
 
             fun light() = NativeTheme(
@@ -94,6 +96,7 @@ object NativePresentations {
                 accentRed = Color.rgb(207, 34, 46),
                 accentGreen = Color.rgb(26, 127, 55),
                 accentYellow = Color.rgb(154, 103, 0),
+                accentBlue = Color.rgb(9, 105, 218),
             )
         }
     }
@@ -138,6 +141,8 @@ object NativePresentations {
     fun currentTextPrimaryColor(): Int = nativeTheme.textPrimary
 
     fun currentTextSecondaryColor(): Int = nativeTheme.textSecondary
+
+    fun currentAccentBlueColor(): Int = nativeTheme.accentBlue
 
     @JvmStatic
     fun showAlert(

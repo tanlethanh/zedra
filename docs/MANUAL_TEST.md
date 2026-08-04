@@ -1128,6 +1128,62 @@ printf '\033]8;;file:///tmp/zedra-long-code.rs:41:1\033\\/tmp/zedra-long-code.rs
 6. Keep the same terminal active, show the software keyboard again, then press `Tab`, `Enter`, and an arrow key in the accessory bar
 7. Expected: each key still reaches the PTY after reconnect; the accessory bar does not keep sending to a stale terminal channel
 
+## 11g. Pinned Key Bar With The Keyboard Collapsed
+
+1. Connect to a session on iOS and on Android, then open the terminal view without tapping the terminal
+2. Expected: the key bar sits above the home indicator or navigation bar, styled exactly like the keyboard accessory bar
+3. Tap `Esc`, `Tab`, `Enter`, and each arrow in the pinned bar
+4. Expected: each key reaches the PTY exactly once with the keyboard still down
+5. Press and hold a pinned arrow, then release it
+6. Expected: the arrow repeats while held and stops on release
+7. Tap the terminal to raise the keyboard
+8. Expected: the pinned bar disappears as the keyboard accessory bar takes over; exactly one bar is visible at any time
+9. Dismiss the keyboard again
+10. Expected: the pinned bar returns and terminal content stays fully visible above it, never clipped behind it
+11. Open the workspace drawer
+12. Expected: the pinned bar hides while the drawer is open, the terminal gives up focus, and both return when the drawer closes — with the keyboard still down
+13. Navigate away from the terminal (settings, file preview, workspace list)
+14. Expected: the pinned bar hides immediately on every non-terminal screen and the terminal is no longer focused; returning to it refocuses without raising the keyboard
+15. Open the floating file search or the git commit message input over the terminal
+16. Expected: focus and the keyboard go to that input, and the terminal keeps no focus of its own
+17. Open a terminal, tap it to raise the keyboard, then tap again to dismiss it
+18. Expected: the keyboard drops but the terminal stays focused (active cursor), pinned keys keep reaching the PTY, and a further tap raises the keyboard again
+19. Set Settings → Terminal → Always show keypad to Off, then return to the terminal with the keyboard down
+20. Expected: no pinned bar; tap-to-dismiss drops both keyboard and focus as before, and the keyboard accessory bar still appears when the keyboard is raised
+21. Rotate the device with the pinned bar visible
+22. Expected: the bar spans the new width with evenly spaced keys
+
+## 11h. Extended Keypad
+
+1. Set Settings → Terminal → Extended keypad to On, then open a terminal
+2. Expected: the keypad shows two rows — `Esc Shift Tab / - ↑ ⏎` over `⌫ Ctrl Alt Cmd ← ↓ →` — and terminal content sits above both rows
+3. Connect to a macOS host, then to a Linux host
+4. Expected: the fourth key of the bottom row is `Cmd` on macOS and `|` on Linux, updating on reconnect without restarting the app
+5. Tap `/` and `-`
+6. Expected: each character reaches the PTY exactly once
+7. Press and hold `⌫`
+8. Expected: characters delete one at a time and the repeat stops on release
+9. Tap `Ctrl` once, then tap `←` on the keypad
+10. Expected: `Ctrl` highlights faintly while armed, the terminal receives Ctrl+Left, and the highlight clears
+11. Tap `Ctrl` once, then type `c` on the software keyboard
+12. Expected: the running command is interrupted, exactly as a hardware Ctrl+C would
+13. Double-tap `Ctrl`, then press several keys
+14. Expected: `Ctrl` stays solidly highlighted and applies to every key until tapped a third time
+15. Arm `Alt` and `Shift` together, then press a key
+16. Expected: both modifiers apply to that key and both clear afterwards
+17. In an editor such as `vim`, arm nothing and press the arrows
+18. Expected: arrows navigate normally, including in app-cursor mode
+19. Drag left slowly across the keypad and hold mid-drag
+20. Expected: the keys slide out and the composing field slides in with the finger; releasing before halfway springs back to the keys with no keystroke sent
+21. Drag left past halfway and release
+22. Expected: the composer settles into place and the software keyboard opens
+23. Compose a multi-word message using IME features (autocorrect, prediction, a non-Latin IME), then tap `Send`
+24. Expected: nothing reaches the PTY while composing; on send the whole line arrives at the prompt without being run, and the field clears
+25. Drag right to return, then drag starting from inside the text field
+26. Expected: the first drag returns to the keys; the drag inside the field places the cursor instead of moving the page
+27. Set Extended keypad back to Off
+28. Expected: the single-row keypad returns immediately on both the pinned and keyboard-attached bars
+
 ## 12. Quick Action Terminal Navigation
 
 1. Connect to a session with at least two open terminals
