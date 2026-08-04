@@ -7,6 +7,8 @@ import android.graphics.Color;
 import android.graphics.CornerPathEffect;
 import android.graphics.Paint;
 import android.graphics.Path;
+import android.graphics.drawable.Drawable;
+import android.net.Uri;
 import android.os.Build;
 import android.os.Bundle;
 import android.util.Log;
@@ -19,6 +21,9 @@ import android.widget.FrameLayout;
 import android.widget.TextView;
 import android.widget.Toast;
 
+import androidx.activity.result.ActivityResultLauncher;
+import androidx.activity.result.PickVisualMediaRequest;
+import androidx.activity.result.contract.ActivityResultContracts;
 import androidx.annotation.NonNull;
 import androidx.appcompat.app.AppCompatActivity;
 import androidx.camera.core.CameraSelector;
@@ -57,6 +62,7 @@ public class QRScannerActivity extends AppCompatActivity {
     private ExecutorService cameraExecutor;
     private BarcodeScanner barcodeScanner;
     private boolean scanComplete = false;
+    private ActivityResultLauncher<PickVisualMediaRequest> photoPicker;
 
     // Native method to send QR data to Rust
     private static native void nativeOnQrCodeScanned(String data);
@@ -95,6 +101,7 @@ public class QRScannerActivity extends AppCompatActivity {
                 FrameLayout.LayoutParams.MATCH_PARENT));
 
         // Hint label below the viewfinder
+        float dp = getResources().getDisplayMetrics().density;
         TextView hint = new TextView(this);
         hint.setText("Point camera at a Zedra QR code");
         hint.setTextColor(0xDDFFFFFF);
@@ -103,8 +110,29 @@ public class QRScannerActivity extends AppCompatActivity {
                 FrameLayout.LayoutParams.WRAP_CONTENT,
                 FrameLayout.LayoutParams.WRAP_CONTENT,
                 Gravity.BOTTOM | Gravity.CENTER_HORIZONTAL);
-        hintParams.bottomMargin = 160;
+        hintParams.bottomMargin = (int) (140 * dp);
         root.addView(hint, hintParams);
+
+        // Pick a QR image from the photo library instead of scanning
+        TextView photoButton = new TextView(this);
+        photoButton.setText("Upload Image");
+        photoButton.setTextColor(Color.WHITE);
+        photoButton.setTextSize(15);
+        photoButton.setGravity(Gravity.CENTER_VERTICAL);
+        photoButton.setCompoundDrawablePadding((int) (8 * dp));
+        Drawable gallery = ContextCompat.getDrawable(this, android.R.drawable.ic_menu_gallery);
+        if (gallery != null) {
+            gallery.setTint(Color.WHITE);
+            photoButton.setCompoundDrawablesRelativeWithIntrinsicBounds(gallery, null, null, null);
+        }
+        photoButton.setPadding((int) (16 * dp), (int) (10 * dp), (int) (16 * dp), (int) (10 * dp));
+        photoButton.setOnClickListener(v -> pickImage());
+        FrameLayout.LayoutParams photoParams = new FrameLayout.LayoutParams(
+                FrameLayout.LayoutParams.WRAP_CONTENT,
+                FrameLayout.LayoutParams.WRAP_CONTENT,
+                Gravity.BOTTOM | Gravity.CENTER_HORIZONTAL);
+        photoParams.bottomMargin = (int) (72 * dp);
+        root.addView(photoButton, photoParams);
 
         setContentView(root);
 
@@ -113,6 +141,9 @@ public class QRScannerActivity extends AppCompatActivity {
                 .setBarcodeFormats(Barcode.FORMAT_QR_CODE)
                 .build();
         barcodeScanner = BarcodeScanning.getClient(options);
+
+        photoPicker = registerForActivityResult(
+                new ActivityResultContracts.PickVisualMedia(), this::onImagePicked);
 
         cameraExecutor = Executors.newSingleThreadExecutor();
 
@@ -203,37 +234,7 @@ public class QRScannerActivity extends AppCompatActivity {
         barcodeScanner.process(image)
                 .addOnSuccessListener(barcodes -> {
                     for (Barcode barcode : barcodes) {
-                        String rawValue = barcode.getRawValue();
-                        if (rawValue != null && rawValue.startsWith(ZEDRA_URI_PREFIX)) {
-                            Log.i(TAG, "Zedra QR code detected");
-                            scanComplete = true;
-
-                            // Send to Rust via JNI
-                            nativeOnQrCodeScanned(rawValue);
-
-                            // Unbind camera and delay finish() so the camera HAL
-                            // has time to release its DMA-BUF backed GPU buffers.
-                            // On Mali UMA GPUs these buffers share the same memory
-                            // pool as Vulkan; if we finish() immediately the GPUI
-                            // renderer is recreated while camera buffers are still
-                            // live, causing OOM.
-                            runOnUiThread(() -> {
-                                try {
-                                    ProcessCameraProvider.getInstance(this)
-                                            .get().unbindAll();
-                                } catch (Exception e) {
-                                    Log.w(TAG, "Failed to unbind camera", e);
-                                }
-                                // Remove the preview surface immediately to
-                                // trigger SurfaceView destruction.
-                                if (previewView != null && previewView.getParent() != null) {
-                                    ((FrameLayout) previewView.getParent()).removeView(previewView);
-                                }
-                                // Wait for camera DMA-BUF release (~800ms observed
-                                // on Mali-G68 MC4) before finishing the activity.
-                                new Handler(Looper.getMainLooper()).postDelayed(
-                                        () -> finish(), 700);
-                            });
+                        if (handleScannedValue(barcode.getRawValue())) {
                             break;
                         }
                     }
@@ -243,6 +244,73 @@ public class QRScannerActivity extends AppCompatActivity {
                 })
                 .addOnCompleteListener(task -> {
                     imageProxy.close();
+                });
+    }
+
+    /** Returns true when the value was a Zedra QR code and the scan was completed. */
+    private boolean handleScannedValue(String rawValue) {
+        if (scanComplete || rawValue == null || !rawValue.startsWith(ZEDRA_URI_PREFIX)) {
+            return false;
+        }
+        Log.i(TAG, "Zedra QR code detected");
+        scanComplete = true;
+
+        // Send to Rust via JNI
+        nativeOnQrCodeScanned(rawValue);
+
+        // Unbind camera and delay finish() so the camera HAL has time to release
+        // its DMA-BUF backed GPU buffers. On Mali UMA GPUs these buffers share the
+        // same memory pool as Vulkan; if we finish() immediately the GPUI renderer
+        // is recreated while camera buffers are still live, causing OOM.
+        runOnUiThread(() -> {
+            try {
+                ProcessCameraProvider.getInstance(this).get().unbindAll();
+            } catch (Exception e) {
+                Log.w(TAG, "Failed to unbind camera", e);
+            }
+            // Remove the preview surface immediately to trigger SurfaceView destruction.
+            if (previewView != null && previewView.getParent() != null) {
+                ((FrameLayout) previewView.getParent()).removeView(previewView);
+            }
+            // Wait for camera DMA-BUF release (~800ms observed on Mali-G68 MC4).
+            new Handler(Looper.getMainLooper()).postDelayed(() -> finish(), 700);
+        });
+        return true;
+    }
+
+    private void pickImage() {
+        if (scanComplete) {
+            return;
+        }
+        photoPicker.launch(new PickVisualMediaRequest.Builder()
+                .setMediaType(ActivityResultContracts.PickVisualMedia.ImageOnly.INSTANCE)
+                .build());
+    }
+
+    private void onImagePicked(Uri uri) {
+        if (uri == null || scanComplete) {
+            return;
+        }
+        InputImage image;
+        try {
+            image = InputImage.fromFilePath(this, uri);
+        } catch (java.io.IOException e) {
+            Log.e(TAG, "Failed to read picked image", e);
+            Toast.makeText(this, "Couldn't read that image", Toast.LENGTH_SHORT).show();
+            return;
+        }
+        barcodeScanner.process(image)
+                .addOnSuccessListener(barcodes -> {
+                    for (Barcode barcode : barcodes) {
+                        if (handleScannedValue(barcode.getRawValue())) {
+                            return;
+                        }
+                    }
+                    Toast.makeText(this, "No Zedra QR code in that image", Toast.LENGTH_SHORT).show();
+                })
+                .addOnFailureListener(e -> {
+                    Log.e(TAG, "Barcode scanning failed for picked image", e);
+                    Toast.makeText(this, "Couldn't scan that image", Toast.LENGTH_SHORT).show();
                 });
     }
 
@@ -294,8 +362,8 @@ public class QRScannerActivity extends AppCompatActivity {
             int h = getHeight();
             float dp = getResources().getDisplayMetrics().density;
 
-            // Square size = 65% of the narrower dimension
-            float side = Math.min(w, h) * 0.65f;
+            // 75% of the narrower dimension, capped so the guide stays a viewfinder on tablets
+            float side = Math.min(Math.min(w, h) * 0.75f, 420 * dp);
             float cx = w / 2f;
             float cy = h / 2f;
             float left = cx - side / 2f;
