@@ -15,7 +15,7 @@ use crate::workspaces::{OpenConnectingForState, Workspaces};
 const WEBSITE_URL: &str = "https://www.zedra.dev";
 const GITHUB_URL: &str = "https://github.com/tanlethanh/zedra";
 const DISCORD_URL: &str = "https://discord.gg/39MmkSS8sc";
-const XCOM_URL: &str = "https://x.com/zedradev";
+const XCOM_URL: &str = "https://x.com/tanlethanh_/status/2054773318776201720";
 
 #[derive(Clone, Debug)]
 pub enum HomeEvent {
