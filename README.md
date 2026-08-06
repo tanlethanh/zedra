@@ -11,7 +11,7 @@ Zedra is early, but it provides the most secure approach with e2e encryption, di
 ## Download App
 
 - iOS — [AppStore](https://apps.apple.com/vn/app/zedra-code-from-anywhere/id6760534630) or [TestFlight](https://testflight.apple.com/join/1EWe2kRH)
-- Android — [Google Play](https://play.google.com/store/apps/details?id=dev.zedra.app)
+- Android — now on [Google Play](https://play.google.com/store/apps/details?id=dev.zedra.app)
  
 ## Desktop daemon
 
