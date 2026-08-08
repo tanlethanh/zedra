@@ -1,0 +1,125 @@
+---
+// Starlight's MobileMenuToggle with the Lucide `menu`/`x` glyphs and a bare
+// icon button (no white circle, border, or shadow). Behavior script is copied
+// verbatim from the upstream component.
+---
+
+<starlight-menu-button class="print:hidden">
+  <button
+    aria-expanded="false"
+    aria-label={Astro.locals.t("menuButton.accessibleLabel")}
+    aria-controls="starlight__sidebar"
+    class="sl-flex md:sl-hidden"
+  >
+    <svg
+      class="open-menu"
+      aria-hidden="true"
+      viewBox="0 0 24 24"
+      fill="none"
+      stroke="currentColor"
+      stroke-width="2"
+      stroke-linecap="round"
+      stroke-linejoin="round"
+    >
+      <path d="M4 5h16"></path>
+      <path d="M4 12h16"></path>
+      <path d="M4 19h16"></path>
+    </svg>
+    <svg
+      class="close-menu"
+      aria-hidden="true"
+      viewBox="0 0 24 24"
+      fill="none"
+      stroke="currentColor"
+      stroke-width="2"
+      stroke-linecap="round"
+      stroke-linejoin="round"
+    >
+      <path d="M18 6 6 18"></path>
+      <path d="m6 6 12 12"></path>
+    </svg>
+  </button>
+</starlight-menu-button>
+
+<script>
+  class StarlightMenuButton extends HTMLElement {
+    btn = this.querySelector("button")!;
+
+    constructor() {
+      super();
+      // Toggle `aria-expanded` state when a user clicks the button.
+      this.btn.addEventListener("click", () => this.toggleExpanded());
+
+      // Close the menu when a user presses the escape key.
+      const parentNav = this.closest("nav");
+      if (parentNav) {
+        parentNav.addEventListener("keyup", (e) => this.closeOnEscape(e));
+      }
+    }
+
+    setExpanded(expanded: boolean) {
+      this.setAttribute("aria-expanded", String(expanded));
+      document.body.toggleAttribute("data-mobile-menu-expanded", expanded);
+    }
+
+    toggleExpanded() {
+      this.setExpanded(this.getAttribute("aria-expanded") !== "true");
+    }
+
+    closeOnEscape(e: KeyboardEvent) {
+      if (e.code === "Escape") {
+        this.setExpanded(false);
+        this.btn.focus();
+      }
+    }
+  }
+
+  customElements.define("starlight-menu-button", StarlightMenuButton);
+</script>
+
+<style>
+  button {
+    position: fixed;
+    top: calc((var(--sl-nav-height) - var(--sl-menu-button-size)) / 2);
+    inset-inline-end: var(--sl-nav-pad-x);
+    z-index: var(--sl-z-index-navbar);
+    align-items: center;
+    justify-content: center;
+    width: var(--sl-menu-button-size);
+    height: var(--sl-menu-button-size);
+    border: 0;
+    background: none;
+    box-shadow: none;
+    color: var(--sl-color-gray-2);
+    cursor: pointer;
+  }
+
+  button:hover {
+    color: var(--sl-color-white);
+  }
+
+  button svg {
+    width: 20px;
+    height: 20px;
+  }
+
+  starlight-menu-button[aria-expanded="true"] button .open-menu {
+    display: none;
+  }
+
+  starlight-menu-button:not([aria-expanded="true"]) button .close-menu {
+    display: none;
+  }
+</style>
+
+<style is:global>
+  [data-mobile-menu-expanded] {
+    overflow: hidden;
+  }
+
+  @media (min-width: 50rem) {
+    [data-mobile-menu-expanded] {
+      overflow: auto;
+    }
+  }
+</style>

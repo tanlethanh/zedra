@@ -57,6 +57,8 @@ export default defineConfig({
         ThemeSelect: "./src/components/docs/ThemeSelect.astro",
         // Open GitHub/Discord social links in a new tab.
         SocialIcons: "./src/components/docs/SocialIcons.astro",
+        // Lucide menu/x glyphs, bare icon button (no white circle).
+        MobileMenuToggle: "./src/components/docs/MobileMenuToggle.astro",
       },
       social: [
         {
@@ -73,7 +75,7 @@ export default defineConfig({
       sidebar: [
         { label: "Why Zedra?", slug: "docs" },
         { label: "Installation", slug: "docs/installation" },
-        { label: "Security & architecture", slug: "docs/security" },
+        { label: "Security", slug: "docs/security" },
         { label: "Web tunnel", slug: "docs/web-tunnel" },
         { label: "Configuration", slug: "docs/configuration" },
         { label: "Troubleshooting", slug: "docs/troubleshooting" },

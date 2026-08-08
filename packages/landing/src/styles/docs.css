@@ -263,3 +263,35 @@ starlight-tabs [role="tabpanel"] .expressive-code pre {
 .social-icons::after {
   display: none;
 }
+
+/* Prev/next pagination: smaller than Starlight's default h4-sized titles. */
+.pagination-links a {
+  font-size: var(--sl-text-xs);
+  padding: 0.75rem 1rem;
+}
+.pagination-links .link-title {
+  font-size: var(--sl-text-sm);
+}
+
+/* Mobile "On this page": drop the pill border and the label itself — the
+   chevron plus the current heading carry it. Closed points right, Starlight
+   still rotates it down on open. */
+mobile-starlight-toc .toggle {
+  border: none;
+  background: none;
+  padding: 0;
+  gap: 0;
+  font-size: 0;
+}
+mobile-starlight-toc .display-current {
+  font-size: var(--sl-text-xs);
+}
+mobile-starlight-toc .caret {
+  transform: rotate(0deg);
+}
+
+/* Menu button chrome lives in the MobileMenuToggle override; this var also
+   drives that button's own top centering. */
+:root {
+  --sl-menu-button-size: 2.5rem;
+}

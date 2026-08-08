@@ -66,7 +66,6 @@ const schemas = [...baseSchemas, ...jsonLd];
         --text: #f3f4f6;
         --muted: #8b8b92;
         --dim: #59595e;
-        --green: #3dd68c;
       }
 
       html,
@@ -217,7 +216,7 @@ const schemas = [...baseSchemas, ...jsonLd];
 
       .mk-step h3::before {
         content: "0" counter(step) " ";
-        color: var(--green);
+        color: var(--text);
         margin-right: 4px;
       }
 
@@ -259,7 +258,7 @@ const schemas = [...baseSchemas, ...jsonLd];
       }
 
       .mk-faq summary:hover {
-        color: var(--green);
+        color: var(--text);
       }
 
       .mk-faq p {

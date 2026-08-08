@@ -361,7 +361,6 @@ const canonicalUrl = "https://zedra.dev/";
         --text: #f3f4f6;
         --text-secondary: #c2c2c8;
         --muted: #59595e;
-        --green: #3dd68c;
       }
 
       html,
@@ -372,8 +371,6 @@ const canonicalUrl = "https://zedra.dev/";
         font-family: "IBM Plex Mono", "SF Mono", "Fira Code", monospace;
       }
 
-      /* bg lives on html only: an opaque body background would paint over
-         the fixed z-index:-1 shader canvas */
       html {
         background: var(--bg);
       }
@@ -410,16 +407,6 @@ const canonicalUrl = "https://zedra.dev/";
         }
       }
 
-      /* dim animated shader backdrop; sits behind the page content */
-      #bg-shader {
-        position: fixed;
-        inset: 0;
-        width: 100vw;
-        height: 100vh;
-        z-index: -1;
-        pointer-events: none;
-      }
-
       .page {
         max-width: 1280px;
         margin: 0 auto;
@@ -448,7 +435,7 @@ const canonicalUrl = "https://zedra.dev/";
       }
 
       .logo span {
-        color: var(--green);
+        color: var(--text);
       }
 
       .hero {
@@ -568,7 +555,7 @@ const canonicalUrl = "https://zedra.dev/";
         content: "#";
         position: absolute;
         left: 0;
-        color: var(--green);
+        color: var(--text);
       }
 
       .agents-row {
@@ -707,7 +694,7 @@ const canonicalUrl = "https://zedra.dev/";
         width: 26px;
         height: 26px;
         flex: none;
-        color: var(--green);
+        color: var(--text);
       }
 
       .scrolly-step h3 {
@@ -851,17 +838,12 @@ const canonicalUrl = "https://zedra.dev/";
 
       .demo-label::before {
         content: "# ";
-        color: var(--green);
+        color: var(--text);
       }
 
       .demo-caption {
         font-size: 12px;
         color: var(--muted);
-      }
-
-      #rev-canvas {
-        display: block;
-        width: 100%;
       }
 
       /* how-it-works breakdown table */
@@ -899,15 +881,20 @@ const canonicalUrl = "https://zedra.dev/";
         font-size: 14px;
       }
 
+      /* same block as .how-table: centered, 720px, copy still reads left */
       .feature-list {
         display: grid;
+        width: 100%;
+        max-width: 720px;
+        margin: 8px auto 0;
+        text-align: left;
       }
 
       .feature-row {
         display: grid;
         grid-template-columns: 220px 1fr;
         gap: 24px;
-        padding: 14px 0;
+        padding: 12px 0;
         border-top: 1px solid var(--border);
       }
 
@@ -918,16 +905,15 @@ const canonicalUrl = "https://zedra.dev/";
 
       .feature-row h3 {
         margin: 0;
-        font-size: 16px;
+        font-size: 15px;
         font-weight: 500;
       }
 
       .feature-row p {
         margin: 0;
         color: var(--muted);
-        font-size: 15px;
-        line-height: 1.7;
-        max-width: 600px;
+        font-size: 14.5px;
+        line-height: 1.55;
       }
 
       /* how-it-works animated diagram: phone ⇄ tunnel ⇄ desktop on canvas */
@@ -985,7 +971,7 @@ const canonicalUrl = "https://zedra.dev/";
       }
 
       .faq-list summary:hover {
-        color: var(--green);
+        color: var(--text);
       }
 
       .faq-list p {
@@ -1365,8 +1351,6 @@ const canonicalUrl = "https://zedra.dev/";
         position: relative;
         width: 380px;
         aspect-ratio: 435 / 890;
-        filter: drop-shadow(0 40px 100px rgba(0, 0, 0, 0.7))
-          drop-shadow(0 8px 24px rgba(0, 0, 0, 0.4));
       }
 
       /* device frame drawn by frame.png overlay (buttons, island, bezel) */
@@ -1589,7 +1573,6 @@ const canonicalUrl = "https://zedra.dev/";
     </style>
   </head>
   <body>
-    <canvas id="bg-shader" aria-hidden="true"></canvas>
     <div class="page">
       <main class="hero">
         <section id="hero-main-content" class="left">
@@ -1912,21 +1895,13 @@ const canonicalUrl = "https://zedra.dev/";
         </p>
       </section>
 
-      <section class="section" aria-labelledby="tech-heading">
+      <section class="section section-center" aria-labelledby="tech-heading">
         <p class="section-label" data-reveal>why-zedra</p>
         <h2 id="tech-heading" data-reveal>Why Zedra?</h2>
         <p class="lede" data-reveal>
           Agent-neutral workflows, fast P2P networking, GPUI rendering, and mobile-native design
           in one open developer tool.
         </p>
-        <canvas
-          id="rev-canvas"
-          data-reveal
-          role="img"
-          aria-label="Animated waveform with the technologies behind Zedra: GPUI, Metal, wgpu, Vulkan, iroh, QUIC, TLS 1.3"
-        >
-          GPUI · Metal · wgpu · Vulkan · iroh · QUIC/UDP · TLS 1.3
-        </canvas>
         <div class="feature-list">
           {
             techPillars.map((pillar, i) => (
@@ -1937,12 +1912,6 @@ const canonicalUrl = "https://zedra.dev/";
             ))
           }
         </div>
-        <p data-reveal>
-          Details in the <a href="/docs/security/">security &amp; architecture doc</a>, source on
-          <a href="https://github.com/tanlethanh/zedra" target="_blank" rel="noopener noreferrer"
-            >GitHub</a
-          >.
-        </p>
       </section>
 
       <section class="section" aria-labelledby="faq-heading">
@@ -1995,211 +1964,6 @@ const canonicalUrl = "https://zedra.dev/";
       const CHECK_ICON = `<svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><polyline points="20 6 9 17 4 12"></polyline></svg>`;
       const COPY_ICON = `<svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="9" y="9" width="13" height="13" rx="2" ry="2"></rect><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"></path></svg>`;
 
-      // Dim galaxy background (original shader — Shadertoy classics like Star
-      // Nest are CC BY-NC-SA, so we write our own): three parallax starfield
-      // layers with slow twinkle plus a faint noise-broken milky band. All
-      // neutral white on the page bg, no color gradients. Half-resolution,
-      // 30fps cap, static frame under prefers-reduced-motion; falls back to
-      // a 2D "sand" grain field when WebGL is unavailable.
-      const bgCanvas = document.getElementById("bg-shader") as HTMLCanvasElement | null;
-      const bgReduced = window.matchMedia("(prefers-reduced-motion: reduce)").matches;
-      const bgRun = (resize: () => void, drawFrame: (t: number) => void) => {
-        resize();
-        drawFrame(20);
-        window.addEventListener("resize", () => {
-          resize();
-          drawFrame(20);
-        });
-        if (bgReduced) return;
-        let last = 0;
-        const loop = (ms: number) => {
-          requestAnimationFrame(loop);
-          if (ms - last < 33) return;
-          last = ms;
-          drawFrame(ms / 1000);
-        };
-        requestAnimationFrame(loop);
-      };
-
-      const initGalaxy = (canvas: HTMLCanvasElement): boolean => {
-        const gl = canvas.getContext("webgl", { antialias: false, depth: false, alpha: false });
-        if (!gl) return false;
-        const FS = `
-          precision highp float;
-          uniform float t;
-          uniform float rot;
-          uniform float pan;
-          uniform vec2 r;
-          vec2 rot2(vec2 p, float a) {
-            float c = cos(a), s = sin(a);
-            return vec2(c * p.x - s * p.y, s * p.x + c * p.y);
-          }
-          float h21(vec2 p) {
-            p = fract(p * vec2(123.34, 456.21));
-            p += dot(p, p + 45.32);
-            return fract(p.x * p.y);
-          }
-          // clean sci-fi stars: tight gaussian core, soft falloff halo, and
-          // diffraction spikes on the brightest ones — no noise, no fuzz
-          float stars(vec2 uv, float scale, float tws) {
-            vec2 g = uv * scale;
-            vec2 id = floor(g);
-            vec2 f = fract(g) - 0.5;
-            float n = h21(id);
-            vec2 off = vec2(h21(id + 1.7), h21(id + 3.1)) - 0.5;
-            vec2 q = (f - off * 0.7) / scale;   // screen units
-            float d = length(q);
-            float m = exp(-d * d * 90000.0) * 1.2;    // crisp core, bigger
-            m += exp(-d * d * 5000.0) * 0.18;         // clean glow
-            float sp = exp(-abs(q.y) * 700.0) * exp(-abs(q.x) * 90.0)
-              + exp(-abs(q.x) * 700.0) * exp(-abs(q.y) * 90.0);
-            m += sp * step(0.82, n) * 0.45;           // spikes: bright stars only
-            // skip the dimmest third of cells entirely: fewer, bolder stars
-            float bright = (0.3 + 0.7 * n * n) * step(0.35, n);
-            float tw = 0.78 + 0.22 * sin(t * tws * (0.5 + n) + n * 6.2831);
-            return m * bright * tw;
-          }
-          // shooting stars: several staggered instances, thin fading tails
-          float meteorOne(vec2 uv, float seed) {
-            float period = 5.0;
-            float tt = fract((t + seed * 13.7) / period);
-            float k = floor((t + seed * 13.7) / period);
-            float win = smoothstep(0.0, 0.02, tt) * (1.0 - smoothstep(0.16, 0.2, tt));
-            vec2 start = vec2(
-              mix(-0.9, 0.7, h21(vec2(k, 3.0 + seed))),
-              mix(-0.1, 0.5, h21(vec2(k, 5.0 + seed))));
-            vec2 dir = normalize(vec2(0.85, -0.4));
-            vec2 head = start + dir * tt * 3.2;
-            vec2 rel = uv - head;
-            float along = dot(rel, dir);
-            float perp = abs(dot(rel, vec2(-dir.y, dir.x)));
-            float inTail = step(-0.28, along) * step(along, 0.0);
-            float streak = inTail * exp(along * 9.0) * smoothstep(0.0022, 0.0, perp);
-            float headGlow = exp(-length(rel) * 160.0);
-            return (streak + headGlow * 0.6) * win;
-          }
-          float meteor(vec2 uv) {
-            return meteorOne(uv, 0.0) + meteorOne(uv, 1.0) + meteorOne(uv, 2.0);
-          }
-          void main() {
-            vec2 uv0 = (gl_FragCoord.xy - 0.5 * r) / r.y;
-            // horizontal rotation: the sky pans sideways like sitting on a
-            // turning platform; near layers pan faster than far ones
-            vec3 col = vec3(0.035);
-            // scrolling pans the sky down as well as sideways, per-layer parallax
-            float s = stars(uv0 + vec2(rot * 1.5, pan * 1.5), 1.0, 0.9) * 0.6
-              + stars(uv0 * 1.6 + 3.7 + vec2(rot * 1.0, pan * 1.0), 1.8, 1.3) * 0.42
-              + stars(uv0 * 2.5 + 8.1 + vec2(rot * 0.65, pan * 0.65), 2.9, 1.8) * 0.3;
-            col += vec3(0.94, 0.97, 1.0) * min(s, 0.85);
-            col += vec3(1.0) * meteor(uv0) * 0.45;
-            gl_FragColor = vec4(col, 1.0);
-          }`;
-        const sh = (type: number, src: string) => {
-          const s = gl.createShader(type);
-          if (!s) return null;
-          gl.shaderSource(s, src);
-          gl.compileShader(s);
-          return gl.getShaderParameter(s, gl.COMPILE_STATUS) ? s : null;
-        };
-        const vs = sh(gl.VERTEX_SHADER, "attribute vec2 a;void main(){gl_Position=vec4(a,0.,1.);}");
-        const fs = sh(gl.FRAGMENT_SHADER, FS);
-        if (!vs || !fs) return false;
-        const prog = gl.createProgram();
-        if (!prog) return false;
-        gl.attachShader(prog, vs);
-        gl.attachShader(prog, fs);
-        gl.linkProgram(prog);
-        if (!gl.getProgramParameter(prog, gl.LINK_STATUS)) return false;
-        gl.useProgram(prog);
-        gl.bindBuffer(gl.ARRAY_BUFFER, gl.createBuffer());
-        gl.bufferData(gl.ARRAY_BUFFER, new Float32Array([-1, -1, 3, -1, -1, 3]), gl.STATIC_DRAW);
-        const loc = gl.getAttribLocation(prog, "a");
-        gl.enableVertexAttribArray(loc);
-        gl.vertexAttribPointer(loc, 2, gl.FLOAT, false, 0, 0);
-        const uT = gl.getUniformLocation(prog, "t");
-        const uR = gl.getUniformLocation(prog, "r");
-        const uRot = gl.getUniformLocation(prog, "rot");
-        const uPan = gl.getUniformLocation(prog, "pan");
-        // scroll steers the sky: sideways rotation + downward pan, both eased
-        let rotCur = 0;
-        let rotTarget = 0;
-        let panCur = 0;
-        let panTarget = 0;
-        window.addEventListener(
-          "scroll",
-          () => {
-            rotTarget = window.scrollY * 0.00017;
-            panTarget = window.scrollY * 0.0002;
-          },
-          { passive: true },
-        );
-        bgRun(
-          () => {
-            // full resolution (capped) so star points render crisp
-            const s = Math.min(window.devicePixelRatio || 1, 2);
-            canvas.width = Math.max(1, Math.round(window.innerWidth * s));
-            canvas.height = Math.max(1, Math.round(window.innerHeight * s));
-            gl.viewport(0, 0, canvas.width, canvas.height);
-            gl.uniform2f(uR, canvas.width, canvas.height);
-          },
-          (t) => {
-            rotCur += (rotTarget - rotCur) * 0.08;
-            panCur += (panTarget - panCur) * 0.08;
-            gl.uniform1f(uT, t);
-            // constant slow spin (like sitting on a rotating dish) + scroll steer
-            gl.uniform1f(uRot, rotCur + t * 0.012);
-            gl.uniform1f(uPan, panCur);
-            gl.drawArrays(gl.TRIANGLES, 0, 3);
-          },
-        );
-        return true;
-      };
-
-      const initSand = (canvas: HTMLCanvasElement) => {
-        const ctx = canvas.getContext("2d");
-        if (!ctx) return;
-        let w = 0;
-        let h = 0;
-        type Grain = { x: number; y: number; s: number; ph: number; tw: number; drift: number };
-        let grains: Grain[] = [];
-        const bgRandom = (seed: number) => {
-          let v = seed;
-          return () => {
-            v = (v * 16807) % 2147483647;
-            return v / 2147483647;
-          };
-        };
-        bgRun(
-          () => {
-            w = Math.max(1, Math.round(window.innerWidth * 0.5));
-            h = Math.max(1, Math.round(window.innerHeight * 0.5));
-            canvas.width = w;
-            canvas.height = h;
-            const rnd = bgRandom(1337);
-            grains = Array.from({ length: Math.round((w * h) / 1600) }, () => ({
-              x: rnd() * w,
-              y: rnd() * h,
-              s: rnd() < 0.85 ? 1 : 2,
-              ph: rnd() * Math.PI * 2,
-              tw: 0.15 + rnd() * 0.5,
-              drift: 0.6 + rnd() * 1.6,
-            }));
-          },
-          (t) => {
-            ctx.fillStyle = "#090909";
-            ctx.fillRect(0, 0, w, h);
-            for (const g of grains) {
-              const x = (g.x + t * g.drift) % w;
-              const a = 0.02 + 0.09 * Math.sin(t * g.tw + g.ph) ** 2;
-              ctx.fillStyle = `rgba(255,255,255,${a})`;
-              ctx.fillRect(x, g.y, g.s, g.s);
-            }
-          },
-        );
-      };
-
-      if (bgCanvas && !initGalaxy(bgCanvas)) initSand(bgCanvas);
-
       // Shared canvas driver: draw only while on screen, capped at ~30fps.
       // Static frame when offscreen or under prefers-reduced-motion.
       const runCanvasLoop = (
@@ -2243,7 +2007,6 @@ const canonicalUrl = "https://zedra.dev/";
           text: "#f3f4f6",
           muted: "#8a8a90",
           dim: "#59595e",
-          green: "#3dd68c",
           bg: "#090909",
         };
         const ctx = archCtx;
@@ -2285,7 +2048,7 @@ const canonicalUrl = "https://zedra.dev/";
             const full = `# ${text}`;
             const start = x - ctx.measureText(full).width / 2;
             ctx.textAlign = "left";
-            ctx.fillStyle = C.green;
+            ctx.fillStyle = C.muted;
             ctx.fillText("# ", start, y);
             ctx.fillStyle = color;
             ctx.fillText(text, start + ctx.measureText("# ").width, y);
@@ -2330,7 +2093,7 @@ const canonicalUrl = "https://zedra.dev/";
           ctx.stroke();
           // "screen": prompt + streamed lines that tick with time
           const ix = x - pw / 2 + (big ? 13 : 10);
-          ctx.fillStyle = C.green;
+          ctx.fillStyle = C.text;
           ctx.font = mono(big ? 14 : 11);
           ctx.textAlign = "left";
           ctx.fillText("❯", ix, y - ph / 2 + (big ? 38 : 30));
@@ -2356,7 +2119,7 @@ const canonicalUrl = "https://zedra.dev/";
           ctx.lineTo(x + (big ? 24 : 16), y + mh / 2 + (big ? 14 : 10));
           ctx.stroke();
           const ix = x - mw / 2 + (big ? 15 : 11);
-          ctx.fillStyle = C.green;
+          ctx.fillStyle = C.text;
           ctx.font = mono(big ? 14 : 11);
           ctx.textAlign = "left";
           ctx.fillText("❯", ix, y - mh / 2 + (big ? 27 : 20));
@@ -2395,14 +2158,14 @@ const canonicalUrl = "https://zedra.dev/";
 
           // endpoints pulse
           const pulse = (big ? 2.8 : 2.2) + Math.sin(t * 2.4) * 0.8;
-          ctx.fillStyle = C.green;
+          ctx.fillStyle = C.text;
           for (const ex of [lineStart, lineEnd]) {
             ctx.beginPath();
             ctx.arc(ex, midY, pulse, 0, Math.PI * 2);
             ctx.fill();
           }
 
-          // packets: green → desktop (input), light ← phone (output)
+          // packets: bright → desktop (input), dim ← phone (output)
           const span = lineEnd - lineStart;
           const packet = (p: number, color: string) => {
             const alpha = Math.min(1, Math.min(p, 1 - p) * 10);
@@ -2413,7 +2176,7 @@ const canonicalUrl = "https://zedra.dev/";
             ctx.fill();
             ctx.globalAlpha = 1;
           };
-          for (let i = 0; i < 3; i++) packet((t * 0.16 + i / 3) % 1, C.green);
+          for (let i = 0; i < 3; i++) packet((t * 0.16 + i / 3) % 1, C.text);
           for (let i = 0; i < 3; i++) packet(1 - ((t * 0.13 + i / 3 + 0.15) % 1), "#b9bac0");
 
           // direction labels, centered in the gaps between badge and endpoints
@@ -2690,61 +2453,6 @@ const canonicalUrl = "https://zedra.dev/";
         // aren't icon-less under prefers-reduced-motion if SVGs arrive late.
         for (const img of Object.values(icons)) img.addEventListener("load", () => draw(1.1));
         runCanvasLoop(agents, resize, draw, 1.1);
-      }
-
-      // Revolution canvas: GPU-waveform bars + drifting tech ticker.
-      const rev = document.getElementById("rev-canvas") as HTMLCanvasElement | null;
-      const revCtx = rev?.getContext("2d");
-      if (rev && revCtx) {
-        const ctx = revCtx;
-        const mono = (px: number) => `${px}px "IBM Plex Mono", monospace`;
-        let w = 0;
-        let h = 0;
-        const resize = () => {
-          const width = rev.parentElement?.getBoundingClientRect().width ?? 0;
-          if (!width) return;
-          const dpr = Math.min(window.devicePixelRatio || 1, 2);
-          w = width;
-          h = 220;
-          rev.width = Math.round(w * dpr);
-          rev.height = Math.round(h * dpr);
-          rev.style.height = `${h}px`;
-          ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
-        };
-        const words = [
-          { t: "GPUI", green: true, y: 0.2, sp: 26, off: 0 },
-          { t: "Metal", green: false, y: 0.34, sp: 20, off: 300 },
-          { t: "wgpu", green: false, y: 0.14, sp: 32, off: 620 },
-          { t: "Vulkan", green: false, y: 0.82, sp: 24, off: 150 },
-          { t: "iroh", green: true, y: 0.68, sp: 18, off: 480 },
-          { t: "QUIC/UDP", green: false, y: 0.9, sp: 28, off: 800 },
-          { t: "TLS 1.3", green: false, y: 0.26, sp: 22, off: 1040 },
-          { t: "no webview", green: true, y: 0.76, sp: 30, off: 240 },
-        ];
-        const draw = (t: number) => {
-          ctx.clearRect(0, 0, w, h);
-          const midY = h / 2;
-          for (let x = 4; x < w; x += 8) {
-            const a = Math.sin(x * 0.012 + t * 1.5) * Math.sin(x * 0.0042 - t * 0.55);
-            const amp = 8 + Math.abs(a) * (h * 0.36);
-            const isGreen = Math.floor(x / 8) % 9 === 0;
-            ctx.fillStyle = isGreen
-              ? `rgba(61,214,140,${0.25 + Math.abs(a) * 0.5})`
-              : `rgba(255,255,255,${0.08 + Math.abs(a) * 0.14})`;
-            ctx.fillRect(x, midY - amp, 3, amp * 2);
-          }
-          ctx.textAlign = "left";
-          ctx.textBaseline = "middle";
-          ctx.font = mono(12.5);
-          for (const wd of words) {
-            const tw = ctx.measureText(wd.t).width;
-            const travel = w + tw + 120;
-            const x = w + 60 - ((t * wd.sp + wd.off) % travel);
-            ctx.fillStyle = wd.green ? "rgba(61,214,140,0.75)" : "rgba(185,186,192,0.6)";
-            ctx.fillText(wd.t, x, wd.y * h);
-          }
-        };
-        runCanvasLoop(rev, resize, draw, 3.7);
       }
 
       // Center the sticky demo frame in the current viewport by computing
