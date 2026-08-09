@@ -1646,15 +1646,13 @@ private enum PresentationCoordinator {
 
             let sheet = UIAlertController(title: title, message: message, preferredStyle: .actionSheet)
             Self.applyTheme(to: sheet)
-            let delegate = PresentationDismissDelegate(callbackID: callbackID, isSelection: true)
-            sheet.presentationController?.delegate = delegate
-            objc_setAssociatedObject(sheet, dismissAssociationKey, delegate, .OBJC_ASSOCIATION_RETAIN_NONATOMIC)
+            // UIAlertController throws if its presentation controller gets a delegate (iOS 18).
+            // Outside taps route to the cancel action instead, so dismissal is covered below.
 
             let hasCancelAction = buttonStyles.prefix(buttonLabels.count).contains(.cancel)
             for index in 0..<buttonLabels.count {
                 let style = buttonStyles[safe: index] ?? .default
                 let action = UIAlertAction(title: buttonLabels[index], style: style.uiKitStyle) { _ in
-                    delegate.handled = true
                     zedra_ios_selection_result(callbackID, Int32(index))
                 }
                 if let imageName = buttonImageNames[safe: index].flatMap({ $0 }),
@@ -1667,7 +1665,6 @@ private enum PresentationCoordinator {
             if !hasCancelAction {
                 // UIKit allows one cancel action; add a dismiss affordance only when callers omit it.
                 sheet.addAction(UIAlertAction(title: "Cancel", style: .cancel) { _ in
-                    delegate.handled = true
                     zedra_ios_selection_dismiss(callbackID)
                 })
             }

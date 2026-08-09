@@ -246,6 +246,18 @@ Use a `debug-telemetry` build so every event prints `[telemetry] >> <name>` to s
 6. Open `Native Selection` again, then tap outside the sheet
 7. Expected: the sheet dismisses without crashing
 
+## 0e-1. Action Sheets On iOS 18
+
+Regression guard for the `_UIAlertControllerPresentationController setDelegate:` crash — iOS 18 rejects a
+delegate on an alert controller's presentation controller, iOS 26 does not, so this needs an iOS 18 runtime.
+
+1. Run on an iOS 18 simulator: `./scripts/run-ios.sh sim --device-id <iOS 18 sim UDID or name>`
+2. Open Settings and tap `Sign In` in the Delta section
+3. Expected: the sign-in action sheet opens without crashing
+4. Tap outside the sheet
+5. Expected: the sheet dismisses and no sign-in starts
+6. Repeat with Settings → Developer → `Native Selection` and with a workspace long-press menu
+
 ## 0f. Delta Agent Hooks
 
 1. Sign in the host with Delta and confirm `zedra stack list` lists at least one push-enabled mobile node
