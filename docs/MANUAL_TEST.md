@@ -847,6 +847,44 @@ The default exact-port mode binds `127.0.0.1:<port>` on the device and opens the
 3. Start `./examples/webview-tunnel/run.sh` on the host, then tap **Try Again** (or the reload ↻ button).
 4. Expected: the retry loads the real page through the tunnel (not the error HTML, and no system browser), and the page renders.
 
+### Tunnel survives returning from background (iOS)
+
+Suspension idles out the QUIC session (20s `max_idle_timeout`), so the first
+request after resume lands while the foreground reconnect is still in flight.
+It must be held, not failed — a failed navigation renders the error page and
+nothing retries it.
+
+1. Open a tunneled page (`run.sh` test app, or an opencode web client card) and confirm it loads.
+2. Send the app to the home screen and leave it there **at least 30s**, so the session really idles out. On the simulator, background it and also `kill -STOP <app pid>` for the wait — the simulator never suspends app processes, so the keepalive otherwise holds the connection open and the case cannot occur.
+3. Resume the process (`kill -CONT <app pid>` on the simulator), foreground the app, and immediately reload the page (↻), or interact so it issues a request.
+4. Expected: the page loads. It may pause a second or two while the session reconnects, but must **not** show "Can't reach this page" / "cannot connect to the server".
+5. Log: `session … connected` after `AppForegrounded`, and **no** `exact-port connect <port> failed` / `alias connect failed` line.
+6. Negative check: stop the host daemon, then reload. Expected: after ~15s the error page does appear, with `alias connect failed: …` or `exact-port connect … failed: …` logged — failures are still reported, just not instantly.
+
+### Tunnel recovers after the session gave up reconnecting
+
+Reconnect gives up after 3 attempts (`reconnect exhausted, giving up attempts 3`).
+Reconnecting from Home then builds a *new* `SessionHandle`, while the bound
+listener/alias still resolves by endpoint id — so the tunnel must be re-pointed
+at the new session or it keeps dialing the dead one forever.
+
+1. Open a tunneled page and confirm it loads.
+2. Stop the host daemon (or drop the network) and wait ~1 min, until the log shows `reconnect exhausted, giving up attempts 3`.
+3. Reload the page. Expected: the error page, and `alias connect failed: … not connected` (or the exact-port equivalent) in the log.
+4. Restart the host daemon, return to Home, tap **Reconnect** on the workspace card, and wait for `session … connected`.
+5. Reopen the web client card. Expected: the page loads again. Before the fix this stayed broken — the tunnel kept resolving the dead handle, and only reopening the card refreshed it.
+6. Also check the still-open webview from step 1 recovers on reload, without needing the card reopened.
+
+### Webview content process reclaimed (iOS)
+
+iOS kills the WKWebView content process while the app is backgrounded. The page
+must reload itself rather than come back blank.
+
+1. Open a tunneled page and let it settle on a deep route (e.g. an opencode session).
+2. Kill the page's content process. Simulator: `ps -axo pid,lstart,command | grep WebKit.WebContent`, pick the CoreSimulator-path entry whose start time matches when the webview opened, `kill -9 <pid>`. On device, background the app and leave it under memory pressure until iOS reclaims it.
+3. Expected: the page reloads itself and comes back on the **same route**, not blank and not the base URL. Log: `webview: content process terminated url=<full url>`.
+4. Repeat the kill immediately (within 3s). Expected: instead of reloading again, the inline error page appears ("The page stopped responding.") — the loop guard.
+
 ### Tunnel modes (devtool)
 
 Exercise the exact-port / alias adapters without contriving two hosts. Fire deeplinks at a **running, connected** app — simulator: `xcrun simctl openurl booted '<deeplink>'`; device: `xcrun devicectl device process launch --terminate-existing --device <udid> --payload-url '<deeplink>' dev.zedra.app.debug` then reconnect the workspace. Debug builds only. See `docs/WEB_TUNNEL_MODES.md`.

@@ -1377,8 +1377,9 @@ impl Workspace {
             request.ticket,
             request.signer,
             session_id.clone(),
-            move |_handle| {
+            move |handle| {
                 info!("session {:?} connected", session_id);
+                crate::web_tunnel::register_session(handle);
             },
         );
     }
