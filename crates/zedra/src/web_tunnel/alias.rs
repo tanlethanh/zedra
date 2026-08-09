@@ -106,7 +106,12 @@ fn spawn_accept_loop(listener: TcpListener) {
                 break;
             };
             tokio::spawn(async move {
-                let _ = handle_socks(stream).await;
+                // Never discard this: a rejected SOCKS connection is what the
+                // webview renders as its "cannot connect" page, and without a
+                // log the alias path fails invisibly.
+                if let Err(error) = handle_socks(stream).await {
+                    tracing::info!("web-tunnel: alias connect failed: {error}");
+                }
             });
         }
     });
@@ -197,11 +202,7 @@ async fn forward_via_session(
     endpoint_id: PublicKey,
     port: u16,
 ) -> Result<(), String> {
-    let Some(session) = super::session_for(&endpoint_id) else {
-        stream.write_all(&reply(0x05)).await.ok();
-        return Err("no session for alias host".to_string());
-    };
-    let (tx, rx, initial) = match bridge::connect(&session, port).await {
+    let (tx, rx, initial) = match bridge::connect_retrying(&endpoint_id, port).await {
         Ok(parts) => parts,
         Err(error) => {
             stream.write_all(&reply(0x05)).await.ok();
