@@ -21,7 +21,7 @@ usage() {
     echo "  --preview               Enable preview feature flag"
     echo "  --devtool               Enable in-app HTTP devtool (127.0.0.1:9777, debug only)"
     echo "  --no-telemetry          Compile Firebase Analytics and Crashlytics out"
-    echo "  --device-id <UDID>      Target a specific device by UDID (skips selection)"
+    echo "  --device-id <UDID>      Target a specific device by UDID (sim: UDID or name, boots it)"
     echo "  --select-device         Ignore saved device preference and re-prompt"
     echo "  --launch-url <URL>      Open the app with a deep link URL (e.g. zedra://...)"
     echo ""
@@ -30,6 +30,7 @@ usage() {
     echo "  $0 sim                                    # run on simulator (debug)"
     echo "  $0 sim --release                          # run on simulator (release)"
     echo "  $0 sim --no-build                         # launch on simulator without building"
+    echo "  $0 sim --device-id 'iPhone 16'            # run on a specific simulator (UDID or name)"
     echo "  $0 device                                 # install on saved/selected device"
     echo "  $0 device --select-device                 # re-prompt for device"
     echo "  $0 device --device-id 00008140-001234     # install on specific device"
@@ -239,8 +240,39 @@ fi
 
 case "$MODE" in
     sim)
+        BOOTED_ID=""
+
+        if [ -n "$FORCED_DEVICE_ID" ]; then
+            # Explicit --device-id wins; accepts a UDID or a simulator name
+            BOOTED_ID=$(xcrun simctl list devices available -j | python3 -c "
+import json, sys
+data = json.load(sys.stdin)
+wanted = '$FORCED_DEVICE_ID'
+for runtime, devices in data['devices'].items():
+    for d in devices:
+        if d['udid'] == wanted or d['name'] == wanted:
+            print(d['udid'])
+            sys.exit(0)
+" 2>/dev/null || true)
+
+            if [ -z "$BOOTED_ID" ]; then
+                echo "Error: Simulator '$FORCED_DEVICE_ID' not found."
+                echo ""
+                echo "Available simulators:"
+                xcrun simctl list devices available
+                exit 1
+            fi
+
+            if ! xcrun simctl list devices booted | grep -q "$BOOTED_ID"; then
+                echo "==> Booting simulator..."
+                xcrun simctl boot "$BOOTED_ID"
+            fi
+            xcrun simctl bootstatus "$BOOTED_ID" >/dev/null
+        fi
+
         # Pick first booted simulator, or boot one if none running
-        BOOTED_ID=$(xcrun simctl list devices booted -j | python3 -c "
+        if [ -z "$BOOTED_ID" ]; then
+            BOOTED_ID=$(xcrun simctl list devices booted -j | python3 -c "
 import json, sys
 data = json.load(sys.stdin)
 for runtime, devices in data['devices'].items():
@@ -249,6 +281,7 @@ for runtime, devices in data['devices'].items():
             print(d['udid'])
             sys.exit(0)
 " 2>/dev/null || true)
+        fi
 
         if [ -z "$BOOTED_ID" ]; then
             SIM_ID=$(xcrun simctl list devices available -j | python3 -c "
