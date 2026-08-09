@@ -2609,6 +2609,27 @@ private final class NativeWebViewController: UIViewController, WKNavigationDeleg
         showErrorPage(for: nsError)
     }
 
+    // iOS reclaims the WKWebView content process while the app is backgrounded.
+    // Without this the page comes back permanently blank, with no signal to Rust
+    // and nothing but the reload button to recover it.
+    func webViewWebContentProcessDidTerminate(_ webView: WKWebView) {
+        NSLog("webview: content process terminated url=%@", currentTarget.absoluteString)
+        // A page that kills its process on every load would otherwise reload forever.
+        let now = Date()
+        if let last = lastProcessReload, now.timeIntervalSince(last) < Self.processReloadMinInterval {
+            showErrorPage(
+                for: NSError(
+                    domain: "dev.zedra.webview",
+                    code: -1,
+                    userInfo: [NSLocalizedDescriptionKey: "The page stopped responding."]
+                )
+            )
+            return
+        }
+        lastProcessReload = now
+        loadURL(currentTarget)
+    }
+
     /// Replace the blank page with an inline error page for the failed target.
     /// Skips user- or policy-initiated cancellations (navigating away, our own
     /// retry-sentinel cancel), which surface here as spurious "failures".
