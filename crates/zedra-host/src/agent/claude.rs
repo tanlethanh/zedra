@@ -225,14 +225,13 @@ impl ClaudeActor {
         Self::claude_config_dir().unwrap_or_else(|_| home_path(&[".claude"]))
     }
 
+    /// Mirrors Claude CLI: every non-alphanumeric char becomes `-`, so workdirs
+    /// with dots or underscores still resolve to their project dir.
     fn encoded_project_name(workdir: &Path) -> String {
         workdir
             .to_string_lossy()
             .chars()
-            .map(|ch| match ch {
-                '/' | '\\' => '-',
-                _ => ch,
-            })
+            .map(|ch| if ch.is_ascii_alphanumeric() { ch } else { '-' })
             .collect()
     }
 
@@ -837,8 +836,35 @@ mod tests {
         );
         assert_eq!(
             ClaudeActor::encoded_project_name(Path::new(r"C:\Users\me\project")),
-            "C:-Users-me-project"
+            "C--Users-me-project"
         );
+    }
+
+    #[test]
+    fn project_name_encodes_every_non_alphanumeric_char() {
+        assert_eq!(
+            ClaudeActor::encoded_project_name(Path::new("/Users/me/my.app_v2 beta")),
+            "-Users-me-my-app-v2-beta"
+        );
+    }
+
+    #[test]
+    fn list_sessions_finds_dotted_workdir_transcripts() {
+        let config = tempfile::tempdir().unwrap();
+        let workdir = Path::new("/Users/me/my.app");
+        let project_dir = config.path().join("projects").join("-Users-me-my-app");
+        std::fs::create_dir_all(&project_dir).unwrap();
+        std::fs::write(
+            project_dir.join("session.jsonl"),
+            r#"{"sessionId":"dotted-session","cwd":"/Users/me/my.app","timestamp":"2026-05-09T10:00:00Z"}
+"#,
+        )
+        .unwrap();
+
+        let list = ClaudeActor::list_sessions_in_config(workdir, config.path(), None).unwrap();
+
+        assert_eq!(list.sessions.len(), 1);
+        assert_eq!(list.sessions[0].session_id, "dotted-session");
     }
 
     #[test]
