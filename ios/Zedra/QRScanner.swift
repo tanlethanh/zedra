@@ -14,6 +14,32 @@ private final class QRScannerViewController: UIViewController, AVCaptureMetadata
     private var handled = false
     private let overlay = ViewfinderOverlay()
     private var photoButtonTop: NSLayoutConstraint?
+    private var occludesMainWindow = false
+
+    override func viewDidAppear(_ animated: Bool) {
+        super.viewDidAppear(animated)
+        guard !occludesMainWindow else { return }
+        occludesMainWindow = true
+        GPUIRuntimeController.beginMainWindowOcclusion()
+    }
+
+    override func viewDidDisappear(_ animated: Bool) {
+        super.viewDidDisappear(animated)
+        // The photo picker presents over this controller; only a real teardown
+        // gives the GPUI window back.
+        guard presentedViewController == nil, presentingViewController == nil else { return }
+        endOcclusion()
+    }
+
+    deinit {
+        endOcclusion()
+    }
+
+    private func endOcclusion() {
+        guard occludesMainWindow else { return }
+        occludesMainWindow = false
+        GPUIRuntimeController.endMainWindowOcclusion()
+    }
 
     override func viewDidLoad() {
         super.viewDidLoad()

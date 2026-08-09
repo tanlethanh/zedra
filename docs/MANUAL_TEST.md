@@ -1171,6 +1171,34 @@ printf '\033]8;;file:///tmp/zedra-long-code.rs:41:1\033\\/tmp/zedra-long-code.rs
 21. Rotate the device with the pinned bar visible
 22. Expected: the bar spans the new width with evenly spaced keys
 
+## 11g-1. Pinned Key Bar Yields To Native Modals
+
+1. Open a terminal with the keyboard down and the pinned bar visible, then open the workspace drawer and tap Create Agent
+2. Expected: the drawer closes back to the terminal and the pinned bar is gone the moment the agent sheet appears — no keys visible over or beside the sheet
+3. Dismiss the sheet by swiping it down
+4. Expected: the pinned bar returns within a blink, terminal content does not jump, and its keys still reach the PTY
+5. Repeat step 1 and pick an agent instead of dismissing
+6. Expected: the bar stays hidden through the sheet dismissal and returns on the new agent terminal
+7. Trigger a native alert and a native text-input dialog over the terminal (for example a destructive confirm, or Settings → Developer native presentations)
+8. Expected: the pinned bar hides for each and returns after every dismissal path — confirm, cancel, and swipe-down
+9. From the terminal, open the opencode web client card, then open any in-app browser link from it
+10. Expected: the pinned bar is gone the whole time the webview is up, including while the page's own keyboard is raised
+11. Close the webview
+12. Expected: the pinned bar returns on the terminal underneath
+
+## 11g-2. Full-Screen Presentations Pause The GPUI Window (iOS)
+
+1. Start a noisy command in a terminal (`yes`, a build, a running agent), then open the opencode web client webview over it
+2. Expected: page scrolling, dropdowns, and typing stay smooth while the command keeps producing output behind the webview — no stutter that tracks the terminal's output rate
+3. With the webview open, focus a text field in the page and toggle a chat dropdown with the keyboard up
+4. Expected: the dropdown opens where it should and the page does not jump; no key bar appears over the webview's keyboard
+5. Close the webview
+6. Expected: the terminal repaints immediately with the backlog produced while it was covered, the keypad returns, and tapping the terminal raises the keyboard at the right height
+7. Open the terminal keyboard, then open the webview from the drawer, then close it
+8. Expected: the keyboard is gone while the webview is up and does not re-appear on its own; terminal content is not offset by a stale keyboard inset afterwards
+9. Repeat steps 1-6 with the QR scanner instead of the webview, including opening the photo picker from inside the scanner
+10. Expected: same behavior; returning from the photo picker to the scanner does not resume the GPUI window early, and cancelling the scanner restores it
+
 ## 11h. Extended Keypad
 
 1. Set Settings → Terminal → Extended keypad to On, then open a terminal

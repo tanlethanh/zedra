@@ -115,6 +115,7 @@ Mobile remote editor for iOS and Android. Primary platform is iOS (`gpui_ios` + 
 
 - iOS is the primary development path; Android is secondary.
 - Native iOS presentations should keep UIKit responsible for alerts, sheets, and keyboard accessories.
+- Every native presentation must flag `native_presentation::{begin,end}_native_presentation` or its `set_native_*_presented` pair on both edges — the window-level pinned key bar gates on `any_native_presentation()`, so a missed edge leaves the keypad over the presentation or stuck hidden.
 - `UIGlassEffect` is public UIKit on iOS 26+. Use `if #available(iOS 26.0, *)`, not runtime probing.
 
 ## Icon Assets

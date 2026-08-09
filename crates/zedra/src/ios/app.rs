@@ -219,6 +219,7 @@ pub extern "C" fn zedra_ios_mount_custom_sheet_content(
     if parent_view_ptr.is_null() {
         return std::ptr::null_mut();
     }
+    native_presentation::set_native_custom_sheet_presented(true);
 
     IOS_APP_CELL.with(|cell| {
         let Some(app_cell) = cell.borrow().as_ref().cloned() else {
@@ -276,6 +277,7 @@ pub extern "C" fn zedra_ios_mount_custom_sheet_content(
 
 #[unsafe(no_mangle)]
 pub extern "C" fn zedra_ios_unmount_custom_sheet_content() {
+    native_presentation::set_native_custom_sheet_presented(false);
     IOS_SHEET_WINDOW_PTR.with(|ptr| {
         let ptr = *ptr.borrow();
         if !ptr.is_null() {

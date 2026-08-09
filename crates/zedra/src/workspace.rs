@@ -1144,6 +1144,11 @@ impl Workspace {
         let platform_action_slot = pending_platform_action.clone();
         let pending_platform_action_task =
             spawn_periodic_task(cx, Duration::from_millis(50), move |this, cx| {
+                // Views gating on `any_native_presentation` observe no entity, so a
+                // present/dismiss flip only reaches them through a window refresh.
+                if crate::native_presentation::take_native_presentation_change() {
+                    cx.refresh_windows();
+                }
                 if let Some(action) = platform_action_slot.take() {
                     this.process_pending_platform_action(action, cx);
                 }

@@ -50,6 +50,9 @@ struct Handlers {
 }
 
 static NEXT_ID: AtomicU32 = AtomicU32::new(1);
+/// Id of the webview currently on screen; a replaced one may still report its
+/// dismissal afterwards, which must not clear the newer presentation.
+static CURRENT_ID: AtomicU32 = AtomicU32::new(0);
 static HANDLERS: OnceLock<Mutex<HashMap<u32, Handlers>>> = OnceLock::new();
 
 fn handlers() -> &'static Mutex<HashMap<u32, Handlers>> {
@@ -184,6 +187,8 @@ pub fn open(config: WebviewConfig) -> u32 {
         },
     );
 
+    CURRENT_ID.store(id, Ordering::Relaxed);
+    crate::native_presentation::set_native_webview_presented(true);
     platform_bridge::bridge().open_webview(id, &config.url, &config_json);
     id
 }
@@ -229,6 +234,12 @@ pub fn dispatch_navigate(id: u32, url: &str) -> bool {
 /// Report that the webview was dismissed. Drops its handlers and fires
 /// `on_dismiss`. Called by the native layer.
 pub fn dispatch_dismiss(id: u32) {
+    if CURRENT_ID
+        .compare_exchange(id, 0, Ordering::Relaxed, Ordering::Relaxed)
+        .is_ok()
+    {
+        crate::native_presentation::set_native_webview_presented(false);
+    }
     let entry = handlers().lock().unwrap().remove(&id);
     if let Some(handler) = entry.and_then(|h| h.on_dismiss) {
         handler();

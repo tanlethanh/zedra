@@ -384,6 +384,7 @@ pub fn show_alert(
             }
         }),
     );
+    crate::native_presentation::begin_native_presentation();
     bridge().present_alert(id, title, message, &buttons);
 }
 
@@ -402,6 +403,7 @@ pub fn show_selection(
         .lock()
         .unwrap()
         .insert(id, Box::new(on_result));
+    crate::native_presentation::begin_native_presentation();
     bridge().present_selection(id, title, message, &buttons);
 }
 
@@ -438,6 +440,7 @@ pub fn show_list_picker(
         .lock()
         .unwrap()
         .insert(id, Box::new(wrapped));
+    crate::native_presentation::begin_native_presentation();
     bridge().present_list_picker(id, title, message, &items);
 }
 
@@ -455,6 +458,7 @@ pub fn show_text_input(
         .lock()
         .unwrap()
         .insert(id, Box::new(on_result));
+    crate::native_presentation::begin_native_presentation();
     bridge().present_text_input(id, title, placeholder, initial_value);
 }
 
@@ -462,6 +466,7 @@ pub fn show_text_input(
 pub fn dispatch_text_input_result(callback_id: u32, value: String) {
     let cb = text_input_callbacks().lock().unwrap().remove(&callback_id);
     if let Some(cb) = cb {
+        crate::native_presentation::end_native_presentation();
         cb(Some(value));
     }
 }
@@ -470,6 +475,7 @@ pub fn dispatch_text_input_result(callback_id: u32, value: String) {
 pub fn dispatch_text_input_dismiss(callback_id: u32) {
     let cb = text_input_callbacks().lock().unwrap().remove(&callback_id);
     if let Some(cb) = cb {
+        crate::native_presentation::end_native_presentation();
         cb(None);
     }
 }
@@ -538,6 +544,9 @@ where
     // Fresh content always starts at the top; clear any stale boundary left by
     // a previously presented sheet so the drag hand-off starts correct.
     crate::native_presentation::set_sheet_content_at_top(true);
+    // Set here as well as at content mount: replacing a live sheet unmounts the old
+    // one after this call, and only the mount that follows would restore the flag.
+    crate::native_presentation::set_native_custom_sheet_presented(true);
     bridge().present_custom_sheet(&options);
 }
 
@@ -691,6 +700,7 @@ pub fn show_native_edit_menu(
 pub fn dispatch_alert_result(callback_id: u32, button_index: usize) {
     let cb = alert_callbacks().lock().unwrap().remove(&callback_id);
     if let Some(cb) = cb {
+        crate::native_presentation::end_native_presentation();
         cb(Some(button_index));
     }
 }
@@ -699,6 +709,7 @@ pub fn dispatch_alert_result(callback_id: u32, button_index: usize) {
 pub fn dispatch_alert_dismiss(callback_id: u32) {
     let cb = alert_callbacks().lock().unwrap().remove(&callback_id);
     if let Some(cb) = cb {
+        crate::native_presentation::end_native_presentation();
         cb(None);
     }
 }
@@ -707,6 +718,7 @@ pub fn dispatch_alert_dismiss(callback_id: u32) {
 pub fn dispatch_selection_result(callback_id: u32, button_index: usize) {
     let cb = selection_callbacks().lock().unwrap().remove(&callback_id);
     if let Some(cb) = cb {
+        crate::native_presentation::end_native_presentation();
         cb(Some(button_index));
     }
 }
@@ -715,6 +727,7 @@ pub fn dispatch_selection_result(callback_id: u32, button_index: usize) {
 pub fn dispatch_selection_dismiss(callback_id: u32) {
     let cb = selection_callbacks().lock().unwrap().remove(&callback_id);
     if let Some(cb) = cb {
+        crate::native_presentation::end_native_presentation();
         cb(None);
     }
 }

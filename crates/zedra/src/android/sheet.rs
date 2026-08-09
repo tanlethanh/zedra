@@ -22,6 +22,7 @@ thread_local! {
 static NEXT_SHEET_WINDOW_HANDLE: AtomicU64 = AtomicU64::new(1);
 
 pub(crate) fn handle_surface_created(native_window: NativeWindow, width: u32, height: u32) {
+    crate::native_presentation::set_native_custom_sheet_presented(true);
     let Some(app_cell) = entry::app_cell() else {
         tracing::error!("sheet: surface created without AppCell");
         return;
@@ -99,6 +100,7 @@ pub(crate) fn handle_surface_changed(width: u32, height: u32) {
 }
 
 pub(crate) fn handle_surface_destroyed() {
+    crate::native_presentation::set_native_custom_sheet_presented(false);
     gpui_android::with_platform(|platform| platform.detach_sheet_native_window());
 }
 

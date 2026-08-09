@@ -209,6 +209,26 @@ private final class PresentationDismissDelegate: NSObject, UIAdaptivePresentatio
     }
 }
 
+private final class PresentationDismissObserver: UIView {
+    private var wasPresented = false
+    private var onDismiss: (() -> Void)?
+
+    func dispatchAfterDismiss(_ callback: @escaping () -> Void) {
+        guard onDismiss == nil else { return }
+        onDismiss = callback
+    }
+
+    override func didMoveToWindow() {
+        super.didMoveToWindow()
+        if window != nil {
+            wasPresented = true
+        } else if wasPresented, let onDismiss {
+            self.onDismiss = nil
+            onDismiss()
+        }
+    }
+}
+
 private final class AgentListPickerViewController: UITableViewController {
     private let callbackID: UInt32
     private let pickerTitle: String?
@@ -1611,6 +1631,9 @@ private enum PresentationCoordinator {
 
             let alert = UIAlertController(title: title, message: message, preferredStyle: .alert)
             Self.applyTheme(to: alert)
+            let dismissObserver = PresentationDismissObserver()
+            dismissObserver.isUserInteractionEnabled = false
+            alert.view.addSubview(dismissObserver)
             let outsideTapHandler = AlertOutsideTapDismissHandler(callbackID: callbackID, alert: alert)
             objc_setAssociatedObject(
                 alert,
@@ -1623,7 +1646,9 @@ private enum PresentationCoordinator {
                 let style = buttonStyles[safe: index] ?? .default
                 alert.addAction(UIAlertAction(title: buttonLabels[index], style: style.uiKitStyle) { _ in
                     outsideTapHandler.markHandled()
-                    zedra_ios_alert_result(callbackID, Int32(index))
+                    dismissObserver.dispatchAfterDismiss {
+                        zedra_ios_alert_result(callbackID, Int32(index))
+                    }
                 })
             }
 
@@ -1646,6 +1671,9 @@ private enum PresentationCoordinator {
 
             let sheet = UIAlertController(title: title, message: message, preferredStyle: .actionSheet)
             Self.applyTheme(to: sheet)
+            let dismissObserver = PresentationDismissObserver()
+            dismissObserver.isUserInteractionEnabled = false
+            sheet.view.addSubview(dismissObserver)
             // UIAlertController throws if its presentation controller gets a delegate (iOS 18).
             // Outside taps route to the cancel action instead, so dismissal is covered below.
 
@@ -1653,7 +1681,9 @@ private enum PresentationCoordinator {
             for index in 0..<buttonLabels.count {
                 let style = buttonStyles[safe: index] ?? .default
                 let action = UIAlertAction(title: buttonLabels[index], style: style.uiKitStyle) { _ in
-                    zedra_ios_selection_result(callbackID, Int32(index))
+                    dismissObserver.dispatchAfterDismiss {
+                        zedra_ios_selection_result(callbackID, Int32(index))
+                    }
                 }
                 if let imageName = buttonImageNames[safe: index].flatMap({ $0 }),
                    let image = NativePresentationBridge.actionImage(named: imageName) {
@@ -1665,7 +1695,9 @@ private enum PresentationCoordinator {
             if !hasCancelAction {
                 // UIKit allows one cancel action; add a dismiss affordance only when callers omit it.
                 sheet.addAction(UIAlertAction(title: "Cancel", style: .cancel) { _ in
-                    zedra_ios_selection_dismiss(callbackID)
+                    dismissObserver.dispatchAfterDismiss {
+                        zedra_ios_selection_dismiss(callbackID)
+                    }
                 })
             }
 
@@ -1805,6 +1837,9 @@ private enum PresentationCoordinator {
                 preferredStyle: .alert
             )
             Self.applyTheme(to: alert)
+            let dismissObserver = PresentationDismissObserver()
+            dismissObserver.isUserInteractionEnabled = false
+            alert.view.addSubview(dismissObserver)
             alert.addTextField { field in
                 field.placeholder = placeholder
                 field.text = initialValue
@@ -1817,12 +1852,16 @@ private enum PresentationCoordinator {
             }
             alert.addAction(UIAlertAction(title: "Save", style: .default) { _ in
                 let value = alert.textFields?.first?.text ?? ""
-                value.withCString { ptr in
-                    zedra_ios_text_input_result(callbackID, ptr)
+                dismissObserver.dispatchAfterDismiss {
+                    value.withCString { ptr in
+                        zedra_ios_text_input_result(callbackID, ptr)
+                    }
                 }
             })
             alert.addAction(UIAlertAction(title: "Cancel", style: .cancel) { _ in
-                zedra_ios_text_input_dismiss(callbackID)
+                dismissObserver.dispatchAfterDismiss {
+                    zedra_ios_text_input_dismiss(callbackID)
+                }
             })
             presenter.present(alert, animated: true) {
                 alert.textFields?.first?.selectAll(nil)
@@ -2248,6 +2287,7 @@ private final class NativeWebViewController: UIViewController, WKNavigationDeleg
     private var urlFieldTrailingEditing: NSLayoutConstraint!
     private var progressObservation: NSKeyValueObservation?
     private var didReportDismiss = false
+    private var occludesMainWindow = false
     private var faviconTask: URLSessionDataTask?
     private var faviconHost: String?
     // The URL we asked the webview to load, and (when non-nil) the URL whose
@@ -2255,6 +2295,8 @@ private final class NativeWebViewController: UIViewController, WKNavigationDeleg
     // this real URL instead of the error HTML.
     private var currentTarget: URL
     private var showingErrorFor: URL?
+    private var lastProcessReload: Date?
+    private static let processReloadMinInterval: TimeInterval = 3
     var onDismiss: (() -> Void)?
 
     // Sentinel scheme the error page's "Try Again" button navigates to; caught
@@ -2305,6 +2347,36 @@ private final class NativeWebViewController: UIViewController, WKNavigationDeleg
     @available(*, unavailable)
     required init?(coder: NSCoder) {
         fatalError("init(coder:) has not been implemented")
+    }
+
+    override func viewDidAppear(_ animated: Bool) {
+        super.viewDidAppear(animated)
+        beginOcclusionIfNeeded()
+    }
+
+    override func viewDidDisappear(_ animated: Bool) {
+        super.viewDidDisappear(animated)
+        // Also fires when this controller presents something of its own; only a
+        // real teardown gives the GPUI window back.
+        if presentedViewController == nil && presentingViewController == nil {
+            endOcclusionIfNeeded()
+        }
+    }
+
+    deinit {
+        endOcclusionIfNeeded()
+    }
+
+    private func beginOcclusionIfNeeded() {
+        guard !occludesMainWindow else { return }
+        occludesMainWindow = true
+        GPUIRuntimeController.beginMainWindowOcclusion()
+    }
+
+    private func endOcclusionIfNeeded() {
+        guard occludesMainWindow else { return }
+        occludesMainWindow = false
+        GPUIRuntimeController.endMainWindowOcclusion()
     }
 
     override func viewDidLoad() {
