@@ -87,6 +87,26 @@ Two ways to open a host web app on the phone:
   session with an active `Subscribe` stream; the app opens it through the same
   seam. Requires a phone connected to that workspace's daemon.
 
+## Opening progress
+
+Opening an agent web client can take seconds — the host spawns the server and
+polls it for readiness before the app has a URL to tunnel — so every open path
+reports its stage through `web_tunnel::progress`, and `web_tunnel_opening.rs`
+renders it as a full-view overlay above the workspace. Three steps — starting the
+server, opening the tunnel, loading the page — of which only the one in flight is
+shown, next to a corner ✕ that dismisses like the connecting view.
+
+The state is a module-level global rather than a `WorkspaceState` field because
+the tunnel steps run on the session runtime, off the GPUI thread; the view polls
+a version counter and repaints. One open is live at a time, identified by a
+generation. **Cancel bumps the generation**, and the presenting step checks it
+before calling `webview::open` — the invariant is that a cancelled open can
+never pop a webview later, however long the host takes to answer.
+
+Failure keeps the overlay up with the failed step marked and an explanation,
+except where a native notification already owns the outcome (the alias-fallback
+prompt), which clears the overlay so only one surface asks for a decision.
+
 ## Keyboard and the tunnelled page
 
 A tunnelled page is a full app the user drives with its own UI, so the webview

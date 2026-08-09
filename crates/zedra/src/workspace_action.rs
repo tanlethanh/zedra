@@ -79,6 +79,11 @@ pub struct ShowHomeWorkspaceConnecting {
 #[action(namespace = workspace, no_json)]
 pub struct HideConnecting;
 
+/// Dismiss the web-tunnel opening overlay, abandoning an open still in flight.
+#[derive(Clone, PartialEq, Action)]
+#[action(namespace = workspace, no_json)]
+pub struct CancelWebTunnelOpen;
+
 #[derive(Clone, PartialEq, Action)]
 #[action(namespace = workspace, no_json)]
 pub struct RestartConnection;
