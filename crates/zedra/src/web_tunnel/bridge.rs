@@ -4,6 +4,9 @@
 //! adapter sniff response bytes for companion ports; the alias adapter passes a
 //! no-op.
 
+use std::time::{Duration, Instant};
+
+use iroh::PublicKey;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::TcpStream;
 use tokio::net::tcp::OwnedWriteHalf;
@@ -14,6 +17,13 @@ use zedra_session::SessionHandle;
 
 type Tx = irpc::channel::mpsc::Sender<WebTunnelInput>;
 type Rx = irpc::channel::mpsc::Receiver<WebTunnelOutput>;
+
+// Returning from background leaves the QUIC session idled out (20s
+// max_idle_timeout) until the foreground reconnect lands, so the page's first
+// request would otherwise fail hard and render the webview's error page with
+// nothing to retry it. Cover that gap instead of failing on the first attempt.
+const CONNECT_RETRY_WINDOW: Duration = Duration::from_secs(15);
+const CONNECT_RETRY_DELAY: Duration = Duration::from_millis(250);
 
 /// Open a `WebConnect` to the host's loopback `port` and wait for the host to
 /// confirm. Returns the paired channels plus the first output frame, or an
@@ -40,6 +50,34 @@ pub(super) async fn connect(
         Err(error) => return Err(format!("web tunnel handshake failed: {error:?}")),
     };
     Ok((tx, rx, initial))
+}
+
+/// [`connect`], retried until a live session answers or [`CONNECT_RETRY_WINDOW`]
+/// elapses. Resolves the session on every attempt: after a reconnect the entry
+/// is republished under the same endpoint id, so a stale lookup must not stick.
+pub(super) async fn connect_retrying(
+    endpoint_id: &PublicKey,
+    port: u16,
+) -> Result<(Tx, Rx, Option<WebTunnelOutput>), String> {
+    let deadline = Instant::now() + CONNECT_RETRY_WINDOW;
+    loop {
+        // A half-dead session can leave `connect` awaiting forever, so bound the
+        // attempt itself — otherwise the window is advisory and the page hangs.
+        let remaining = deadline.saturating_duration_since(Instant::now());
+        let error = match super::session_for(endpoint_id) {
+            Some(session) => match tokio::time::timeout(remaining, connect(&session, port)).await {
+                Ok(Ok(parts)) => return Ok(parts),
+                Ok(Err(error)) => error,
+                Err(_) => "timed out waiting for the host".to_string(),
+            },
+            None => "no session for host".to_string(),
+        };
+        let remaining = deadline.saturating_duration_since(Instant::now());
+        if remaining.is_zero() {
+            return Err(error);
+        }
+        tokio::time::sleep(CONNECT_RETRY_DELAY.min(remaining)).await;
+    }
 }
 
 /// Bridge `stream` to the paired `WebConnect` channels until either side closes.

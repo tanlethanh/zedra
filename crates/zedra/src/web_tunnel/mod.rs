@@ -139,6 +139,22 @@ fn session_for(endpoint_id: &PublicKey) -> Option<SessionHandle> {
         .cloned()
 }
 
+/// Publish `handle` as the live session for its host. Listeners and alias labels
+/// outlive any single session, so a workspace that gave up reconnecting and was
+/// reconnected from Home arrives with a *new* handle — without this the tunnel
+/// keeps dialing the dead one and never recovers. Replacing the entry also drops
+/// the old handle, letting it close its connection.
+pub fn register_session(handle: &SessionHandle) {
+    let Some(endpoint_id) = handle.endpoint_id() else {
+        return;
+    };
+    registry()
+        .sessions
+        .lock()
+        .unwrap()
+        .insert(endpoint_id, handle.clone());
+}
+
 /// Open `url` the best way: host-local http(s) URLs load in the in-app webview
 /// (exact-port by default, alias on a per-host opt-in fallback); anything else
 /// (or an unparseable target) falls back to the system browser. Single "open a

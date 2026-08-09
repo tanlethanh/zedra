@@ -126,10 +126,7 @@ fn spawn_accept_loop(listener: TcpListener, endpoint_id: PublicKey) -> tokio::ta
 // the page asked for.
 async fn handle_connection(stream: TcpStream, endpoint_id: PublicKey) {
     let port = stream.local_addr().map(|a| a.port()).unwrap_or(0);
-    let Some(session) = super::session_for(&endpoint_id) else {
-        return;
-    };
-    let (tx, rx, initial) = match bridge::connect(&session, port).await {
+    let (tx, rx, initial) = match bridge::connect_retrying(&endpoint_id, port).await {
         Ok(parts) => parts,
         Err(error) => {
             tracing::info!("web-tunnel: exact-port connect {port} failed: {error}");
