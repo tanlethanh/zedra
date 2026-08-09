@@ -71,6 +71,13 @@ Mobile remote editor for iOS and Android. Primary platform is iOS (`gpui_ios` + 
 - The Delta source lives in a separate repo at `$ZEDRA_DELTA_REPO`. When a task needs Delta backend behavior, read and edit that repo like part of this codebase, and keep the host/mobile protocol contract in sync across both repos.
 - On the app side, Delta represents auth and backend interaction only (sign-in, push-token registration, backend calls) — not app features that merely arrive over Delta.
 
+## Store Content
+
+- All published store content lives in a separate repo at `../zedra-content`, not here — App Store and Google Play listings, store screenshots, release notes, and the lint/diff tooling. Per platform: `ios/fastlane/metadata/<locale>/` (deliver) and `android/fastlane/metadata/android/<locale>/` (supply). Strategy and field rules: its `docs/ASO.md`; conventions: its `AGENTS.md`.
+- Never add listing metadata, keyword work, or store scripts here, for any storefront. For a task about a store name, subtitle, keywords, description, screenshots, or competitors, work in `zedra-content` and run its `bun cli.ts check` there.
+- The boundary is who publishes the string: a storefront reads it from `zedra-content`, the binary reads it from this repo. In-app copy stays with the code.
+- Release mechanics (build, archive, upload) stay in this repo: `docs/RELEASE.md`.
+
 ## Documentation
 
 - Read `docs/WRITING.md` before writing or editing documentation; style rules are in `docs/CONVENTIONS.md` § Documentation Style.
