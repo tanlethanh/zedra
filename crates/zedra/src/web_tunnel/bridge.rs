@@ -61,17 +61,22 @@ pub(super) async fn connect_retrying(
 ) -> Result<(Tx, Rx, Option<WebTunnelOutput>), String> {
     let deadline = Instant::now() + CONNECT_RETRY_WINDOW;
     loop {
+        // A half-dead session can leave `connect` awaiting forever, so bound the
+        // attempt itself — otherwise the window is advisory and the page hangs.
+        let remaining = deadline.saturating_duration_since(Instant::now());
         let error = match super::session_for(endpoint_id) {
-            Some(session) => match connect(&session, port).await {
-                Ok(parts) => return Ok(parts),
-                Err(error) => error,
+            Some(session) => match tokio::time::timeout(remaining, connect(&session, port)).await {
+                Ok(Ok(parts)) => return Ok(parts),
+                Ok(Err(error)) => error,
+                Err(_) => "timed out waiting for the host".to_string(),
             },
             None => "no session for host".to_string(),
         };
-        if Instant::now() >= deadline {
+        let remaining = deadline.saturating_duration_since(Instant::now());
+        if remaining.is_zero() {
             return Err(error);
         }
-        tokio::time::sleep(CONNECT_RETRY_DELAY).await;
+        tokio::time::sleep(CONNECT_RETRY_DELAY.min(remaining)).await;
     }
 }
 

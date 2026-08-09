@@ -838,7 +838,7 @@ nothing retries it.
 
 1. Open a tunneled page (`run.sh` test app, or an opencode web client card) and confirm it loads.
 2. Send the app to the home screen and leave it there **at least 30s**, so the session really idles out. On the simulator, background it and also `kill -STOP <app pid>` for the wait — the simulator never suspends app processes, so the keepalive otherwise holds the connection open and the case cannot occur.
-3. Foreground the app and immediately reload the page (↻), or interact so it issues a request.
+3. Resume the process (`kill -CONT <app pid>` on the simulator), foreground the app, and immediately reload the page (↻), or interact so it issues a request.
 4. Expected: the page loads. It may pause a second or two while the session reconnects, but must **not** show "Can't reach this page" / "cannot connect to the server".
 5. Log: `session … connected` after `AppForegrounded`, and **no** `exact-port connect <port> failed` / `alias connect failed` line.
 6. Negative check: stop the host daemon, then reload. Expected: after ~15s the error page does appear, with `alias connect failed: …` or `exact-port connect … failed: …` logged — failures are still reported, just not instantly.

@@ -2546,7 +2546,10 @@ private final class NativeWebViewController: UIViewController, WKNavigationDeleg
     // Without this the page comes back permanently blank, with no signal to Rust
     // and nothing but the reload button to recover it.
     func webViewWebContentProcessDidTerminate(_ webView: WKWebView) {
-        NSLog("webview: content process terminated url=%@", currentTarget.absoluteString)
+        // `currentTarget` only tracks explicit loads, so a followed link or an
+        // SPA route would otherwise reload the page the user started from.
+        let target = webView.url ?? currentTarget
+        NSLog("webview: content process terminated url=%@", target.absoluteString)
         // A page that kills its process on every load would otherwise reload forever.
         let now = Date()
         if let last = lastProcessReload, now.timeIntervalSince(last) < Self.processReloadMinInterval {
@@ -2560,7 +2563,7 @@ private final class NativeWebViewController: UIViewController, WKNavigationDeleg
             return
         }
         lastProcessReload = now
-        loadURL(currentTarget)
+        loadURL(target)
     }
 
     /// Replace the blank page with an inline error page for the failed target.
