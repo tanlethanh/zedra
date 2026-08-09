@@ -244,16 +244,37 @@ case "$MODE" in
 
         if [ -n "$FORCED_DEVICE_ID" ]; then
             # Explicit --device-id wins; accepts a UDID or a simulator name
-            BOOTED_ID=$(xcrun simctl list devices available -j | python3 -c "
+            # The name is passed as data, never interpolated into the program.
+            SIM_MATCH=$(xcrun simctl list devices available -j | python3 -c '
 import json, sys
 data = json.load(sys.stdin)
-wanted = '$FORCED_DEVICE_ID'
-for runtime, devices in data['devices'].items():
+wanted = sys.argv[1]
+matches = []
+for runtime, devices in data["devices"].items():
     for d in devices:
-        if d['udid'] == wanted or d['name'] == wanted:
-            print(d['udid'])
+        if d["udid"] == wanted:
+            print(d["udid"])
             sys.exit(0)
-" 2>/dev/null || true)
+        if d["name"] == wanted:
+            matches.append((runtime, d))
+if len(matches) == 1:
+    print(matches[0][1]["udid"])
+    sys.exit(0)
+# A name like "iPhone 16" exists under every installed runtime; picking one
+# arbitrarily boots a different OS version than the caller meant.
+for runtime, d in matches:
+    print("%s  %s  (%s)" % (d["udid"], d["name"], runtime.split(".")[-1]), file=sys.stderr)
+sys.exit(2 if matches else 1)
+' "$FORCED_DEVICE_ID" 2>/tmp/zedra-sim-match.$$) || true
+
+            if [ -s /tmp/zedra-sim-match.$$ ]; then
+                echo "Error: Simulator name '$FORCED_DEVICE_ID' is ambiguous. Pass a UDID:" >&2
+                cat /tmp/zedra-sim-match.$$ >&2
+                rm -f /tmp/zedra-sim-match.$$
+                exit 1
+            fi
+            rm -f /tmp/zedra-sim-match.$$
+            BOOTED_ID="$SIM_MATCH"
 
             if [ -z "$BOOTED_ID" ]; then
                 echo "Error: Simulator '$FORCED_DEVICE_ID' not found."

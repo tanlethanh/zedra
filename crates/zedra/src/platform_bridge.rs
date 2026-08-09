@@ -308,6 +308,8 @@ static NEXT_DELTA_GOOGLE_SIGN_IN_ID: AtomicU32 = AtomicU32::new(1);
 static NEXT_DELTA_APPLE_SIGN_IN_ID: AtomicU32 = AtomicU32::new(1);
 static NEXT_DELTA_PUSH_TOKEN_ID: AtomicU32 = AtomicU32::new(1);
 static NEXT_IMAGE_ACQUIRE_ID: AtomicU32 = AtomicU32::new(1);
+/// Callback id of the photo picker currently on screen, or 0. Ids start at 1.
+static PRESENTED_IMAGE_PICKER_ID: AtomicU32 = AtomicU32::new(0);
 static IMAGE_ACQUIRE_CALLBACKS: OnceLock<
     Mutex<HashMap<u32, Box<dyn FnOnce(Option<Result<PickedImage, String>>) + Send>>>,
 > = OnceLock::new();
@@ -492,7 +494,23 @@ pub fn acquire_image(
         .lock()
         .unwrap()
         .insert(id, Box::new(on_result));
+    // Only the photo library presents UI; clipboard acquisition is silent.
+    if matches!(source, ImageAcquireSource::PhotoLibrary) {
+        PRESENTED_IMAGE_PICKER_ID.store(id, Ordering::Relaxed);
+        crate::native_presentation::begin_native_presentation();
+    }
     bridge().acquire_image(id, source);
+}
+
+/// Ends the presentation started by `acquire_image`, once, for the picker that
+/// is actually on screen.
+fn end_image_picker_presentation(callback_id: u32) {
+    if PRESENTED_IMAGE_PICKER_ID
+        .compare_exchange(callback_id, 0, Ordering::Relaxed, Ordering::Relaxed)
+        .is_ok()
+    {
+        crate::native_presentation::end_native_presentation();
+    }
 }
 
 /// Called by platform code with a processed image ready to upload.
@@ -502,6 +520,7 @@ pub fn dispatch_image_acquire_result(callback_id: u32, image: PickedImage) {
         .unwrap()
         .remove(&callback_id);
     if let Some(cb) = cb {
+        end_image_picker_presentation(callback_id);
         cb(Some(Ok(image)));
     }
 }
@@ -514,6 +533,7 @@ pub fn dispatch_image_acquire_cancel(callback_id: u32) {
         .unwrap()
         .remove(&callback_id);
     if let Some(cb) = cb {
+        end_image_picker_presentation(callback_id);
         cb(None);
     }
 }
@@ -526,6 +546,7 @@ pub fn dispatch_image_acquire_error(callback_id: u32, message: String) {
         .unwrap()
         .remove(&callback_id);
     if let Some(cb) = cb {
+        end_image_picker_presentation(callback_id);
         cb(Some(Err(message)));
     }
 }

@@ -1185,6 +1185,8 @@ printf '\033]8;;file:///tmp/zedra-long-code.rs:41:1\033\\/tmp/zedra-long-code.rs
 10. Expected: the pinned bar is gone the whole time the webview is up, including while the page's own keyboard is raised
 11. Close the webview
 12. Expected: the pinned bar returns on the terminal underneath
+13. From the terminal, tap Upload Image and pick the photo library
+14. Expected: the pinned bar hides while the photo picker is up and returns after a pick or a cancel; pasting an image from the clipboard never hides it, since it presents no UI
 
 ## 11g-2. Full-Screen Presentations Pause The GPUI Window (iOS)
 
