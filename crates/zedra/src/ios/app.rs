@@ -219,9 +219,7 @@ pub extern "C" fn zedra_ios_mount_custom_sheet_content(
     if parent_view_ptr.is_null() {
         return std::ptr::null_mut();
     }
-    native_presentation::set_native_custom_sheet_presented(true);
-
-    IOS_APP_CELL.with(|cell| {
+    let window_ptr = IOS_APP_CELL.with(|cell| {
         let Some(app_cell) = cell.borrow().as_ref().cloned() else {
             return std::ptr::null_mut();
         };
@@ -272,7 +270,10 @@ pub extern "C" fn zedra_ios_mount_custom_sheet_content(
                 std::ptr::null_mut()
             }
         }
-    })
+    });
+    // A failed mount never unmounts, so the flag its caller set has to clear here.
+    native_presentation::set_native_custom_sheet_presented(!window_ptr.is_null());
+    window_ptr
 }
 
 #[unsafe(no_mangle)]

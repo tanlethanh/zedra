@@ -10,7 +10,7 @@ static PRESENTATION_CHANGED: AtomicBool = AtomicBool::new(false);
 
 pub fn begin_native_presentation() {
     ACTIVE_PRESENTATIONS.fetch_add(1, Ordering::Relaxed);
-    PRESENTATION_CHANGED.store(true, Ordering::Relaxed);
+    note_change();
 }
 
 /// Balanced with `begin_native_presentation`; each presentation ends exactly once
@@ -19,7 +19,7 @@ pub fn end_native_presentation() {
     let _ = ACTIVE_PRESENTATIONS.fetch_update(Ordering::Relaxed, Ordering::Relaxed, |count| {
         Some(count.saturating_sub(1))
     });
-    PRESENTATION_CHANGED.store(true, Ordering::Relaxed);
+    note_change();
 }
 
 /// The in-app webview and the custom sheet are single presentations that a new
@@ -38,8 +38,14 @@ pub fn set_native_custom_sheet_presented(presented: bool) {
 
 fn set_flag(flag: &AtomicBool, presented: bool) {
     if flag.swap(presented, Ordering::Relaxed) != presented {
-        PRESENTATION_CHANGED.store(true, Ordering::Relaxed);
+        note_change();
     }
+}
+
+/// Release/Acquire pairs with `take_native_presentation_change`, so a poller that
+/// sees the signal also sees the state that raised it.
+fn note_change() {
+    PRESENTATION_CHANGED.store(true, Ordering::Release);
 }
 
 pub fn any_native_presentation() -> bool {
@@ -51,7 +57,7 @@ pub fn any_native_presentation() -> bool {
 /// True once per change, so a poller can refresh windows for views that gate on
 /// `any_native_presentation` but observe no entity.
 pub fn take_native_presentation_change() -> bool {
-    PRESENTATION_CHANGED.swap(false, Ordering::Relaxed)
+    PRESENTATION_CHANGED.swap(false, Ordering::Acquire)
 }
 
 pub fn set_sheet_content_at_top(is_at_top: bool) {

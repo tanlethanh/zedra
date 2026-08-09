@@ -98,6 +98,10 @@ final class GPUIRuntimeController: NSObject {
         guard mainWindowOccluded != wasOccluded else { return }
         if mainWindowOccluded {
             keyboardAccessoryController.stopRepeating()
+            // A live composer would re-show the bar on the way out, since
+            // `updatePinnedKeyBar` keeps it up while composing.
+            keyboardAccessoryController.cancelComposing()
+            pinnedKeyBarController.cancelComposing()
             hidePinnedKeyBar()
             // Zero the keyboard before gating the notifications, or the hide that
             // follows is swallowed and GPUI keeps the stale inset.

@@ -245,6 +245,7 @@ case "$MODE" in
         if [ -n "$FORCED_DEVICE_ID" ]; then
             # Explicit --device-id wins; accepts a UDID or a simulator name
             # The name is passed as data, never interpolated into the program.
+            SIM_MATCH_ERR=$(mktemp -t zedra-sim-match)
             SIM_MATCH=$(xcrun simctl list devices available -j | python3 -c '
 import json, sys
 data = json.load(sys.stdin)
@@ -265,15 +266,15 @@ if len(matches) == 1:
 for runtime, d in matches:
     print("%s  %s  (%s)" % (d["udid"], d["name"], runtime.split(".")[-1]), file=sys.stderr)
 sys.exit(2 if matches else 1)
-' "$FORCED_DEVICE_ID" 2>/tmp/zedra-sim-match.$$) || true
+' "$FORCED_DEVICE_ID" 2>"$SIM_MATCH_ERR") || true
 
-            if [ -s /tmp/zedra-sim-match.$$ ]; then
+            if [ -s "$SIM_MATCH_ERR" ]; then
                 echo "Error: Simulator name '$FORCED_DEVICE_ID' is ambiguous. Pass a UDID:" >&2
-                cat /tmp/zedra-sim-match.$$ >&2
-                rm -f /tmp/zedra-sim-match.$$
+                cat "$SIM_MATCH_ERR" >&2
+                rm -f "$SIM_MATCH_ERR"
                 exit 1
             fi
-            rm -f /tmp/zedra-sim-match.$$
+            rm -f "$SIM_MATCH_ERR"
             BOOTED_ID="$SIM_MATCH"
 
             if [ -z "$BOOTED_ID" ]; then

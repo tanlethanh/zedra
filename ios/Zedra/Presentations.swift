@@ -1627,7 +1627,11 @@ private enum PresentationCoordinator {
         buttonStyles: [AlertActionStyle]
     ) {
         DispatchQueue.main.async {
-            guard let presenter = NativePresentationBridge.topViewController() else { return }
+            // Report the dismissal or Rust keeps the callback and the presentation.
+            guard let presenter = NativePresentationBridge.topViewController() else {
+                zedra_ios_alert_dismiss(callbackID)
+                return
+            }
 
             let alert = UIAlertController(title: title, message: message, preferredStyle: .alert)
             Self.applyTheme(to: alert)
@@ -1667,7 +1671,10 @@ private enum PresentationCoordinator {
         buttonImageNames: [String?]
     ) {
         DispatchQueue.main.async {
-            guard let presenter = NativePresentationBridge.topViewController() else { return }
+            guard let presenter = NativePresentationBridge.topViewController() else {
+                zedra_ios_selection_dismiss(callbackID)
+                return
+            }
 
             let sheet = UIAlertController(title: title, message: message, preferredStyle: .actionSheet)
             Self.applyTheme(to: sheet)
@@ -1829,7 +1836,10 @@ private enum PresentationCoordinator {
         initialValue: String?
     ) {
         DispatchQueue.main.async {
-            guard let presenter = NativePresentationBridge.topViewController() else { return }
+            guard let presenter = NativePresentationBridge.topViewController() else {
+                zedra_ios_text_input_dismiss(callbackID)
+                return
+            }
 
             let alert = UIAlertController(
                 title: title?.isEmpty == false ? title : nil,
@@ -1878,7 +1888,12 @@ private enum PresentationCoordinator {
             // Replacing a live sheet: present from its presenter, not the dismissing sheet.
             let presenter = activeCustomSheet?.presentingViewController
                 ?? NativePresentationBridge.topViewController()
-            guard let presenter else { return }
+            guard let presenter else {
+                // Nothing will mount the sheet content, so clear the flag its
+                // caller already set.
+                zedra_ios_unmount_custom_sheet_content()
+                return
+            }
             let present = {
                 let sheet = CustomSheetViewController(configuration: configuration)
                 activeCustomSheet = sheet

@@ -22,9 +22,12 @@ thread_local! {
 static NEXT_SHEET_WINDOW_HANDLE: AtomicU64 = AtomicU64::new(1);
 
 pub(crate) fn handle_surface_created(native_window: NativeWindow, width: u32, height: u32) {
+    // Cleared on every bail-out below: a surface that never hosts the sheet also
+    // never reports a destroy, which would leave the flag stuck.
     crate::native_presentation::set_native_custom_sheet_presented(true);
     let Some(app_cell) = entry::app_cell() else {
         tracing::error!("sheet: surface created without AppCell");
+        crate::native_presentation::set_native_custom_sheet_presented(false);
         return;
     };
 
@@ -33,10 +36,12 @@ pub(crate) fn handle_surface_created(native_window: NativeWindow, width: u32, he
     {
         if let Err(error) = result {
             tracing::error!(?error, "sheet: attach_sheet_native_window failed");
+            crate::native_presentation::set_native_custom_sheet_presented(false);
             return;
         }
     } else {
         tracing::error!("sheet: platform not registered");
+        crate::native_presentation::set_native_custom_sheet_presented(false);
         return;
     }
 
