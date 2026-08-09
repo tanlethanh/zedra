@@ -843,6 +843,20 @@ nothing retries it.
 5. Log: `session … connected` after `AppForegrounded`, and **no** `exact-port connect <port> failed` / `alias connect failed` line.
 6. Negative check: stop the host daemon, then reload. Expected: after ~15s the error page does appear, with `alias connect failed: …` or `exact-port connect … failed: …` logged — failures are still reported, just not instantly.
 
+### Tunnel recovers after the session gave up reconnecting
+
+Reconnect gives up after 3 attempts (`reconnect exhausted, giving up attempts 3`).
+Reconnecting from Home then builds a *new* `SessionHandle`, while the bound
+listener/alias still resolves by endpoint id — so the tunnel must be re-pointed
+at the new session or it keeps dialing the dead one forever.
+
+1. Open a tunneled page and confirm it loads.
+2. Stop the host daemon (or drop the network) and wait ~1 min, until the log shows `reconnect exhausted, giving up attempts 3`.
+3. Reload the page. Expected: the error page, and `alias connect failed: … not connected` (or the exact-port equivalent) in the log.
+4. Restart the host daemon, return to Home, tap **Reconnect** on the workspace card, and wait for `session … connected`.
+5. Reopen the web client card. Expected: the page loads again. Before the fix this stayed broken — the tunnel kept resolving the dead handle, and only reopening the card refreshed it.
+6. Also check the still-open webview from step 1 recovers on reload, without needing the card reopened.
+
 ### Webview content process reclaimed (iOS)
 
 iOS kills the WKWebView content process while the app is backgrounded. The page
