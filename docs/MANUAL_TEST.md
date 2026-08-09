@@ -68,6 +68,12 @@ Verifies a `zedra/rpc/3` host still serves a pre-bump app.
 4. Run a Release build and open the Home screen
 5. Expected: the settings icon is not visible and the developer Settings screen is not reachable from Home
 
+## 0b-Wide. Settings Content Centering (iPad)
+
+1. Run on an iPad simulator (`./scripts/run-ios.sh sim --device-id <iPad UDID>`) and open Settings
+2. Expected: rows and section headers sit in one centered column capped at `theme::CONTENT_MAX_WIDTH`, with equal gutters on both sides; the back button and `Settings` title stay at the far left of the full-width header
+3. Expected: on iPhone the column still fills the width — no visible change
+
 ## 0c. Developer Native Notification (iOS)
 
 1. Run a Debug build and open Settings
