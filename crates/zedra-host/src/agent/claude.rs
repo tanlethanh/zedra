@@ -10,6 +10,31 @@ use serde_json::Value;
 
 const LIST_HEAD_SCAN_MAX_LINES: usize = 64;
 const LIST_HEAD_SCAN_MAX_BYTES: usize = 32 * 1024;
+/// Claude CLI truncates a project dir name past this length and appends a hash.
+const PROJECT_NAME_MAX_LEN: usize = 200;
+
+/// Claude CLI `Math.abs(hash).toString(36)` over the unsanitized path, where
+/// `hash` is the `(h << 5) - h + code_unit | 0` variant over UTF-16 units.
+fn project_name_hash(path: &str) -> String {
+    let mut hash: i32 = 0;
+    for unit in path.encode_utf16() {
+        hash = hash
+            .wrapping_shl(5)
+            .wrapping_sub(hash)
+            .wrapping_add(i32::from(unit));
+    }
+    // i32::MIN has no positive i32 counterpart; JS abs widens to a double.
+    let mut value = i64::from(hash).unsigned_abs();
+    if value == 0 {
+        return "0".to_string();
+    }
+    let mut digits = Vec::new();
+    while value > 0 {
+        digits.push(char::from_digit((value % 36) as u32, 36).unwrap_or('0'));
+        value /= 36;
+    }
+    digits.iter().rev().collect()
+}
 
 #[derive(Debug, Clone, Serialize)]
 pub struct ClaudeSessionList {
@@ -225,14 +250,29 @@ impl ClaudeActor {
         Self::claude_config_dir().unwrap_or_else(|_| home_path(&[".claude"]))
     }
 
-    /// Mirrors Claude CLI: every non-alphanumeric char becomes `-`, so workdirs
-    /// with dots or underscores still resolve to their project dir.
+    /// Mirrors Claude CLI `replace(/[^a-zA-Z0-9]/g, "-")`, then its 200-char cap
+    /// with a hash suffix. Iterates UTF-16 units because the CLI regex has no
+    /// `u` flag, so a surrogate pair yields two `-`, not one.
     fn encoded_project_name(workdir: &Path) -> String {
-        workdir
-            .to_string_lossy()
-            .chars()
-            .map(|ch| if ch.is_ascii_alphanumeric() { ch } else { '-' })
-            .collect()
+        let path = workdir.to_string_lossy();
+        let sanitized: String = path
+            .encode_utf16()
+            .map(|unit| match u8::try_from(unit) {
+                Ok(byte) if byte.is_ascii_alphanumeric() => byte as char,
+                _ => '-',
+            })
+            .collect();
+
+        // Sanitized output is pure ASCII, so byte length matches the CLI's
+        // UTF-16 `.length` and slicing at the cap stays on a char boundary.
+        if sanitized.len() <= PROJECT_NAME_MAX_LEN {
+            return sanitized;
+        }
+        format!(
+            "{}-{}",
+            &sanitized[..PROJECT_NAME_MAX_LEN],
+            project_name_hash(&path)
+        )
     }
 
     fn worktree_from_project_dir(project_dir: &Path) -> Option<String> {
@@ -846,6 +886,34 @@ mod tests {
             ClaudeActor::encoded_project_name(Path::new("/Users/me/my.app_v2 beta")),
             "-Users-me-my-app-v2-beta"
         );
+    }
+
+    // The CLI regex has no `u` flag, so a surrogate pair becomes two `-`.
+    #[test]
+    fn project_name_encodes_non_bmp_char_as_two_dashes() {
+        assert_eq!(
+            ClaudeActor::encoded_project_name(Path::new("/Users/me/\u{1F4C1}repo")),
+            "-Users-me---repo"
+        );
+    }
+
+    #[test]
+    fn project_name_truncates_long_paths_with_hash_suffix() {
+        let workdir = format!("/Users/me/{}", "a".repeat(300));
+        let encoded = ClaudeActor::encoded_project_name(Path::new(&workdir));
+
+        // 10 leading chars + 190 `a` fills the 200-char cap, then the hash.
+        let expected = format!("-Users-me-{}-cgp8v3", "a".repeat(190));
+        assert_eq!(encoded, expected);
+        assert_eq!(encoded.len(), PROJECT_NAME_MAX_LEN + 7);
+    }
+
+    #[test]
+    fn project_name_hash_matches_cli_for_deep_paths() {
+        let workdir = format!("/Users/me/{}leaf", "deep/".repeat(60));
+        let encoded = ClaudeActor::encoded_project_name(Path::new(&workdir));
+
+        assert!(encoded.ends_with("-hpaxfl"), "got {encoded}");
     }
 
     #[test]
