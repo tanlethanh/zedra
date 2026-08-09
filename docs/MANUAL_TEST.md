@@ -1219,6 +1219,8 @@ printf '\033]8;;file:///tmp/zedra-long-code.rs:41:1\033\\/tmp/zedra-long-code.rs
 6. Expected: the bar stays hidden through the sheet dismissal and returns on the new agent terminal
 7. Trigger a native alert and a native text-input dialog over the terminal (for example a destructive confirm, or Settings → Developer native presentations)
 8. Expected: the pinned bar hides for each and returns after every dismissal path — confirm, cancel, and swipe-down
+8a. Close a terminal card from the drawer and tap Delete in the confirmation alert
+8b. Expected: the terminal is actually removed — every alert, action sheet, and text-input button must still deliver its result, not just dismiss the dialog
 9. From the terminal, open the opencode web client card, then open any in-app browser link from it
 10. Expected: the pinned bar is gone the whole time the webview is up, including while the page's own keyboard is raised
 11. Close the webview
