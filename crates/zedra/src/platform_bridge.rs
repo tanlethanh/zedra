@@ -308,6 +308,8 @@ static NEXT_DELTA_GOOGLE_SIGN_IN_ID: AtomicU32 = AtomicU32::new(1);
 static NEXT_DELTA_APPLE_SIGN_IN_ID: AtomicU32 = AtomicU32::new(1);
 static NEXT_DELTA_PUSH_TOKEN_ID: AtomicU32 = AtomicU32::new(1);
 static NEXT_IMAGE_ACQUIRE_ID: AtomicU32 = AtomicU32::new(1);
+/// Callback id of the photo picker currently on screen, or 0. Ids start at 1.
+static PRESENTED_IMAGE_PICKER_ID: AtomicU32 = AtomicU32::new(0);
 static IMAGE_ACQUIRE_CALLBACKS: OnceLock<
     Mutex<HashMap<u32, Box<dyn FnOnce(Option<Result<PickedImage, String>>) + Send>>>,
 > = OnceLock::new();
@@ -384,6 +386,7 @@ pub fn show_alert(
             }
         }),
     );
+    crate::native_presentation::begin_native_presentation();
     bridge().present_alert(id, title, message, &buttons);
 }
 
@@ -402,6 +405,7 @@ pub fn show_selection(
         .lock()
         .unwrap()
         .insert(id, Box::new(on_result));
+    crate::native_presentation::begin_native_presentation();
     bridge().present_selection(id, title, message, &buttons);
 }
 
@@ -438,6 +442,7 @@ pub fn show_list_picker(
         .lock()
         .unwrap()
         .insert(id, Box::new(wrapped));
+    crate::native_presentation::begin_native_presentation();
     bridge().present_list_picker(id, title, message, &items);
 }
 
@@ -455,6 +460,7 @@ pub fn show_text_input(
         .lock()
         .unwrap()
         .insert(id, Box::new(on_result));
+    crate::native_presentation::begin_native_presentation();
     bridge().present_text_input(id, title, placeholder, initial_value);
 }
 
@@ -462,6 +468,7 @@ pub fn show_text_input(
 pub fn dispatch_text_input_result(callback_id: u32, value: String) {
     let cb = text_input_callbacks().lock().unwrap().remove(&callback_id);
     if let Some(cb) = cb {
+        crate::native_presentation::end_native_presentation();
         cb(Some(value));
     }
 }
@@ -470,6 +477,7 @@ pub fn dispatch_text_input_result(callback_id: u32, value: String) {
 pub fn dispatch_text_input_dismiss(callback_id: u32) {
     let cb = text_input_callbacks().lock().unwrap().remove(&callback_id);
     if let Some(cb) = cb {
+        crate::native_presentation::end_native_presentation();
         cb(None);
     }
 }
@@ -486,7 +494,23 @@ pub fn acquire_image(
         .lock()
         .unwrap()
         .insert(id, Box::new(on_result));
+    // Only the photo library presents UI; clipboard acquisition is silent.
+    if matches!(source, ImageAcquireSource::PhotoLibrary) {
+        PRESENTED_IMAGE_PICKER_ID.store(id, Ordering::Relaxed);
+        crate::native_presentation::begin_native_presentation();
+    }
     bridge().acquire_image(id, source);
+}
+
+/// Ends the presentation started by `acquire_image`, once, for the picker that
+/// is actually on screen.
+fn end_image_picker_presentation(callback_id: u32) {
+    if PRESENTED_IMAGE_PICKER_ID
+        .compare_exchange(callback_id, 0, Ordering::Relaxed, Ordering::Relaxed)
+        .is_ok()
+    {
+        crate::native_presentation::end_native_presentation();
+    }
 }
 
 /// Called by platform code with a processed image ready to upload.
@@ -496,6 +520,7 @@ pub fn dispatch_image_acquire_result(callback_id: u32, image: PickedImage) {
         .unwrap()
         .remove(&callback_id);
     if let Some(cb) = cb {
+        end_image_picker_presentation(callback_id);
         cb(Some(Ok(image)));
     }
 }
@@ -508,6 +533,7 @@ pub fn dispatch_image_acquire_cancel(callback_id: u32) {
         .unwrap()
         .remove(&callback_id);
     if let Some(cb) = cb {
+        end_image_picker_presentation(callback_id);
         cb(None);
     }
 }
@@ -520,6 +546,7 @@ pub fn dispatch_image_acquire_error(callback_id: u32, message: String) {
         .unwrap()
         .remove(&callback_id);
     if let Some(cb) = cb {
+        end_image_picker_presentation(callback_id);
         cb(Some(Err(message)));
     }
 }
@@ -538,6 +565,9 @@ where
     // Fresh content always starts at the top; clear any stale boundary left by
     // a previously presented sheet so the drag hand-off starts correct.
     crate::native_presentation::set_sheet_content_at_top(true);
+    // Set here as well as at content mount: replacing a live sheet unmounts the old
+    // one after this call, and only the mount that follows would restore the flag.
+    crate::native_presentation::set_native_custom_sheet_presented(true);
     bridge().present_custom_sheet(&options);
 }
 
@@ -691,6 +721,7 @@ pub fn show_native_edit_menu(
 pub fn dispatch_alert_result(callback_id: u32, button_index: usize) {
     let cb = alert_callbacks().lock().unwrap().remove(&callback_id);
     if let Some(cb) = cb {
+        crate::native_presentation::end_native_presentation();
         cb(Some(button_index));
     }
 }
@@ -699,6 +730,7 @@ pub fn dispatch_alert_result(callback_id: u32, button_index: usize) {
 pub fn dispatch_alert_dismiss(callback_id: u32) {
     let cb = alert_callbacks().lock().unwrap().remove(&callback_id);
     if let Some(cb) = cb {
+        crate::native_presentation::end_native_presentation();
         cb(None);
     }
 }
@@ -707,6 +739,7 @@ pub fn dispatch_alert_dismiss(callback_id: u32) {
 pub fn dispatch_selection_result(callback_id: u32, button_index: usize) {
     let cb = selection_callbacks().lock().unwrap().remove(&callback_id);
     if let Some(cb) = cb {
+        crate::native_presentation::end_native_presentation();
         cb(Some(button_index));
     }
 }
@@ -715,6 +748,7 @@ pub fn dispatch_selection_result(callback_id: u32, button_index: usize) {
 pub fn dispatch_selection_dismiss(callback_id: u32) {
     let cb = selection_callbacks().lock().unwrap().remove(&callback_id);
     if let Some(cb) = cb {
+        crate::native_presentation::end_native_presentation();
         cb(None);
     }
 }

@@ -216,10 +216,21 @@ pub extern "C" fn zedra_ios_mount_custom_sheet_content(
     width_pts: f32,
     height_pts: f32,
 ) -> *mut std::ffi::c_void {
-    if parent_view_ptr.is_null() {
-        return std::ptr::null_mut();
-    }
+    let window_ptr = if parent_view_ptr.is_null() {
+        std::ptr::null_mut()
+    } else {
+        mount_custom_sheet_window(parent_view_ptr, width_pts, height_pts)
+    };
+    // A failed mount never unmounts, so the flag its caller set has to clear here.
+    native_presentation::set_native_custom_sheet_presented(!window_ptr.is_null());
+    window_ptr
+}
 
+fn mount_custom_sheet_window(
+    parent_view_ptr: *mut std::ffi::c_void,
+    width_pts: f32,
+    height_pts: f32,
+) -> *mut std::ffi::c_void {
     IOS_APP_CELL.with(|cell| {
         let Some(app_cell) = cell.borrow().as_ref().cloned() else {
             return std::ptr::null_mut();
@@ -276,6 +287,7 @@ pub extern "C" fn zedra_ios_mount_custom_sheet_content(
 
 #[unsafe(no_mangle)]
 pub extern "C" fn zedra_ios_unmount_custom_sheet_content() {
+    native_presentation::set_native_custom_sheet_presented(false);
     IOS_SHEET_WINDOW_PTR.with(|ptr| {
         let ptr = *ptr.borrow();
         if !ptr.is_null() {

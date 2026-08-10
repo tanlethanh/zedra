@@ -1607,7 +1607,11 @@ private enum PresentationCoordinator {
         buttonStyles: [AlertActionStyle]
     ) {
         DispatchQueue.main.async {
-            guard let presenter = NativePresentationBridge.topViewController() else { return }
+            // Report the dismissal or Rust keeps the callback and the presentation.
+            guard let presenter = NativePresentationBridge.topViewController() else {
+                zedra_ios_alert_dismiss(callbackID)
+                return
+            }
 
             let alert = UIAlertController(title: title, message: message, preferredStyle: .alert)
             Self.applyTheme(to: alert)
@@ -1642,19 +1646,20 @@ private enum PresentationCoordinator {
         buttonImageNames: [String?]
     ) {
         DispatchQueue.main.async {
-            guard let presenter = NativePresentationBridge.topViewController() else { return }
+            guard let presenter = NativePresentationBridge.topViewController() else {
+                zedra_ios_selection_dismiss(callbackID)
+                return
+            }
 
             let sheet = UIAlertController(title: title, message: message, preferredStyle: .actionSheet)
             Self.applyTheme(to: sheet)
-            let delegate = PresentationDismissDelegate(callbackID: callbackID, isSelection: true)
-            sheet.presentationController?.delegate = delegate
-            objc_setAssociatedObject(sheet, dismissAssociationKey, delegate, .OBJC_ASSOCIATION_RETAIN_NONATOMIC)
+            // UIAlertController throws if its presentation controller gets a delegate (iOS 18).
+            // Outside taps route to the cancel action instead, so dismissal is covered below.
 
             let hasCancelAction = buttonStyles.prefix(buttonLabels.count).contains(.cancel)
             for index in 0..<buttonLabels.count {
                 let style = buttonStyles[safe: index] ?? .default
                 let action = UIAlertAction(title: buttonLabels[index], style: style.uiKitStyle) { _ in
-                    delegate.handled = true
                     zedra_ios_selection_result(callbackID, Int32(index))
                 }
                 if let imageName = buttonImageNames[safe: index].flatMap({ $0 }),
@@ -1667,7 +1672,6 @@ private enum PresentationCoordinator {
             if !hasCancelAction {
                 // UIKit allows one cancel action; add a dismiss affordance only when callers omit it.
                 sheet.addAction(UIAlertAction(title: "Cancel", style: .cancel) { _ in
-                    delegate.handled = true
                     zedra_ios_selection_dismiss(callbackID)
                 })
             }
@@ -1800,7 +1804,10 @@ private enum PresentationCoordinator {
         initialValue: String?
     ) {
         DispatchQueue.main.async {
-            guard let presenter = NativePresentationBridge.topViewController() else { return }
+            guard let presenter = NativePresentationBridge.topViewController() else {
+                zedra_ios_text_input_dismiss(callbackID)
+                return
+            }
 
             let alert = UIAlertController(
                 title: title?.isEmpty == false ? title : nil,
@@ -1842,7 +1849,12 @@ private enum PresentationCoordinator {
             // Replacing a live sheet: present from its presenter, not the dismissing sheet.
             let presenter = activeCustomSheet?.presentingViewController
                 ?? NativePresentationBridge.topViewController()
-            guard let presenter else { return }
+            guard let presenter else {
+                // Nothing will mount the sheet content, so clear the flag its
+                // caller already set.
+                zedra_ios_unmount_custom_sheet_content()
+                return
+            }
             let present = {
                 let sheet = CustomSheetViewController(configuration: configuration)
                 activeCustomSheet = sheet
@@ -2251,6 +2263,7 @@ private final class NativeWebViewController: UIViewController, WKNavigationDeleg
     private var urlFieldTrailingEditing: NSLayoutConstraint!
     private var progressObservation: NSKeyValueObservation?
     private var didReportDismiss = false
+    private var occludesMainWindow = false
     private var faviconTask: URLSessionDataTask?
     private var faviconHost: String?
     // The URL we asked the webview to load, and (when non-nil) the URL whose
@@ -2310,6 +2323,36 @@ private final class NativeWebViewController: UIViewController, WKNavigationDeleg
     @available(*, unavailable)
     required init?(coder: NSCoder) {
         fatalError("init(coder:) has not been implemented")
+    }
+
+    override func viewDidAppear(_ animated: Bool) {
+        super.viewDidAppear(animated)
+        beginOcclusionIfNeeded()
+    }
+
+    override func viewDidDisappear(_ animated: Bool) {
+        super.viewDidDisappear(animated)
+        // Also fires when this controller presents something of its own; only a
+        // real teardown gives the GPUI window back.
+        if presentedViewController == nil && presentingViewController == nil {
+            endOcclusionIfNeeded()
+        }
+    }
+
+    deinit {
+        endOcclusionIfNeeded()
+    }
+
+    private func beginOcclusionIfNeeded() {
+        guard !occludesMainWindow else { return }
+        occludesMainWindow = true
+        GPUIRuntimeController.beginMainWindowOcclusion()
+    }
+
+    private func endOcclusionIfNeeded() {
+        guard occludesMainWindow else { return }
+        occludesMainWindow = false
+        GPUIRuntimeController.endMainWindowOcclusion()
     }
 
     override func viewDidLoad() {

@@ -681,7 +681,9 @@ impl Render for SettingsView {
                     .child(
                         div()
                             .w_full()
-                            .max_w(px(520.0))
+                            .max_w(px(theme::CONTENT_MAX_WIDTH))
+                            .mx_auto()
+                            .min_w_0()
                             .flex()
                             .flex_col()
                             .gap(px(theme::SPACING_MD))

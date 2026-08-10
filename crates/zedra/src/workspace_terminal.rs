@@ -664,7 +664,11 @@ impl Render for WorkspaceTerminal {
 
         // The keypad is available whenever the terminal owns the screen; the key rows
         // themselves hide while any keyboard is up, including the composer's own.
-        let keypad_available = key_bar_enabled && !any_drawer_open();
+        // A native modal covers the terminal even though the drawer is closed, so the
+        // window-level key bar must yield to it too.
+        let keypad_available = key_bar_enabled
+            && !any_drawer_open()
+            && !crate::native_presentation::any_native_presentation();
         let pinned_key_bar_visible = keypad_available && !window.is_soft_keyboard_visible();
 
         // Deferred so render itself stays free of native side effects; both calls

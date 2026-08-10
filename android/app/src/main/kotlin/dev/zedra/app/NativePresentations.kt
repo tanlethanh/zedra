@@ -151,7 +151,7 @@ object NativePresentations {
         message: String?,
         labels: Array<String>?,
         styles: IntArray?,
-    ) = onUi {
+    ) = onUiOrDismiss({ MainActivity.nativeAlertDismiss(callbackId) }) {
         val safeLabels = labels?.takeIf { it.isNotEmpty() } ?: arrayOf("OK")
         val safeStyles = styles
             ?.takeIf { it.size == safeLabels.size }
@@ -199,7 +199,7 @@ object NativePresentations {
         labels: Array<String>?,
         styles: IntArray?,
         imageNames: Array<String?>,
-    ) = onUi {
+    ) = onUiOrDismiss({ MainActivity.nativeSelectionDismiss(callbackId) }) {
         val safeLabels = labels?.takeIf { it.isNotEmpty() } ?: arrayOf("OK")
         val safeStyles = styles
             ?.takeIf { it.size == safeLabels.size }
@@ -286,10 +286,10 @@ object NativePresentations {
         labels: Array<String>?,
         subtitles: Array<String?>?,
         imageNames: Array<String?>?,
-    ) = onUi {
+    ) = onUiOrDismiss({ MainActivity.nativeSelectionDismiss(callbackId) }) {
         val safeLabels = labels?.takeIf { it.isNotEmpty() } ?: run {
             MainActivity.nativeSelectionDismiss(callbackId)
-            return@onUi
+            return@onUiOrDismiss
         }
         val activity = requireActivity()
         val sheet = BottomSheetDialog(activity)
@@ -465,7 +465,7 @@ object NativePresentations {
         title: String?,
         placeholder: String?,
         initialValue: String?,
-    ) = onUi {
+    ) = onUiOrDismiss({ MainActivity.nativeTextInputDismiss(callbackId) }) {
         val input = EditText(requireActivity()).apply {
             setSingleLine(true)
             inputType = InputType.TYPE_CLASS_TEXT or InputType.TYPE_TEXT_FLAG_CAP_SENTENCES
@@ -1051,6 +1051,18 @@ object NativePresentations {
     // shared rootView; running synchronously can land mid-traversal when the
     // caller is itself inside a view-tree walk (e.g. window inset dispatch
     // triggered by the soft keyboard), corrupting child iteration.
+    // Presentation requests must report a dismissal when the activity is gone,
+    // or Rust keeps both its callback and its native-presentation count.
+    private fun onUiOrDismiss(onDropped: () -> Unit, action: () -> Unit) {
+        mainHandler.post {
+            if (activity != null && rootView != null) {
+                action()
+            } else {
+                onDropped()
+            }
+        }
+    }
+
     private fun onUi(action: () -> Unit) {
         mainHandler.post {
             if (activity != null && rootView != null) {

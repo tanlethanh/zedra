@@ -1,0 +1,26 @@
+{
+  "commands": [
+    {
+      "id": "project.run-ios",
+      "title": "Run iOS",
+      "icon": "smartphone-charging",
+      "kind": "shell",
+      "command": "./scripts/run-ios.sh device",
+      "contexts": [
+        "run-bar",
+        "palette"
+      ]
+    },
+    {
+      "id": "project.cargo-run-p-zedra-host",
+      "title": "Start zedra host",
+      "icon": "activity",
+      "kind": "shell",
+      "command": "cargo run -p zedra-host start",
+      "contexts": [
+        "run-bar",
+        "palette"
+      ]
+    }
+  ]
+}

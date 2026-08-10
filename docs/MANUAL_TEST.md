@@ -68,6 +68,12 @@ Verifies a `zedra/rpc/3` host still serves a pre-bump app.
 4. Run a Release build and open the Home screen
 5. Expected: the settings icon is not visible and the developer Settings screen is not reachable from Home
 
+## 0b-Wide. Settings Content Centering (iPad)
+
+1. Run on an iPad simulator (`./scripts/run-ios.sh sim --device-id <iPad UDID>`) and open Settings
+2. Expected: rows and section headers sit in one centered column capped at `theme::CONTENT_MAX_WIDTH`, with equal gutters on both sides; the back button and `Settings` title stay at the far left of the full-width header
+3. Expected: on iPhone the column still fills the width — no visible change
+
 ## 0c. Developer Native Notification (iOS)
 
 1. Run a Debug build and open Settings
@@ -245,6 +251,18 @@ Use a `debug-telemetry` build so every event prints `[telemetry] >> <name>` to s
 5. Expected: the action sheet dismisses without running another action
 6. Open `Native Selection` again, then tap outside the sheet
 7. Expected: the sheet dismisses without crashing
+
+## 0e-1. Action Sheets On iOS 18
+
+Regression guard for the `_UIAlertControllerPresentationController setDelegate:` crash — iOS 18 rejects a
+delegate on an alert controller's presentation controller, iOS 26 does not, so this needs an iOS 18 runtime.
+
+1. Run on an iOS 18 simulator: `./scripts/run-ios.sh sim --device-id <iOS 18 sim UDID or name>`
+2. Open Settings and tap `Sign In` in the Delta section
+3. Expected: the sign-in action sheet opens without crashing
+4. Tap outside the sheet
+5. Expected: the sheet dismisses and no sign-in starts
+6. Repeat with Settings → Developer → `Native Selection` and with a workspace long-press menu
 
 ## 0f. Delta Agent Hooks
 
@@ -1190,6 +1208,38 @@ printf '\033]8;;file:///tmp/zedra-long-code.rs:41:1\033\\/tmp/zedra-long-code.rs
 20. Expected: no pinned bar; tap-to-dismiss drops both keyboard and focus as before, and the keyboard accessory bar still appears when the keyboard is raised
 21. Rotate the device with the pinned bar visible
 22. Expected: the bar spans the new width with evenly spaced keys
+
+## 11g-1. Pinned Key Bar Yields To Native Modals
+
+1. Open a terminal with the keyboard down and the pinned bar visible, then open the workspace drawer and tap Create Agent
+2. Expected: the drawer closes back to the terminal and the pinned bar is gone the moment the agent sheet appears — no keys visible over or beside the sheet
+3. Dismiss the sheet by swiping it down
+4. Expected: the pinned bar returns within a blink, terminal content does not jump, and its keys still reach the PTY
+5. Repeat step 1 and pick an agent instead of dismissing
+6. Expected: the bar stays hidden through the sheet dismissal and returns on the new agent terminal
+7. Trigger a native alert and a native text-input dialog over the terminal (for example a destructive confirm, or Settings → Developer native presentations)
+8. Expected: the pinned bar hides for each and returns after every dismissal path — confirm, cancel, and swipe-down
+8a. Close a terminal card from the drawer and tap Delete in the confirmation alert
+8b. Expected: the terminal is actually removed — every alert, action sheet, and text-input button must still deliver its result, not just dismiss the dialog
+9. From the terminal, open the opencode web client card, then open any in-app browser link from it
+10. Expected: the pinned bar is gone the whole time the webview is up, including while the page's own keyboard is raised
+11. Close the webview
+12. Expected: the pinned bar returns on the terminal underneath
+13. From the terminal, tap Upload Image and pick the photo library
+14. Expected: the pinned bar hides while the photo picker is up and returns after a pick or a cancel; pasting an image from the clipboard never hides it, since it presents no UI
+
+## 11g-2. Full-Screen Presentations Pause The GPUI Window (iOS)
+
+1. Start a noisy command in a terminal (`yes`, a build, a running agent), then open the opencode web client webview over it
+2. Expected: page scrolling, dropdowns, and typing stay smooth while the command keeps producing output behind the webview — no stutter that tracks the terminal's output rate
+3. With the webview open, focus a text field in the page and toggle a chat dropdown with the keyboard up
+4. Expected: the dropdown opens where it should and the page does not jump; no key bar appears over the webview's keyboard
+5. Close the webview
+6. Expected: the terminal repaints immediately with the backlog produced while it was covered, the keypad returns, and tapping the terminal raises the keyboard at the right height
+7. Open the terminal keyboard, then open the webview from the drawer, then close it
+8. Expected: the keyboard is gone while the webview is up and does not re-appear on its own; terminal content is not offset by a stale keyboard inset afterwards
+9. Repeat steps 1-6 with the QR scanner instead of the webview, including opening the photo picker from inside the scanner
+10. Expected: same behavior; returning from the photo picker to the scanner does not resume the GPUI window early, and cancelling the scanner restores it
 
 ## 11h. Extended Keypad
 

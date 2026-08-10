@@ -66,6 +66,10 @@ final class GPUIRuntimeController: NSObject {
     private var extendedKeypad = false
     private var keypadCmdSlot = false
     private var keyboardHeightPts: CGFloat = 0
+    /// Full-screen presentations covering the GPUI window. Counted because the
+    /// webview and the QR scanner can hand off to each other.
+    private var occludingPresentations = 0
+    private var mainWindowOccluded: Bool { occludingPresentations > 0 }
 
     /// Dismiss the main GPUI window's software keyboard. Manual-focus surfaces
     /// (the terminal) keep `keyboard_session_requested` set, so a native sheet
@@ -74,6 +78,44 @@ final class GPUIRuntimeController: NSObject {
     static func dismissMainWindowKeyboard() {
         guard let window = activeController?.gpuiWindow else { return }
         gpui_ios_hide_keyboard(window)
+    }
+
+    /// Called by full-screen presentations on appear/disappear. While the GPUI
+    /// window is covered it renders nothing and ignores keyboard notifications —
+    /// otherwise it keeps painting behind the presentation and re-lays out around
+    /// the presentation's own keyboard.
+    static func beginMainWindowOcclusion() {
+        DispatchQueue.main.async { activeController?.updateOcclusion(delta: 1) }
+    }
+
+    static func endMainWindowOcclusion() {
+        DispatchQueue.main.async { activeController?.updateOcclusion(delta: -1) }
+    }
+
+    private func updateOcclusion(delta: Int) {
+        let wasOccluded = mainWindowOccluded
+        occludingPresentations = max(0, occludingPresentations + delta)
+        guard mainWindowOccluded != wasOccluded else { return }
+        if mainWindowOccluded {
+            keyboardAccessoryController.stopRepeating()
+            // A live composer would re-show the bar on the way out, since
+            // `updatePinnedKeyBar` keeps it up while composing.
+            keyboardAccessoryController.cancelComposing()
+            pinnedKeyBarController.cancelComposing()
+            hidePinnedKeyBar()
+            // Zero the keyboard before gating the notifications, or the hide that
+            // follows is swallowed and GPUI keeps the stale inset.
+            keyboardHeightPts = 0
+            zedra_ios_set_keyboard_height(0)
+            gpui_ios_set_software_keyboard_visible(false)
+            Self.dismissMainWindowKeyboard()
+            stopDisplayLink()
+        } else {
+            if displayLink == nil, gpuiWindow != nil {
+                startDisplayLink()
+            }
+            updatePinnedKeyBar(visible: pinnedKeyBarVisible)
+        }
     }
 
     func launch() {
@@ -123,7 +165,7 @@ final class GPUIRuntimeController: NSObject {
     func applicationWillEnterForeground() {
         zedra_ios_app_will_enter_foreground()
         gpui_ios_will_enter_foreground(gpuiApp)
-        if displayLink == nil, gpuiWindow != nil {
+        if displayLink == nil, gpuiWindow != nil, !mainWindowOccluded {
             startDisplayLink()
         }
     }
@@ -182,6 +224,8 @@ final class GPUIRuntimeController: NSObject {
 
     @objc
     func keyboardWillShow(_ notification: Notification) {
+        // The keyboard belongs to whatever covers the window, not to the terminal.
+        guard !mainWindowOccluded else { return }
         guard
             let info = notification.userInfo,
             let endFrame = (info[UIResponder.keyboardFrameEndUserInfoKey] as? NSValue)?.cgRectValue
@@ -201,6 +245,7 @@ final class GPUIRuntimeController: NSObject {
 
     @objc
     func keyboardWillHide(_ notification: Notification) {
+        guard !mainWindowOccluded else { return }
         keyboardAccessoryController.stopRepeating()
         keyboardHeightPts = 0
         zedra_ios_set_keyboard_height(0)
@@ -328,12 +373,14 @@ final class GPUIRuntimeController: NSObject {
 
     private func updatePinnedKeyBar(visible: Bool) {
         pinnedKeyBarVisible = visible
+        guard !mainWindowOccluded else {
+            hidePinnedKeyBar()
+            return
+        }
         // Composing raises a keyboard, which is exactly when Rust hides the rows;
         // the bar has to stay up or the composer would vanish behind it.
         guard visible || pinnedKeyBarController.isComposing else {
-            pinnedKeyBarController.stopRepeating()
-            pinnedKeyBarView?.isHidden = true
-            zedra_ios_set_pinned_key_bar_height(0)
+            hidePinnedKeyBar()
             return
         }
         guard let window = uiWindow else { return }
@@ -395,6 +442,10 @@ final class GPUIRuntimeController: NSObject {
 
     /// Re-place the pinned bar after its own layout changed (row count, composer).
     private func layoutPinnedKeyBar() {
+        guard !mainWindowOccluded else {
+            hidePinnedKeyBar()
+            return
+        }
         guard let window = uiWindow, let bar = pinnedKeyBarView else { return }
         let composing = pinnedKeyBarController.isComposing
         // While composing the bar rides its own keyboard; otherwise it sits above
@@ -412,6 +463,12 @@ final class GPUIRuntimeController: NSObject {
         )
         window.bringSubviewToFront(bar)
         zedra_ios_set_pinned_key_bar_height(UInt32(height * UIScreen.main.scale))
+    }
+
+    private func hidePinnedKeyBar() {
+        pinnedKeyBarController.stopRepeating()
+        pinnedKeyBarView?.isHidden = true
+        zedra_ios_set_pinned_key_bar_height(0)
     }
 
     private func startDisplayLink() {
