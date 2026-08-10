@@ -1650,6 +1650,43 @@ Expected:
     the header (see `docs/CONVENTIONS.md` GPUI flex width rules and
     `ui::subscreen_layout`).
 
+## 18b-1. Managed Agent: omp (Oh My Pi)
+
+omp runs as a full managed agent: detection, sessions/resume, `zedra setup omp`,
+lifecycle hooks, and account fields. Install omp first:
+`curl -fsSL https://omp.sh/install | sh`.
+
+1. Connect to a workspace and open a shell terminal.
+2. Run `omp`.
+3. Expected: the terminal card shows the OMP icon and `Oh My Pi` identity once
+   OSC metadata arrives, and the foreground command `omp` is resolved by the
+   host as the `omp` agent.
+4. In the workspace drawer Terminals tab, tap `Create agent`.
+5. Expected: the native list picker shows **Oh My Pi** with the OMP icon and a
+   version subtitle (from the host `omp --version` probe).
+6. Run a few prompts inside omp, then quit.
+7. Tap `View sessions`.
+8. Expected: the unified session list shows the omp sessions for this workspace
+   (recorded cwd must match the workspace), each with icon, title, datetime,
+   transcript size, and a resume action. omp transcripts live at
+   `~/.omp/agent/sessions/*/<timestamp>_<id>.jsonl`; resume should run
+   `omp --resume <id>` in a new terminal.
+9. In manage detail for omp, verify account fields: Default model (from
+   `~/.omp/agent/config.yml` `modelRoles.default`), Custom providers (from
+   `~/.omp/agent/models.yml`), and Project config (workspace `.omp/config.yml`).
+10. Run `zedra setup omp`.
+11. Expected: setup writes the lifecycle-hook extension and reports
+    `hooks` written; `zedra setup omp` again reports hooks ready.
+12. Start an omp session from the app and submit a prompt, then end the turn.
+13. Expected: the terminal card shows a running indicator while omp works and a
+    `Oh My Pi completed` notification fires on turn end; omp has no approval
+    hook (default yolo), so no waiting/approval notification is expected.
+14. Run `zedra setup omp` → remove and confirm the extension is deleted.
+15. Quit `omp` and run `curl -fsSL https://omp.sh/install | sh`.
+16. Expected: the terminal card does **not** latch an OMP agent identity — the
+    install command is not detected as an agent session (`omp` matches only as
+    the entire foreground command).
+
 ## 18c. Unified Session List Virtualization
 
 1. Connect to a workspace with several agents that each have many sessions
