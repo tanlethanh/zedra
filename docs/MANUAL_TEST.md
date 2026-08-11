@@ -1245,14 +1245,17 @@ printf '\033]8;;file:///tmp/zedra-long-code.rs:41:1\033\\/tmp/zedra-long-code.rs
 
 ## 11g-3. Home Indicator Dimming (iOS 18)
 
-1. On an iOS 18 device, open any screen and leave the app untouched for a few seconds
-2. Expected: the home indicator dims and fades out instead of sitting at full contrast over the background
+Both passes need a physical device: the simulator has no idle-touch timer, so the
+indicator never fades there regardless of the setting.
+
+1. On a physical iOS 18 device, open any screen and leave the app untouched for about 5 seconds
+2. Expected: the home indicator dims and then fades out instead of sitting at full contrast over the background
 3. Touch the screen
 4. Expected: the indicator fades back in, and the swipe-up gesture still works while it is faded
 5. Scroll a terminal, open the drawer, and type — all with the indicator faded
 6. Expected: no layout shift and no change to the bottom safe-area inset; only the indicator's own appearance changes
-7. Repeat step 1 on iOS 26
-8. Expected: unchanged from today — the indicator keeps its normal behavior, since the auto-hide opt-in is skipped there
+7. Repeat steps 1-4 on a physical iOS 26 device
+8. Expected: the indicator stays visible at its usual contrast for the whole idle period and never fades — the auto-hide opt-in is skipped on 26
 
 ## 11h. Extended Keypad
 
