@@ -22,7 +22,7 @@ struct AppSettings {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     droplet_enabled: Option<bool>,
     /// Keep the terminal key bar on screen while the keyboard is collapsed.
-    /// `None`/absent = enabled (default-on).
+    /// `None`/absent = disabled (default-off).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     key_bar_always_visible: Option<bool>,
     /// Two-row keypad with modifiers and a composing field.
@@ -232,10 +232,12 @@ fn read_flag(name: &str, default: bool, field: impl FnOnce(&AppSettings) -> Opti
 static KEY_BAR_ALWAYS_VISIBLE: AtomicI8 = AtomicI8::new(-1);
 
 /// Whether the terminal key bar stays on screen once the keyboard collapses.
-/// Default on.
+/// Default off.
 pub fn key_bar_always_visible() -> bool {
     cached_flag(&KEY_BAR_ALWAYS_VISIBLE, || {
-        read_flag("key_bar_always_visible", true, |s| s.key_bar_always_visible)
+        read_flag("key_bar_always_visible", false, |s| {
+            s.key_bar_always_visible
+        })
     })
 }
 

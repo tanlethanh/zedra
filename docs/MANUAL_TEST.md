@@ -1186,7 +1186,7 @@ printf '\033]8;;file:///tmp/zedra-long-code.rs:41:1\033\\/tmp/zedra-long-code.rs
 
 ## 11g. Pinned Key Bar With The Keyboard Collapsed
 
-1. Connect to a session on iOS and on Android, then open the terminal view without tapping the terminal
+1. Connect to a session on iOS and on Android, turn Settings → Terminal → Always show keypad On (it ships Off), then open the terminal view without tapping the terminal
 2. Expected: the key bar sits above the home indicator or navigation bar, styled exactly like the keyboard accessory bar
 3. Tap `Esc`, `Tab`, `Enter`, and each arrow in the pinned bar
 4. Expected: each key reaches the PTY exactly once with the keyboard still down
@@ -1204,14 +1204,16 @@ printf '\033]8;;file:///tmp/zedra-long-code.rs:41:1\033\\/tmp/zedra-long-code.rs
 16. Expected: focus and the keyboard go to that input, and the terminal keeps no focus of its own
 17. Open a terminal, tap it to raise the keyboard, then tap again to dismiss it
 18. Expected: the keyboard drops but the terminal stays focused (active cursor), pinned keys keep reaching the PTY, and a further tap raises the keyboard again
-19. Set Settings → Terminal → Always show keypad to Off, then return to the terminal with the keyboard down
+19. Set Settings → Terminal → Always show keypad back to Off (the shipped default), then return to the terminal with the keyboard down
 20. Expected: no pinned bar; tap-to-dismiss drops both keyboard and focus as before, and the keyboard accessory bar still appears when the keyboard is raised
+20a. Install the app fresh (or clear its settings) and open a terminal without touching the setting
+20b. Expected: no pinned bar — the keypad only appears as the keyboard accessory bar while the keyboard is up
 21. Rotate the device with the pinned bar visible
 22. Expected: the bar spans the new width with evenly spaced keys
 
 ## 11g-1. Pinned Key Bar Yields To Native Modals
 
-1. Open a terminal with the keyboard down and the pinned bar visible, then open the workspace drawer and tap Create Agent
+1. With Settings → Terminal → Always show keypad On, open a terminal with the keyboard down and the pinned bar visible, then open the workspace drawer and tap Create Agent
 2. Expected: the drawer closes back to the terminal and the pinned bar is gone the moment the agent sheet appears — no keys visible over or beside the sheet
 3. Dismiss the sheet by swiping it down
 4. Expected: the pinned bar returns within a blink, terminal content does not jump, and its keys still reach the PTY
@@ -1243,7 +1245,7 @@ printf '\033]8;;file:///tmp/zedra-long-code.rs:41:1\033\\/tmp/zedra-long-code.rs
 
 ## 11h. Extended Keypad
 
-1. Set Settings → Terminal → Extended keypad to On, then open a terminal
+1. Set Settings → Terminal → Always show keypad and Extended keypad both to On, then open a terminal
 2. Expected: the keypad shows two rows — `Esc Shift Tab / - ↑ ⏎` over `⌫ Ctrl Alt Cmd ← ↓ →` — and terminal content sits above both rows
 3. Connect to a macOS host, then to a Linux host
 4. Expected: the fourth key of the bottom row is `Cmd` on macOS and `|` on Linux, updating on reconnect without restarting the app
