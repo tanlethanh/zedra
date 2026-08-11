@@ -56,6 +56,7 @@ mod installed;
 mod junie;
 mod kilocode;
 mod maki;
+mod omp;
 mod openclaw;
 pub(crate) mod opencode;
 mod openhands;
@@ -722,11 +723,12 @@ pub(crate) trait AgentActor: Sync {
 
 // Registry order is the app's agent-picker order; `agents.order` in the user
 // config reorders it.
-static ACTORS: [&dyn AgentActor; 22] = [
+static ACTORS: [&dyn AgentActor; 23] = [
     &claude::ClaudeActor,
     &codex::CodexActor,
     &opencode::OpenCodeActor,
     &pi::PiActor,
+    &omp::OmpActor,
     &cursor::CursorActor,
     &grok::GrokActor,
     &antigravity::AntigravityActor,
