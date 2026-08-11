@@ -136,6 +136,7 @@ final class GPUIRuntimeController: NSObject {
         pushScreenScale()
         DispatchQueue.main.async { [weak self] in
             self?.pushSafeAreaInsets()
+            self?.applyHomeIndicatorAutoHidden()
         }
 
         NotificationCenter.default.addObserver(
@@ -482,7 +483,29 @@ final class GPUIRuntimeController: NSObject {
         displayLink = nil
     }
 
+    /// iOS draws the home indicator at full contrast over the GPUI surface on 18;
+    /// 26 already blends it with what is behind. Opting the root view controller
+    /// into auto-hide lets the system dim and fade it while the user is idle, and
+    /// bring it back on the next touch. There is no API for its color.
+    ///
+    /// GPUI owns that controller, so the class is swapped in place rather than
+    /// patched in `vendor/zed`. The subclass adds no stored properties, which is
+    /// what makes the swap safe.
+    private func applyHomeIndicatorAutoHidden() {
+        if #available(iOS 26.0, *) { return }
+        guard let root = uiWindow?.rootViewController,
+              !(root is HomeIndicatorAutoHiddenViewController) else { return }
+        object_setClass(root, HomeIndicatorAutoHiddenViewController.self)
+        root.setNeedsUpdateOfHomeIndicatorAutoHidden()
+    }
+
     private func pushScreenScale() {
         zedra_ios_set_screen_scale(Float(UIScreen.main.scale))
     }
+}
+
+/// Class-swap target for the GPUI root view controller. Must stay free of stored
+/// properties: `object_setClass` cannot grow an already-allocated instance.
+private final class HomeIndicatorAutoHiddenViewController: UIViewController {
+    override var prefersHomeIndicatorAutoHidden: Bool { true }
 }

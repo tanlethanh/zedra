@@ -1243,6 +1243,17 @@ printf '\033]8;;file:///tmp/zedra-long-code.rs:41:1\033\\/tmp/zedra-long-code.rs
 9. Repeat steps 1-6 with the QR scanner instead of the webview, including opening the photo picker from inside the scanner
 10. Expected: same behavior; returning from the photo picker to the scanner does not resume the GPUI window early, and cancelling the scanner restores it
 
+## 11g-3. Home Indicator Dimming (iOS 18)
+
+1. On an iOS 18 device, open any screen and leave the app untouched for a few seconds
+2. Expected: the home indicator dims and fades out instead of sitting at full contrast over the background
+3. Touch the screen
+4. Expected: the indicator fades back in, and the swipe-up gesture still works while it is faded
+5. Scroll a terminal, open the drawer, and type — all with the indicator faded
+6. Expected: no layout shift and no change to the bottom safe-area inset; only the indicator's own appearance changes
+7. Repeat step 1 on iOS 26
+8. Expected: unchanged from today — the indicator keeps its normal behavior, since the auto-hide opt-in is skipped there
+
 ## 11h. Extended Keypad
 
 1. Set Settings → Terminal → Always show keypad and Extended keypad both to On, then open a terminal
