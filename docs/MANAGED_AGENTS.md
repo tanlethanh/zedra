@@ -102,7 +102,7 @@ in their launch command; the rest keep their default.
 | opencode | `--mini` only | Alt screen — `--mini` is a reduced interface, not a rendering toggle, so it stays opt-in via `launch_cmd` |
 | amp, copilot | none | Alt screen |
 | hermes | `--cli` (classic REPL) | Config-driven (`display.interface`) |
-| omp | none | Alt screen (differential TUI; verify `\e[?1049h` under a pty) |
+| omp | none needed | Already inline (pty capture shows no `\e[?1049h`) |
 
 Verify a CLI's behavior by running it under a pty and looking for the
 `\e[?1049h` (alt screen enter) sequence rather than trusting its help text.

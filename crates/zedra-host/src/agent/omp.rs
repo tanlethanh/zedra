@@ -31,7 +31,9 @@ struct OmpSessionFile {
 
 impl OmpActor {
     pub fn cli_available() -> bool {
-        command_on_path("omp") || Self::omp_agent_dir().is_dir()
+        // Fall back to the sessions root, never `~/.omp/agent`: `zedra setup omp`
+        // creates the agent dir itself, so it would report omp forever.
+        command_on_path("omp") || Self::omp_sessions_root().is_dir()
     }
 
     pub fn session_counts(workdir: &Path) -> Result<ActorSessionCounts, String> {
@@ -103,9 +105,9 @@ impl OmpActor {
     }
 
     /// Newest sessions for `workdir` (by header `cwd`) plus the matching total.
-    /// Scans every project bucket so bucket-name encoding drift across omp
-    /// versions (legacy path-based, the reverted hashed scheme, migrations)
-    /// never hides sessions; the recorded cwd is the authoritative scope.
+    /// Scans every project bucket because bucket names strip `$HOME`
+    /// (`/Users/me/dev/app` -> `-dev-app`) and drift across omp versions; the
+    /// recorded cwd is the authoritative scope, so the total needs every header.
     fn collect_session_files(
         workdir: &Path,
         limit: Option<usize>,
@@ -124,8 +126,12 @@ impl OmpActor {
                 continue;
             }
             for (path, mtime) in sorted_jsonl_candidates(&bucket.path())? {
-                let Ok(file) = Self::read_session_file(&path, mtime) else {
-                    continue;
+                let file = match Self::read_session_file(&path, mtime) {
+                    Ok(file) => file,
+                    Err(err) => {
+                        tracing::info!("omp: skipping unreadable transcript: {err:#}");
+                        continue;
+                    }
                 };
                 if cwd_matches(workdir, file.cwd.as_deref()) {
                     files.push(file);
@@ -140,8 +146,8 @@ impl OmpActor {
         Ok((files, total))
     }
 
-    /// Parse a session JSONL head. Current omp files begin with a fixed-width
-    /// `type: "title"` slot (a skipped record here), then the `type: "session"`
+    /// Parse a session JSONL head. Current omp files begin with a padded
+    /// `type: "title"` slot omp rewrites in place, then the `type: "session"`
     /// header and entries; legacy files start at the header directly.
     fn read_session_file(path: &Path, mtime_unix_secs: Option<u64>) -> Result<OmpSessionFile> {
         let file = File::open(path)
@@ -184,7 +190,8 @@ impl OmpActor {
                         created_at = parse_rfc3339(string_field(&record, &["timestamp"]));
                     }
                 }
-                // Fixed-width title slot written at the physical file head.
+                // Padded title slot at the file head; empty until omp titles the
+                // session, so the first user message stays the usual fallback.
                 "title" => {
                     if title.is_none() {
                         title = string_field(&record, &["title", "name"]).map(str::to_string);
@@ -220,10 +227,9 @@ impl OmpActor {
                 };
             }
 
-            if !session_id.is_empty()
-                && title.is_some()
-                && scanned_lines >= LIST_HEAD_SCAN_MAX_LINES
-            {
+            // Title is best-effort: every scan reads every transcript, so an
+            // untitled session must not drag the read to EOF.
+            if !session_id.is_empty() && scanned_lines >= LIST_HEAD_SCAN_MAX_LINES {
                 break;
             }
         }
@@ -363,21 +369,39 @@ export default function (omp: ExtensionAPI) {{
   // Check `=== false` so older omp versions without hasUI still fire hooks.
   const skip = (ctx: {{ hasUI?: boolean }}) => ctx.hasUI === false;
 
-  omp.on("before_agent_start", (event, ctx) => {{
-    if (skip(ctx)) return;
-    fire("UserPromptSubmit", (event as any)?.sessionId);
+  // No lifecycle event carries a session id; the context does.
+  type Ctx = {{ hasUI?: boolean; sessionManager?: {{ getSessionId?: () => string }} }};
+  const sessionId = (ctx: Ctx) => {{
+    try {{
+      return ctx.sessionManager?.getSessionId?.();
+    }} catch {{
+      return undefined;
+    }}
+  }};
+
+  // omp names each turn's events natively; Zedra state keys on Claude's names.
+  let running = false;
+
+  omp.on("before_agent_start", (_event, ctx) => {{
+    if (skip(ctx as Ctx)) return;
+    running = true;
+    fire("UserPromptSubmit", sessionId(ctx as Ctx));
   }});
 
   omp.on("agent_end", (event, ctx) => {{
-    if (skip(ctx)) return;
-    fire("Stop", (event as any)?.sessionId);
+    if (skip(ctx as Ctx)) return;
+    // willContinue means omp already scheduled a continuation: not a settle.
+    if ((event as any)?.willContinue) return;
+    running = false;
+    fire("Stop", sessionId(ctx as Ctx));
   }});
 
-  // Fires on Ctrl+C, SIGTERM, /quit, /reload, /new, /resume, /fork.
-  // Ensures Running indicator clears if omp is killed mid-turn.
-  omp.on("session_shutdown", (event, ctx) => {{
-    if (skip(ctx)) return;
-    fire("Stop", (event as any)?.sessionId);
+  // Fires on Ctrl+C, SIGTERM, /quit, /reload, /new, /resume, /fork. Only clears
+  // a turn killed mid-flight; agent_end already reported a completed one.
+  omp.on("session_shutdown", (_event, ctx) => {{
+    if (skip(ctx as Ctx) || !running) return;
+    running = false;
+    fire("Stop", sessionId(ctx as Ctx));
   }});
 }}
 "#,
@@ -461,8 +485,9 @@ impl AgentActor for OmpActor {
         true
     }
 
-    // omp exposes no approval hook (default `tools.approvalMode: yolo`), so
-    // there is no WaitingApproval transition.
+    // The extension renames omp's native events to these Claude-compatible
+    // names. State holds Running between them, so no per-tool ping is sent, and
+    // omp exposes no approval hook (default `tools.approvalMode: yolo`).
     fn hook_state(&self, event_name: &str, _payload: &Value) -> Option<AgentState> {
         match event_name {
             "UserPromptSubmit" => Some(AgentState::Running),
@@ -476,7 +501,8 @@ impl AgentActor for OmpActor {
         (event_name == "Stop").then(|| format!("{} completed", self.display_name()))
     }
 
-    // omp stores transcripts per workdir; look up the session title for the body.
+    // Transcripts are global; the title comes from the session whose recorded
+    // cwd is this workdir.
     fn hook_notify_body(
         &self,
         ctx: &HookContext,
@@ -567,6 +593,24 @@ mod tests {
     }
 
     #[test]
+    fn empty_title_slot_falls_back_to_first_user_message() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("2026-05-28_abc.jsonl");
+        // omp writes the padded slot with an empty title until it names the session.
+        std::fs::write(
+            &path,
+            r#"{"type":"title","v":"1","title":"","updatedAt":"2026-05-28T10:00:00Z","pad":"   "}
+{"type":"session","id":"abc","timestamp":"2026-05-28T10:00:00Z","cwd":"/Users/me/project"}
+{"type":"message","message":{"role":"user","content":[{"type":"text","text":"Refactor scrollback"}]}}
+"#,
+        )
+        .unwrap();
+
+        let file = OmpActor::read_session_file(&path, None).unwrap();
+        assert_eq!(file.title.as_deref(), Some("Refactor scrollback"));
+    }
+
+    #[test]
     fn falls_back_to_filename_when_session_id_missing() {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("2026-05-28_xyz.jsonl");
@@ -649,5 +693,9 @@ mod tests {
         assert!(contents.contains("/usr/local/bin/zedra"));
         assert!(contents.contains("before_agent_start"));
         assert!(contents.contains("session_shutdown"));
+        // Session id comes from the context; no lifecycle event carries one.
+        assert!(contents.contains("getSessionId"));
+        assert!(!contents.contains("event as any)?.sessionId"));
+        assert!(contents.contains("willContinue"));
     }
 }
