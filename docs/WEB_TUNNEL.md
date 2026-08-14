@@ -90,22 +90,21 @@ Two ways to open a host web app on the phone:
 ## Opening progress
 
 Opening an agent web client can take seconds — the host spawns the server and
-polls it for readiness before the app has a URL to tunnel — so every open path
-reports its stage through `web_tunnel::progress`, and `web_tunnel_opening.rs`
-renders it as a full-view overlay above the workspace. Three steps — starting the
-server, opening the tunnel, loading the page — of which only the one in flight is
-shown, next to a corner ✕ that dismisses like the connecting view.
+polls it for readiness before the app has a URL to tunnel. Each workspace owns a
+thread-safe `web_tunnel::progress::Progress` handle, which
+`web_tunnel_opening.rs` polls and renders as a full-workspace overlay. Three
+steps — starting the server, opening the tunnel, loading the page — show only the
+step in flight, next to a corner ✕ that dismisses like the connecting view.
 
-The state is a module-level global rather than a `WorkspaceState` field because
-the tunnel steps run on the session runtime, off the GPUI thread; the view polls
-a version counter and repaints. One open is live at a time, identified by a
-generation. **Cancel bumps the generation**, and the presenting step checks it
-before calling `webview::open` — the invariant is that a cancelled open can
-never pop a webview later, however long the host takes to answer.
+Each open has a generation. Cancel clears that workspace's generation, and the
+presenting step checks it before calling `webview::open`; a cancelled open can
+never pop a webview later. The overlay remains through the native main-thread
+handoff and clears only when UIKit or Android has actually presented the webview.
 
 Failure keeps the overlay up with the failed step marked and an explanation,
-except where a native notification already owns the outcome (the alias-fallback
-prompt), which clears the overlay so only one surface asks for a decision.
+except when an HTTPS page cannot use the alias fallback. That case shows the
+native exact-port notification and clears the overlay so only one surface reports
+the failure.
 
 ## Keyboard and the tunnelled page
 

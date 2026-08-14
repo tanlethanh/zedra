@@ -29,7 +29,7 @@ use zedra_rpc::proto::is_loopback_host;
 use zedra_session::SessionHandle;
 
 use crate::platform_bridge::{self, NativeNotificationKind, NativeNotificationOptions};
-use progress::OpenStep;
+use progress::{OpenStep, Progress};
 
 /// Live exact-port listeners + a stop control, for the manager view
 /// (`web_tunnel_manager.rs`) to free a device port that conflicts with another app.
@@ -179,19 +179,32 @@ pub fn open_url_with(
     url: &str,
     on_route: Option<RouteHook>,
 ) -> Option<String> {
+    open_url_with_progress(session_handle, url, on_route, Progress::new(), None)
+}
+
+/// [`open_url_with`] with progress owned by the workspace that initiated the
+/// open. `generation` is supplied when an earlier step (such as starting an
+/// agent server) already owns this exact operation.
+pub fn open_url_with_progress(
+    session_handle: SessionHandle,
+    url: &str,
+    on_route: Option<RouteHook>,
+    progress: Progress,
+    generation: Option<u64>,
+) -> Option<String> {
     // Log only the origin, never the raw URL: the path/query of a user's local
     // web app can carry session tokens or OAuth params.
     let origin = webview_title(url);
     let Ok(port) = parse_loopback_target(url) else {
         tracing::info!("web-tunnel: {origin} not host-local -> system browser");
-        progress::cancel();
+        progress.cancel();
         platform_bridge::bridge().open_url(url);
         return None;
     };
     let (Some(endpoint_id), Ok(runtime)) = (session_handle.endpoint_id(), session_handle.runtime())
     else {
         tracing::info!("web-tunnel: no session endpoint -> system browser: {origin}");
-        progress::cancel();
+        progress.cancel();
         platform_bridge::bridge().open_url(url);
         return None;
     };
@@ -201,9 +214,14 @@ pub fn open_url_with(
         .lock()
         .unwrap()
         .insert(endpoint_id, session_handle);
-    // Joins the caller's open when it already reported an earlier step (the
-    // agent web client starts its server first), else starts one here.
-    let generation = progress::begin_or_join(&origin, "icons/globe.svg", OpenStep::OpeningTunnel);
+    let generation = generation
+        .unwrap_or_else(|| progress.begin(&origin, "icons/globe.svg", OpenStep::OpeningTunnel));
+    // A cancellation or another user action may have settled the caller's
+    // generation while the server start RPC was completing.
+    if !progress.is_active(generation) {
+        return None;
+    }
+    progress.advance(generation, OpenStep::OpeningTunnel);
     let spawn_url = url.to_string();
     let spawn_title = origin.clone();
     runtime.spawn(async move {
@@ -213,6 +231,7 @@ pub fn open_url_with(
             spawn_title,
             port,
             on_route,
+            progress,
             generation,
         )
         .await
@@ -242,23 +261,33 @@ async fn serve(
     title: String,
     port: u16,
     on_route: Option<RouteHook>,
+    progress: Progress,
     generation: u64,
 ) {
     // The alias rewrites the webview host to `<word>.zedra.test`, which changes
     // the TLS SNI; an https host still presents its `localhost` certificate, so
     // validation fails. Alias mode therefore only serves cleartext http.
     let alias_ok = is_cleartext_http(&url);
-    if registry().prefs.lock().unwrap().get(&endpoint_id) == Some(&AdapterKind::Alias) {
+    let prefers_alias = registry()
+        .prefs
+        .lock()
+        .unwrap_or_else(|poisoned| {
+            tracing::warn!("web-tunnel: alias preference lock poisoned; recovering");
+            poisoned.into_inner()
+        })
+        .get(&endpoint_id)
+        == Some(&AdapterKind::Alias);
+    if prefers_alias {
         if alias_ok {
-            serve_alias(endpoint_id, &url, title, on_route, generation).await;
+            serve_alias(endpoint_id, &url, title, on_route, progress, generation).await;
         } else {
-            progress::finish(generation);
+            progress.finish(generation);
             notify_https_needs_exact_port(port);
         }
         return;
     }
     match exact_port::ensure(endpoint_id, port).await {
-        Ok(()) => present(url, title, on_route, generation, |config| config),
+        Ok(()) => present(url, title, on_route, progress, generation, |config| config),
         // Fall through to the alias without asking: a port this device can't bind
         // stays unbindable, so a prompt only delays the same outcome. Remembering
         // the choice skips the doomed bind on later opens for this host.
@@ -267,12 +296,15 @@ async fn serve(
             registry()
                 .prefs
                 .lock()
-                .unwrap()
+                .unwrap_or_else(|poisoned| {
+                    tracing::warn!("web-tunnel: alias preference lock poisoned; recovering");
+                    poisoned.into_inner()
+                })
                 .insert(endpoint_id, AdapterKind::Alias);
-            serve_alias(endpoint_id, &url, title, on_route, generation).await;
+            serve_alias(endpoint_id, &url, title, on_route, progress, generation).await;
         }
         Err(()) => {
-            progress::finish(generation);
+            progress.finish(generation);
             notify_https_needs_exact_port(port);
         }
     }
@@ -285,17 +317,18 @@ fn present(
     url: String,
     title: String,
     on_route: Option<RouteHook>,
+    progress: Progress,
     generation: u64,
     configure: impl FnOnce(crate::webview::WebviewConfig) -> crate::webview::WebviewConfig,
 ) {
-    if !progress::is_active(generation) {
+    if !progress.is_active(generation) {
         tracing::info!("web-tunnel: open cancelled before the webview was presented");
         return;
     }
-    progress::advance(generation, OpenStep::LoadingPage);
-    crate::webview::open(configure(tunnel_webview(url, title, on_route)));
-    // The webview now covers the workspace, so the overlay has nothing to add.
-    progress::finish(generation);
+    progress.advance(generation, OpenStep::LoadingPage);
+    crate::webview::open(configure(
+        tunnel_webview(url, title, on_route).on_presented(move || progress.finish(generation)),
+    ));
 }
 
 /// The webview both adapters present: a tunnelled page the user drives with its
@@ -343,13 +376,14 @@ async fn serve_alias(
     url: &str,
     title: String,
     on_route: Option<RouteHook>,
+    progress: Progress,
     generation: u64,
 ) {
     let proxy_port = match alias::ensure_proxy().await {
         Ok(port) => port,
         Err(error) => {
             tracing::warn!("web-tunnel: alias proxy setup failed: {error}");
-            progress::fail(generation, error.clone());
+            progress.fail(generation, error.clone());
             notify_failed(&error);
             return;
         }
@@ -358,6 +392,7 @@ async fn serve_alias(
         alias_url(url, &endpoint_id),
         title,
         on_route,
+        progress,
         generation,
         |config| config.socks_proxy(Ipv4Addr::LOCALHOST, proxy_port),
     );

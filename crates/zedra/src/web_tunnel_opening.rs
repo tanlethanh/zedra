@@ -11,7 +11,7 @@ use gpui::{prelude::FluentBuilder as _, *};
 
 use crate::pending::spawn_periodic_task;
 use crate::theme;
-use crate::web_tunnel::progress::{self, OpenProgress};
+use crate::web_tunnel::progress::{OpenProgress, Progress};
 use crate::workspace_action;
 
 /// Poll cadence: fast enough that a step change reads as immediate, and it also
@@ -23,24 +23,27 @@ const POLL_INTERVAL: Duration = Duration::from_millis(250);
 const SLOW_OPEN_SECS: u64 = 2;
 
 pub struct WebTunnelOpening {
+    progress: Progress,
     version: u64,
     _poll: Task<()>,
 }
 
 impl WebTunnelOpening {
-    pub fn new(cx: &mut Context<Self>) -> Self {
-        let poll = spawn_periodic_task(cx, POLL_INTERVAL, |this: &mut Self, cx| {
-            let version = progress::version();
+    pub fn new(progress: Progress, cx: &mut Context<Self>) -> Self {
+        let poll_progress = progress.clone();
+        let poll = spawn_periodic_task(cx, POLL_INTERVAL, move |this: &mut Self, cx| {
+            let version = poll_progress.version();
             // Repaint on any change, and keep repainting while an open is live so
             // the spinner and elapsed counter advance.
-            if version != this.version || progress::current().is_some() {
+            if version != this.version || poll_progress.current().is_some() {
                 this.version = version;
                 cx.notify();
             }
         });
 
         Self {
-            version: progress::version(),
+            version: progress.version(),
+            progress,
             _poll: poll,
         }
     }
@@ -48,7 +51,7 @@ impl WebTunnelOpening {
 
 impl Render for WebTunnelOpening {
     fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        let Some(progress) = progress::current() else {
+        let Some(progress) = self.progress.current() else {
             return div().into_any_element();
         };
 

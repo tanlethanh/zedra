@@ -2222,9 +2222,9 @@ to spawn (`pkill -f "opencode serve"` on the host first).
    name, a ✕ in the top-right corner, and a single spinning line naming the step
    in flight: `Starting opencode server` → `Opening tunnel` → `Loading page`.
    Past ~2s the line gains an elapsed counter (`… 4s`).
-2. **Handoff**: the overlay disappears exactly as the webview appears — no gap
-   showing the bare workspace, and no overlay left behind the webview (dismiss
-   the webview to confirm the workspace is back).
+2. **Handoff**: the overlay remains until the native webview covers the app,
+   then disappears with no bare-workspace gap. Dismiss the webview to confirm
+   the workspace is back.
 3. **Reopen**: dismiss the webview and tap the card. Expected: the overlay opens
    straight at `Opening tunnel` (the server is already up); usually too fast to
    read, which is correct.
@@ -2241,3 +2241,6 @@ to spawn (`pkill -f "opencode serve"` on the host first).
    no dead end** — the overlay runs `Opening tunnel` straight through the alias
    and the opencode page loads at `<label>.zedra.test:<port>`. Tap the card again:
    it opens via the alias without retrying the bind.
+7. **Workspace switch**: start a slow web client in workspace A, switch to
+   workspace B, then cancel an open in B. Expected: A's open remains owned by A;
+   B cannot dismiss it or cause A's webview to appear over B.

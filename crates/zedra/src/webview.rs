@@ -9,8 +9,8 @@
 //! Flow:
 //! - [`open`] serializes the config to JSON, stores its callbacks under a fresh
 //!   id, and asks the platform bridge to present the webview.
-//! - The native layer calls back into [`dispatch_message`],
-//!   [`dispatch_navigate`], and [`dispatch_dismiss`] with that id.
+//! - The native layer calls back into [`dispatch_presented`],
+//!   [`dispatch_message`], [`dispatch_navigate`], and [`dispatch_dismiss`].
 //! - [`eval_js`] and [`close`] drive the currently presented webview.
 //!
 //! Callbacks run on the native UI thread, off the GPUI thread. Keep them cheap
@@ -42,11 +42,13 @@ pub const MESSAGE_HANDLER_NAME: &str = "zedra";
 type MessageHandler = Arc<dyn Fn(String) + Send + Sync>;
 type NavigationHandler = Arc<dyn Fn(&str) -> NavigationPolicy + Send + Sync>;
 type DismissHandler = Box<dyn FnOnce() + Send>;
+type PresentedHandler = Box<dyn FnOnce() + Send>;
 
 struct Handlers {
     on_message: Option<MessageHandler>,
     on_navigate: Option<NavigationHandler>,
     on_dismiss: Option<DismissHandler>,
+    on_presented: Option<PresentedHandler>,
 }
 
 static NEXT_ID: AtomicU32 = AtomicU32::new(1);
@@ -71,6 +73,7 @@ pub struct WebviewConfig {
     on_message: Option<MessageHandler>,
     on_navigate: Option<NavigationHandler>,
     on_dismiss: Option<DismissHandler>,
+    on_presented: Option<PresentedHandler>,
 }
 
 impl WebviewConfig {
@@ -84,6 +87,7 @@ impl WebviewConfig {
             on_message: None,
             on_navigate: None,
             on_dismiss: None,
+            on_presented: None,
         }
     }
 
@@ -143,6 +147,12 @@ impl WebviewConfig {
         self.on_dismiss = Some(Box::new(handler));
         self
     }
+
+    /// Called once when the native webview is actually covering the app.
+    pub fn on_presented(mut self, handler: impl FnOnce() + Send + 'static) -> Self {
+        self.on_presented = Some(Box::new(handler));
+        self
+    }
 }
 
 /// Data half of [`WebviewConfig`] sent to the native layer. Callbacks stay in
@@ -184,6 +194,7 @@ pub fn open(config: WebviewConfig) -> u32 {
             on_message: config.on_message,
             on_navigate: config.on_navigate,
             on_dismiss: config.on_dismiss,
+            on_presented: config.on_presented,
         },
     );
 
@@ -191,6 +202,19 @@ pub fn open(config: WebviewConfig) -> u32 {
     crate::native_presentation::set_native_webview_presented(true);
     platform_bridge::bridge().open_webview(id, &config.url, &config_json);
     id
+}
+
+/// Report that native UI has presented the webview. This is deliberately
+/// separate from [`open`], which only schedules a main-thread presentation.
+pub fn dispatch_presented(id: u32) {
+    let handler = handlers()
+        .lock()
+        .unwrap()
+        .get_mut(&id)
+        .and_then(|handlers| handlers.on_presented.take());
+    if let Some(handler) = handler {
+        handler();
+    }
 }
 
 /// Dismiss the currently presented webview, if any.
@@ -264,11 +288,36 @@ mod tests {
                     NavigationPolicy::Allow
                 })),
                 on_dismiss: None,
+                on_presented: None,
             },
         );
 
         dispatch_message(id, String::new());
         assert!(dispatch_navigate(id, "https://example.com"));
+        handlers().lock().unwrap().remove(&id);
+    }
+
+    #[test]
+    fn presented_callback_runs_once() {
+        let id = NEXT_ID.fetch_add(1, Ordering::Relaxed);
+        let calls = Arc::new(std::sync::atomic::AtomicU32::new(0));
+        let callback_calls = calls.clone();
+        handlers().lock().unwrap().insert(
+            id,
+            Handlers {
+                on_message: None,
+                on_navigate: None,
+                on_dismiss: None,
+                on_presented: Some(Box::new(move || {
+                    callback_calls.fetch_add(1, Ordering::Relaxed);
+                })),
+            },
+        );
+
+        dispatch_presented(id);
+        dispatch_presented(id);
+
+        assert_eq!(calls.load(Ordering::Relaxed), 1);
         handlers().lock().unwrap().remove(&id);
     }
 }
