@@ -2218,10 +2218,11 @@ seconds. Cold-start the first card of the run so `opencode serve` actually has
 to spawn (`pkill -f "opencode serve"` on the host first).
 
 1. **Steps**: tap the globe in **Create Agent**. Expected: the drawer closes and
-   a full-view overlay replaces the workspace immediately — OpenCode icon and
-   name, a ✕ in the top-right corner, and a single spinning line naming the step
-   in flight: `Starting opencode server` → `Opening tunnel` → `Loading page`.
-   Past ~2s the line gains an elapsed counter (`… 4s`).
+   an overlay replaces the main view immediately while the workspace header and
+   actions remain usable. The OpenCode icon and status sit slightly above the
+   main-view centre; a ✕ in the top-right corner and a single spinning line name
+   the step in flight: `Starting opencode server` → `Opening tunnel` → `Loading
+   page`. Past ~2s the line gains an elapsed counter (`… 4s`).
 2. **Handoff**: the overlay remains until the native webview covers the app,
    then disappears with no bare-workspace gap. Dismiss the webview to confirm
    the workspace is back.

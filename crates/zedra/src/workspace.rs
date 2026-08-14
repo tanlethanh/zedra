@@ -4106,7 +4106,6 @@ impl Render for WorkspaceContent {
 
         div()
             .size_full()
-            .relative()
             .flex()
             .flex_col()
             .min_h_0()
@@ -4236,10 +4235,10 @@ impl Render for WorkspaceContent {
                     // the connecting detail already conveys full connection status.
                     .when(!self.show_connecting, |d| {
                         d.child(self.connection_banner.clone())
-                    }),
+                    })
+                    // Opening a web client owns the main view, but leaves
+                    // workspace navigation available above it.
+                    .child(self.web_tunnel_opening.clone()),
             )
-            // This is a workspace-level layer: it must also block the header,
-            // drawer toggle, and quick actions while the native webview opens.
-            .child(self.web_tunnel_opening.clone())
     }
 }
