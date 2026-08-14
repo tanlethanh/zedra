@@ -92,7 +92,8 @@ Two ways to open a host web app on the phone:
 Opening an agent web client can take seconds — the host spawns the server and
 polls it for readiness before the app has a URL to tunnel. Each workspace owns a
 thread-safe `web_tunnel::progress::Progress` handle, which
-`web_tunnel_opening.rs` polls and renders as a full-workspace overlay. Three
+`web_tunnel_opening.rs` polls and renders as an overlay in the workspace main
+view. Three
 steps — starting the server, opening the tunnel, loading the page — show only the
 step in flight, next to a corner ✕ that dismisses like the connecting view.
 

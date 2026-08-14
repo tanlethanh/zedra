@@ -55,8 +55,8 @@ impl Render for WebTunnelOpening {
             return div().into_any_element();
         };
 
-        // The close button anchors to this layer, so the centred column below is
-        // laid out on its own and stays centred whatever the corner holds.
+        // The close button anchors to this layer, so the content can sit a
+        // touch above centre without being displaced by the corner affordance.
         div()
             .id("web-tunnel-opening")
             .absolute()
@@ -71,6 +71,7 @@ impl Render for WebTunnelOpening {
                     .flex_col()
                     .items_center()
                     .justify_center()
+                    .top(px(-theme::SPACING_XL))
                     .gap(px(theme::SPACING_XL))
                     .px(px(theme::SPACING_LG))
                     .child(render_subject(&progress, cx))
