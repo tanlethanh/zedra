@@ -310,8 +310,16 @@ fn present(
         return;
     }
     progress.advance(generation, OpenStep::LoadingPage);
+    let presented_progress = progress.clone();
     crate::webview::open(configure(
-        tunnel_webview(url, title, on_route).on_presented(move || progress.finish(generation)),
+        tunnel_webview(url, title, on_route)
+            .on_presented(move || presented_progress.finish(generation))
+            .on_failed(move || {
+                progress.fail(
+                    generation,
+                    "The native webview could not be presented. Try again.",
+                )
+            }),
     ));
 }
 

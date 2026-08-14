@@ -781,6 +781,12 @@ pub extern "C" fn zedra_ios_webview_presented(callback_id: u32) {
     crate::webview::dispatch_presented(callback_id);
 }
 
+/// Called when UIKit could not begin presenting the webview.
+#[unsafe(no_mangle)]
+pub extern "C" fn zedra_ios_webview_failed(callback_id: u32) {
+    crate::webview::dispatch_failed(callback_id);
+}
+
 /// Called by Swift with the processed image bytes ready to upload.
 /// `extension` is "jpg" or "png" (lowercase, no dot).
 #[unsafe(no_mangle)]

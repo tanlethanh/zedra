@@ -88,18 +88,22 @@ impl Progress {
         icon: impl Into<String>,
         step: OpenStep,
     ) -> u64 {
-        let generation = self.0.generation.fetch_add(1, Ordering::Relaxed) + 1;
-        if let Ok(mut slot) = self.0.current.lock() {
-            *slot = Some(OpenProgress {
-                generation,
-                subject: subject.into(),
-                icon: icon.into(),
-                step,
-                error: None,
-                started_at: Instant::now(),
-            });
-            self.bump();
-        }
+        let generation = match self.0.current.lock() {
+            Ok(mut slot) => {
+                let generation = self.0.generation.fetch_add(1, Ordering::Relaxed) + 1;
+                *slot = Some(OpenProgress {
+                    generation,
+                    subject: subject.into(),
+                    icon: icon.into(),
+                    step,
+                    error: None,
+                    started_at: Instant::now(),
+                });
+                generation
+            }
+            Err(_) => return self.0.generation.fetch_add(1, Ordering::Relaxed) + 1,
+        };
+        self.bump();
         generation
     }
 
@@ -134,10 +138,15 @@ impl Progress {
     }
 
     pub fn cancel(&self) {
-        if let Ok(mut slot) = self.0.current.lock() {
-            *slot = None;
+        match self.0.current.lock() {
+            Ok(mut slot) => {
+                *slot = None;
+                self.0.generation.fetch_add(1, Ordering::Relaxed);
+            }
+            Err(_) => {
+                self.0.generation.fetch_add(1, Ordering::Relaxed);
+            }
         }
-        self.0.generation.fetch_add(1, Ordering::Relaxed);
         self.bump();
     }
 

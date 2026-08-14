@@ -2895,7 +2895,14 @@ private enum NativeWebViewPresenter {
                 }
                 presentedController = nav
                 activeController = controller
-                guard let presenter = NativePresentationBridge.topViewController() else { return }
+                guard let presenter = NativePresentationBridge.topViewController() else {
+                    if presentedController === nav {
+                        presentedController = nil
+                        activeController = nil
+                    }
+                    zedra_ios_webview_failed(callbackID)
+                    return
+                }
                 presenter.present(nav, animated: true) {
                     zedra_ios_webview_presented(callbackID)
                 }
