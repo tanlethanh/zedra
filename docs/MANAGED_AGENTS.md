@@ -162,6 +162,26 @@ all of that in the actor — see `agent/opencode.rs` (one shared server, fresh
 session per card, `/global/event` demuxed per session id). Protocol contract:
 `docs/PROTOCOL_SPECS.md` §5.9.
 
+### Loopback-origin web clients
+
+Some local dashboards reject a non-loopback `Host` or `Origin`. An actor can
+call `ctx.pool.acquire_loopback_proxy(key, &ctx.id, spec)` instead of `acquire`.
+Zedra then exposes one public loopback proxy port per card and keeps the server on a
+shared private port. A distinct public port gives each card a separate browser
+origin. The proxy rewrites HTTP `Host` and `Origin` to the private loopback
+authority, then copies the TCP stream unchanged. This supports the web tunnel's
+exact-port and alias modes, including WebSocket upgrades.
+
+Before wiring a new adapter, run the proxy checks without a mobile app:
+
+```sh
+cargo test -p zedra-host web_client::tests::loopback_proxy_rewrites_browser_authority -- --exact
+cargo test -p zedra-host web_client::tests::loopback_proxy_preserves_websocket_streams -- --exact
+cargo test -p zedra-host web_client::tests::hermes_cards_share_a_dashboard_with_distinct_proxy_origins -- --ignored --exact
+```
+
+The Hermes check requires `hermes` on `PATH` and its prebuilt dashboard assets.
+
 ## App Adapter
 
 The app keys on the host slug. Unknown slugs get `GenericAdapter`: icon from

@@ -87,6 +87,26 @@ Two ways to open a host web app on the phone:
   session with an active `Subscribe` stream; the app opens it through the same
   seam. Requires a phone connected to that workspace's daemon.
 
+## Opening progress
+
+Opening an agent web client can take seconds — the host spawns the server and
+polls it for readiness before the app has a URL to tunnel. Each workspace owns a
+thread-safe `web_tunnel::progress::Progress` handle, which
+`web_tunnel_opening.rs` polls and renders as an overlay in the workspace main
+view. Three
+steps — starting the server, opening the tunnel, loading the page — show only the
+step in flight, next to a corner ✕ that dismisses like the connecting view.
+
+Each open has a generation. Cancel clears that workspace's generation, and the
+presenting step checks it before calling `webview::open`; a cancelled open can
+never pop a webview later. The overlay remains through the native main-thread
+handoff and clears only when UIKit or Android has actually presented the webview.
+
+Failure keeps the overlay up with the failed step marked and an explanation,
+except when an HTTPS page cannot use the alias fallback. That case shows the
+native exact-port notification and clears the overlay so only one surface reports
+the failure.
+
 ## Keyboard and the tunnelled page
 
 A tunnelled page is a full app the user drives with its own UI, so the webview

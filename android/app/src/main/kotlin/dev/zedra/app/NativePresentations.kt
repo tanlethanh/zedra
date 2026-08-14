@@ -685,6 +685,7 @@ object NativePresentations {
             ViewGroup.LayoutParams.MATCH_PARENT,
         ))
         container.bringToFront()
+        MainActivity.nativeWebViewPresented(callbackId)
         applyWebViewProxy(activity, config.socksProxy) { loadWebView(webView, url) }
     }
 

@@ -6,6 +6,7 @@
 //! excluded so secrets never reach the client.
 
 use std::path::{Path, PathBuf};
+use std::process::Command;
 
 use chrono::{DateTime, NaiveDateTime, Utc};
 use serde_json::Value;
@@ -32,6 +33,41 @@ struct HermesSession {
 }
 
 impl HermesActor {
+    /// Hermes starts `/chat` by spawning its Node TUI. Return the exact Node
+    /// binary so the dashboard process uses the runtime we validated.
+    fn ensure_dashboard_chat_runtime() -> Result<PathBuf, String> {
+        let node = std::env::var_os("HERMES_NODE")
+            .filter(|path| Path::new(path).is_file())
+            .map(PathBuf::from)
+            .unwrap_or_else(|| PathBuf::from("node"));
+        let output = Command::new(&node).arg("--version").output().map_err(|_| {
+            "Hermes Chat needs Node 22.22+; set HERMES_NODE to its absolute path, then try again."
+                .to_string()
+        })?;
+        let version = String::from_utf8_lossy(&output.stdout);
+        let Some((major, minor)) = Self::node_major_minor(&version) else {
+            return Err(
+                "Hermes Chat could not determine the Node version. Set HERMES_NODE to an absolute Node 22.22+ path, then try again."
+                    .to_string(),
+            );
+        };
+        if Self::supports_dashboard_chat_node(major, minor) {
+            return Ok(node);
+        }
+        Err(format!(
+            "Hermes Chat needs Node 22.22+; set HERMES_NODE to its absolute path, then try again."
+        ))
+    }
+
+    fn node_major_minor(version: &str) -> Option<(u32, u32)> {
+        let mut parts = version.trim().trim_start_matches('v').split('.');
+        Some((parts.next()?.parse().ok()?, parts.next()?.parse().ok()?))
+    }
+
+    fn supports_dashboard_chat_node(major: u32, minor: u32) -> bool {
+        major > 22 || (major == 22 && minor >= 22)
+    }
+
     pub fn cli_available() -> bool {
         // `state.db` alone is enough to serve history even without the CLI or a
         // sessions dir, so treat its presence as availability.
@@ -279,6 +315,43 @@ impl HermesActor {
             transcript_path: Some(path.to_path_buf()),
             ..Default::default()
         })
+    }
+}
+
+// One machine-level dashboard is shared by all Hermes cards. Zedra's web
+// client pool places it behind the generic loopback-origin proxy so both the
+// exact-port tunnel and the alias fallback satisfy Hermes's Host checks.
+const WEB_CLIENT_POOL_KEY: &str = "hermes-dashboard";
+
+fn web_client_server_spec(node: &Path) -> crate::web_client::ServerSpec {
+    let node_dir = node.parent().unwrap_or_else(|| Path::new(".")).display();
+    let path = match std::env::var_os("PATH") {
+        Some(existing) => format!("{node_dir}:{}", existing.to_string_lossy()),
+        None => node_dir.to_string(),
+    };
+    crate::web_client::ServerSpec {
+        program: "hermes".to_string(),
+        args: |port| {
+            vec![
+                "dashboard".to_string(),
+                "--host".to_string(),
+                "127.0.0.1".to_string(),
+                "--port".to_string(),
+                port.to_string(),
+                "--no-open".to_string(),
+                // Zedra waits 15 seconds for a listener; Hermes's optional
+                // dashboard build can take longer than that.
+                "--skip-build".to_string(),
+            ]
+        },
+        // `hermes` uses `env node`; the validated runtime must lead PATH.
+        env: vec![("PATH".to_string(), path)],
+        // A dashboard without this flag may still serve its home page, but it
+        // cannot provide the chat card Zedra launches.
+        readiness: crate::web_client::ReadinessProbe {
+            path: "/chat",
+            required_marker: Some("__HERMES_DASHBOARD_EMBEDDED_CHAT__=true"),
+        },
     }
 }
 
@@ -675,6 +748,47 @@ impl AgentActor for HermesActor {
             .map(|program| format!("{program} --yolo"))
     }
 
+    fn has_web_client(&self) -> bool {
+        true
+    }
+
+    fn web_client_open(
+        &self,
+        ctx: crate::web_client::WebClientOpenCtx,
+    ) -> super::ActorFuture<'static, Result<crate::web_client::WebClientOpened, String>> {
+        Box::pin(async move {
+            let node = tokio::task::spawn_blocking(HermesActor::ensure_dashboard_chat_runtime)
+                .await
+                .map_err(|error| format!("Hermes Chat runtime check failed: {error}"))??;
+            let port = ctx
+                .pool
+                .acquire_loopback_proxy(
+                    WEB_CLIENT_POOL_KEY,
+                    &ctx.id,
+                    &web_client_server_spec(&node),
+                )
+                .await?;
+            ctx.sink
+                .set(Some(AgentState::Idle), Some("Hermes dashboard".to_string()))
+                .await;
+            Ok(crate::web_client::WebClientOpened {
+                port,
+                path: "/chat".to_string(),
+            })
+        })
+    }
+
+    fn web_client_close(
+        &self,
+        ctx: crate::web_client::WebClientCloseCtx,
+    ) -> super::ActorFuture<'static, ()> {
+        Box::pin(async move {
+            ctx.pool
+                .release_loopback_proxy(WEB_CLIENT_POOL_KEY, &ctx.id)
+                .await;
+        })
+    }
+
     // No remote plan/usage endpoint: `subscription_plan`/`account_usage` keep
     // the trait's None defaults.
 
@@ -794,6 +908,16 @@ mod hook_tests {
             );
         }
         assert_eq!(HermesActor::hermes_agent_state("unknown"), None);
+    }
+
+    #[test]
+    fn dashboard_chat_node_support_matches_hermes_requirements() {
+        assert!(!HermesActor::supports_dashboard_chat_node(20, 19));
+        assert!(!HermesActor::supports_dashboard_chat_node(22, 21));
+        assert!(HermesActor::supports_dashboard_chat_node(22, 22));
+        assert!(HermesActor::supports_dashboard_chat_node(23, 0));
+        assert!(HermesActor::supports_dashboard_chat_node(26, 0));
+        assert_eq!(HermesActor::node_major_minor("v24.11.0"), Some((24, 11)));
     }
 
     #[tokio::test]

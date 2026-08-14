@@ -2895,7 +2895,10 @@ private enum NativeWebViewPresenter {
                 }
                 presentedController = nav
                 activeController = controller
-                NativePresentationBridge.topViewController()?.present(nav, animated: true)
+                guard let presenter = NativePresentationBridge.topViewController() else { return }
+                presenter.present(nav, animated: true) {
+                    zedra_ios_webview_presented(callbackID)
+                }
             }
             // Present only after any existing webview finishes dismissing — dismiss
             // and present in the same runloop makes UIKit silently drop the new one.
