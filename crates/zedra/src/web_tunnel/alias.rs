@@ -15,7 +15,7 @@ use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::{TcpListener, TcpStream};
 use tokio::sync::OnceCell;
 
-use super::bridge;
+use super::{bridge, recover_lock};
 
 const ALIAS_SUFFIX: &str = ".zedra.test";
 
@@ -51,18 +51,14 @@ fn state() -> &'static State {
 /// per host and reused, so the origin stays stable across reopens; the label is
 /// registered so the proxy can route its CONNECTs back to `endpoint_id`.
 pub(super) fn alias_host(endpoint_id: &PublicKey) -> String {
-    if let Some(label) = state().by_endpoint.lock().unwrap().get(endpoint_id) {
+    if let Some(label) = recover_lock(&state().by_endpoint, "alias endpoints").get(endpoint_id) {
         return format!("{label}{ALIAS_SUFFIX}");
     }
-    let mut labels = state().labels.lock().unwrap();
+    let mut labels = recover_lock(&state().labels, "alias labels");
     let label = mint_label(endpoint_id, &labels);
     labels.insert(label.clone(), *endpoint_id);
     drop(labels);
-    state()
-        .by_endpoint
-        .lock()
-        .unwrap()
-        .insert(*endpoint_id, label.clone());
+    recover_lock(&state().by_endpoint, "alias endpoints").insert(*endpoint_id, label.clone());
     format!("{label}{ALIAS_SUFFIX}")
 }
 
@@ -194,7 +190,9 @@ async fn handle_socks(mut stream: TcpStream) -> Result<(), String> {
 /// Resolve `<label>.zedra.test` back to the owning host endpoint id.
 fn endpoint_for_host(host: &str) -> Option<PublicKey> {
     let label = host.strip_suffix(ALIAS_SUFFIX)?;
-    state().labels.lock().unwrap().get(label).copied()
+    recover_lock(&state().labels, "alias labels")
+        .get(label)
+        .copied()
 }
 
 async fn forward_via_session(

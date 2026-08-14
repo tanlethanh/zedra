@@ -21,7 +21,7 @@ pub mod progress;
 
 use std::collections::HashMap;
 use std::net::Ipv4Addr;
-use std::sync::{Mutex, OnceLock};
+use std::sync::{Mutex, MutexGuard, OnceLock};
 
 use iroh::PublicKey;
 use reqwest::Url;
@@ -131,14 +131,19 @@ fn registry() -> &'static Registry {
     })
 }
 
+/// Continue serving tunnels if a prior panic poisoned an in-memory registry.
+pub(super) fn recover_lock<'a, T>(lock: &'a Mutex<T>, name: &'static str) -> MutexGuard<'a, T> {
+    lock.lock().unwrap_or_else(|poisoned| {
+        tracing::warn!(lock = name, "web-tunnel: recovering poisoned lock");
+        poisoned.into_inner()
+    })
+}
+
 /// The latest session for a host, resolved by its stable endpoint id. Both
 /// adapters route through this so listeners/aliases survive reconnects (the
 /// session handle changes on reconnect; the endpoint id stays).
 fn session_for(endpoint_id: &PublicKey) -> Option<SessionHandle> {
-    registry()
-        .sessions
-        .lock()
-        .unwrap()
+    recover_lock(&registry().sessions, "session registry")
         .get(endpoint_id)
         .cloned()
 }
@@ -152,11 +157,7 @@ pub fn register_session(handle: &SessionHandle) {
     let Some(endpoint_id) = handle.endpoint_id() else {
         return;
     };
-    registry()
-        .sessions
-        .lock()
-        .unwrap()
-        .insert(endpoint_id, handle.clone());
+    recover_lock(&registry().sessions, "session registry").insert(endpoint_id, handle.clone());
 }
 
 /// Open `url` the best way: host-local http(s) URLs load in the in-app webview
@@ -209,11 +210,7 @@ pub fn open_url_with_progress(
         return None;
     };
     tracing::info!("web-tunnel: open {origin} (loopback :{port}) via {endpoint_id}");
-    registry()
-        .sessions
-        .lock()
-        .unwrap()
-        .insert(endpoint_id, session_handle);
+    recover_lock(&registry().sessions, "session registry").insert(endpoint_id, session_handle);
     let generation = generation
         .unwrap_or_else(|| progress.begin(&origin, "icons/globe.svg", OpenStep::OpeningTunnel));
     // A cancellation or another user action may have settled the caller's
@@ -268,14 +265,7 @@ async fn serve(
     // the TLS SNI; an https host still presents its `localhost` certificate, so
     // validation fails. Alias mode therefore only serves cleartext http.
     let alias_ok = is_cleartext_http(&url);
-    let prefers_alias = registry()
-        .prefs
-        .lock()
-        .unwrap_or_else(|poisoned| {
-            tracing::warn!("web-tunnel: alias preference lock poisoned; recovering");
-            poisoned.into_inner()
-        })
-        .get(&endpoint_id)
+    let prefers_alias = recover_lock(&registry().prefs, "alias preferences").get(&endpoint_id)
         == Some(&AdapterKind::Alias);
     if prefers_alias {
         if alias_ok {
@@ -293,13 +283,7 @@ async fn serve(
         // the choice skips the doomed bind on later opens for this host.
         Err(()) if alias_ok => {
             tracing::info!("web-tunnel: exact-port unavailable for :{port} -> alias");
-            registry()
-                .prefs
-                .lock()
-                .unwrap_or_else(|poisoned| {
-                    tracing::warn!("web-tunnel: alias preference lock poisoned; recovering");
-                    poisoned.into_inner()
-                })
+            recover_lock(&registry().prefs, "alias preferences")
                 .insert(endpoint_id, AdapterKind::Alias);
             serve_alias(endpoint_id, &url, title, on_route, progress, generation).await;
         }
@@ -446,18 +430,14 @@ fn webview_title(url: &str) -> String {
 // two real hosts. See docs/WEB_TUNNEL_MODES.md.
 #[cfg(debug_assertions)]
 pub(crate) fn debug_reset() {
-    registry().prefs.lock().unwrap().clear();
+    recover_lock(&registry().prefs, "alias preferences").clear();
     exact_port::debug_clear_owners();
 }
 
 #[cfg(debug_assertions)]
 pub(crate) fn debug_force_alias(session: &SessionHandle) {
     if let Some(id) = session.endpoint_id() {
-        registry()
-            .prefs
-            .lock()
-            .unwrap()
-            .insert(id, AdapterKind::Alias);
+        recover_lock(&registry().prefs, "alias preferences").insert(id, AdapterKind::Alias);
     }
 }
 
@@ -468,7 +448,26 @@ pub(crate) fn debug_collide(port: u16) {
 
 #[cfg(test)]
 mod tests {
-    use super::{normalize_target, parse_loopback_target, webview_title};
+    use std::panic::{AssertUnwindSafe, catch_unwind};
+    use std::sync::Mutex;
+
+    use super::{normalize_target, parse_loopback_target, recover_lock, webview_title};
+
+    #[test]
+    fn recover_lock_preserves_a_poisoned_value() {
+        let lock = Mutex::new(4);
+        let _ = catch_unwind(AssertUnwindSafe(|| {
+            let _guard = match lock.lock() {
+                Ok(guard) => guard,
+                Err(_) => return,
+            };
+            panic!("poison test lock");
+        }));
+
+        let mut guard = recover_lock(&lock, "test");
+        *guard += 1;
+        assert_eq!(*guard, 5);
+    }
 
     #[test]
     fn parse_loopback_accepts_localhost_and_loopback_ips() {
