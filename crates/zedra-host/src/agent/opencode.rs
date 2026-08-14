@@ -1153,6 +1153,10 @@ fn server_spec() -> crate::web_client::ServerSpec {
             ]
         },
         env: Vec::new(),
+        readiness: crate::web_client::ReadinessProbe {
+            path: "/",
+            required_marker: None,
+        },
     }
 }
 

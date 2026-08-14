@@ -2244,3 +2244,21 @@ to spawn (`pkill -f "opencode serve"` on the host first).
 7. **Workspace switch**: start a slow web client in workspace A, switch to
    workspace B, then cancel an open in B. Expected: A's open remains owned by A;
    B cannot dismiss it or cause A's webview to appear over B.
+
+### Hermes dashboard
+
+Requires `hermes` on the host's `PATH` and its dashboard assets.
+
+1. Open **Create Agent** with Hermes installed. Expected: Hermes shows the globe
+   accessory. Tap it. The dashboard opens in the in-app webview and the card
+   subtitle shows its proxy port.
+2. Force alias mode with the web-tunnel devtool, then create a Hermes card.
+   Expected: the address uses `<label>.zedra.test:<port>` and the dashboard
+   still loads because the host proxy supplies Hermes' loopback origin.
+3. Open a second Hermes card. Expected: it receives a different proxy port and
+   its own PTY, while both cards share one `hermes dashboard` process.
+4. Close the first card, then the second. Expected: the dashboard remains after
+   the first close and exits after the last one.
+5. Set the host's active Node below 22.22, then open Hermes. Expected: the
+   opening view names the `HERMES_NODE` recovery hint; no card or webview
+   appears. Set `HERMES_NODE` to an absolute supported Node path and retry.

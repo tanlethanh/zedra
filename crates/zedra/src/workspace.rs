@@ -2863,11 +2863,14 @@ impl Workspace {
                 }
                 Err(e) => {
                     tracing::error!(agent = slug, "web client start failed: {}", e);
+                    let error = e.to_string();
+                    let message = if slug == "hermes" && error.starts_with("Hermes Chat") {
+                        error
+                    } else {
+                        "The host could not start this agent's web server.".to_string()
+                    };
                     let _ = workspace.update(cx, |ws, _cx| {
-                        ws.web_tunnel_progress.fail(
-                            generation,
-                            "The host could not start this agent's web server.",
-                        )
+                        ws.web_tunnel_progress.fail(generation, message)
                     });
                 }
             }

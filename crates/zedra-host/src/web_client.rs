@@ -17,7 +17,7 @@
 //! daemon; actor-held [`WebClientSink`]/[`WebClientPool`] handles are weak and
 //! never keep it alive.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::net::{Ipv4Addr, TcpListener};
 use std::path::{Path, PathBuf};
 use std::process::Stdio;
@@ -25,6 +25,8 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Weak};
 use std::time::{Duration, Instant};
 
+use tokio::io::{AsyncReadExt, AsyncWriteExt};
+use tokio::net::{TcpListener as TokioTcpListener, TcpStream};
 use tokio::process::{Child, Command};
 use tokio::sync::{broadcast, Mutex};
 use zedra_rpc::proto::{AgentState, WebClientInfo, WebClientUpdate};
@@ -37,6 +39,7 @@ const READY_TIMEOUT: Duration = Duration::from_secs(15);
 const READY_POLL: Duration = Duration::from_millis(200);
 /// Update channel depth; a slow watcher drops old updates, never blocks a server.
 const UPDATE_CAPACITY: usize = 64;
+const PROXY_HEADER_LIMIT: usize = 32 * 1024;
 
 /// One card being opened. Sink updates are buffered here until the actor
 /// returns a usable port and path, so early title/state updates are not lost.
@@ -72,13 +75,26 @@ struct Pooled {
     refs: usize,
 }
 
+/// One card's public proxy into a shared private web-client server.
+struct ProxyLease {
+    key: String,
+    _proxy: LoopbackOriginProxy,
+}
+
+#[derive(Default)]
+struct PoolState {
+    servers: HashMap<String, Pooled>,
+    proxies: HashMap<String, ProxyLease>,
+}
+
 struct Inner {
     cards: Mutex<HashMap<String, CardEntry>>,
     updates: broadcast::Sender<WebClientUpdate>,
     workdir: PathBuf,
     next_seq: AtomicU64,
-    /// Shared server processes, keyed by an actor-chosen pool key.
-    pool: Mutex<HashMap<String, Pooled>>,
+    /// Shared server processes and card-scoped origin proxies.
+    pool: Mutex<PoolState>,
+    proxy_reaper_started: std::sync::atomic::AtomicBool,
 }
 
 /// Daemon-scoped registry of host-managed web clients.
@@ -95,7 +111,8 @@ impl WebClientManager {
                 updates,
                 workdir,
                 next_seq: AtomicU64::new(0),
-                pool: Mutex::new(HashMap::new()),
+                pool: Mutex::new(PoolState::default()),
+                proxy_reaper_started: std::sync::atomic::AtomicBool::new(false),
             }),
         }
     }
@@ -232,6 +249,44 @@ impl WebClientManager {
 }
 
 impl Inner {
+    async fn reap_dead_proxy_servers(&self) -> Vec<String> {
+        let mut pool = self.pool.lock().await;
+        let proxy_server_keys: HashSet<String> = pool
+            .proxies
+            .values()
+            .map(|lease| lease.key.clone())
+            .collect();
+        let dead: Vec<String> = pool
+            .servers
+            .iter_mut()
+            .filter(|(key, _)| proxy_server_keys.contains(*key))
+            .filter_map(|(key, pooled)| match pooled.process._child.try_wait() {
+                Ok(Some(status)) => {
+                    tracing::warn!(key, %status, "web-client: server exited");
+                    Some(key.clone())
+                }
+                Ok(None) => None,
+                Err(error) => {
+                    tracing::warn!(key, %error, "web-client: server status check failed");
+                    None
+                }
+            })
+            .collect();
+        let mut closed = Vec::new();
+        for key in dead {
+            pool.servers.remove(&key);
+            pool.proxies.retain(|id, lease| {
+                if lease.key == key {
+                    closed.push(id.clone());
+                    false
+                } else {
+                    true
+                }
+            });
+        }
+        closed
+    }
+
     async fn remove_opening(&self, id: &str) {
         let mut cards = self.cards.lock().await;
         if matches!(cards.get(id), Some(CardEntry::Opening(_))) {
@@ -454,13 +509,82 @@ impl WebClientPool {
             .upgrade()
             .ok_or_else(|| "web client manager stopped".to_string())?;
         let mut pool = inner.pool.lock().await;
-        if let Some(pooled) = pool.get_mut(key) {
+        if let Some(pooled) = pool.servers.get_mut(key) {
             pooled.refs += 1;
             return Ok(pooled.process.port);
         }
         let process = spawn_server(spec, &inner.workdir).await?;
         let port = process.port;
-        pool.insert(key.to_string(), Pooled { process, refs: 1 });
+        pool.servers
+            .insert(key.to_string(), Pooled { process, refs: 1 });
+        Ok(port)
+    }
+
+    /// Lease a card-specific proxy in front of a shared loopback-only server.
+    /// Each proxy gets a distinct browser origin, so browser-local state (such
+    /// as a dashboard's PTY attach token) remains private to that card.
+    pub(crate) async fn acquire_loopback_proxy(
+        &self,
+        key: &str,
+        card_id: &str,
+        spec: &ServerSpec,
+    ) -> Result<u16, String> {
+        let inner = self
+            .inner
+            .upgrade()
+            .ok_or_else(|| "web client manager stopped".to_string())?;
+        let mut pool = inner.pool.lock().await;
+        if pool.proxies.contains_key(card_id) {
+            return Err(format!("web client proxy already leased for {card_id}"));
+        }
+        let upstream_port = if let Some(pooled) = pool.servers.get_mut(key) {
+            pooled.refs += 1;
+            pooled.process.upstream_port
+        } else {
+            let process = spawn_server(spec, &inner.workdir).await?;
+            let upstream_port = process.upstream_port;
+            pool.servers
+                .insert(key.to_string(), Pooled { process, refs: 1 });
+            upstream_port
+        };
+        let proxy = match LoopbackOriginProxy::start(upstream_port).await {
+            Ok(proxy) => proxy,
+            Err(error) => {
+                let remove_server = if let Some(pooled) = pool.servers.get_mut(key) {
+                    pooled.refs = pooled.refs.saturating_sub(1);
+                    pooled.refs == 0
+                } else {
+                    false
+                };
+                if remove_server {
+                    pool.servers.remove(key);
+                }
+                return Err(error);
+            }
+        };
+        let port = proxy.port;
+        pool.proxies.insert(
+            card_id.to_string(),
+            ProxyLease {
+                key: key.to_string(),
+                _proxy: proxy,
+            },
+        );
+        if !inner.proxy_reaper_started.swap(true, Ordering::Relaxed) {
+            let weak = Arc::downgrade(&inner);
+            tokio::spawn(async move {
+                loop {
+                    tokio::time::sleep(Duration::from_secs(1)).await;
+                    let Some(inner) = weak.upgrade() else {
+                        return;
+                    };
+                    let closed = inner.reap_dead_proxy_servers().await;
+                    for id in closed {
+                        inner.close_card(&id).await;
+                    }
+                }
+            });
+        }
         Ok(port)
     }
 
@@ -468,10 +592,35 @@ impl WebClientPool {
     pub(crate) async fn release(&self, key: &str) {
         if let Some(inner) = self.inner.upgrade() {
             let mut pool = inner.pool.lock().await;
-            if let Some(pooled) = pool.get_mut(key) {
+            if let Some(pooled) = pool.servers.get_mut(key) {
                 pooled.refs = pooled.refs.saturating_sub(1);
                 if pooled.refs == 0 {
-                    pool.remove(key);
+                    pool.servers.remove(key);
+                }
+            }
+        }
+    }
+
+    /// Release one card-specific proxy and its reference to the shared server.
+    pub(crate) async fn release_loopback_proxy(&self, key: &str, card_id: &str) {
+        if let Some(inner) = self.inner.upgrade() {
+            let mut pool = inner.pool.lock().await;
+            let Some(lease) = pool.proxies.remove(card_id) else {
+                return;
+            };
+            if lease.key != key {
+                tracing::warn!(
+                    expected = key,
+                    actual = lease.key,
+                    card_id,
+                    "web-client: proxy lease key mismatch"
+                );
+                return;
+            }
+            if let Some(pooled) = pool.servers.get_mut(key) {
+                pooled.refs = pooled.refs.saturating_sub(1);
+                if pooled.refs == 0 {
+                    pool.servers.remove(key);
                 }
             }
         }
@@ -481,7 +630,7 @@ impl WebClientPool {
     /// died, so a later `acquire` respawns instead of handing back a dead port.
     pub(crate) async fn remove(&self, key: &str) {
         if let Some(inner) = self.inner.upgrade() {
-            inner.pool.lock().await.remove(key);
+            inner.pool.lock().await.servers.remove(key);
         }
     }
 }
@@ -494,12 +643,22 @@ pub(crate) struct ServerSpec {
     pub args: fn(u16) -> Vec<String>,
     /// Extra environment for the child process.
     pub env: Vec<(String, String)>,
+    /// Route that proves the server is usable. The optional marker must be in
+    /// its response before the server is exposed as a card.
+    pub readiness: ReadinessProbe,
+}
+
+/// The HTTP response a web-client server must provide before Zedra opens it.
+pub(crate) struct ReadinessProbe {
+    pub path: &'static str,
+    pub required_marker: Option<&'static str>,
 }
 
 /// A spawned loopback server. Killed on drop, so the pool reaps a server by
 /// dropping it and the daemon reaps all of them on shutdown.
 pub(crate) struct ServerProcess {
     pub port: u16,
+    upstream_port: u16,
     _child: Child,
 }
 
@@ -522,10 +681,10 @@ pub(crate) async fn spawn_server(
     let mut child = cmd
         .spawn()
         .map_err(|e| format!("failed to launch {}: {e}", spec.program))?;
-    if !wait_ready(port).await {
+    if let Err(error) = wait_ready(port, &spec.readiness).await {
         let _ = child.start_kill();
         return Err(format!(
-            "{} did not start listening on :{port}",
+            "{} did not become ready on :{port}: {error}",
             spec.program
         ));
     }
@@ -535,8 +694,114 @@ pub(crate) async fn spawn_server(
     );
     Ok(ServerProcess {
         port,
+        upstream_port: port,
         _child: child,
     })
+}
+
+/// A narrow reverse proxy for web clients that validate Host and Origin against
+/// loopback. It only owns the first HTTP request header; after that it copies
+/// the TCP stream unchanged, which preserves WebSocket upgrades and frames.
+struct LoopbackOriginProxy {
+    port: u16,
+    _task: tokio::task::JoinHandle<()>,
+}
+
+impl LoopbackOriginProxy {
+    async fn start(upstream_port: u16) -> Result<Self, String> {
+        let listener = TokioTcpListener::bind((Ipv4Addr::LOCALHOST, 0))
+            .await
+            .map_err(|error| format!("web client proxy could not bind: {error}"))?;
+        let port = listener
+            .local_addr()
+            .map_err(|error| format!("web client proxy could not read address: {error}"))?
+            .port();
+        let task = tokio::spawn(async move {
+            loop {
+                let Ok((client, _)) = listener.accept().await else {
+                    break;
+                };
+                tokio::spawn(async move {
+                    if let Err(error) = proxy_connection(client, upstream_port).await {
+                        tracing::debug!(%error, "web-client: proxy connection ended");
+                    }
+                });
+            }
+        });
+        tracing::info!(
+            port,
+            upstream_port,
+            "web-client: loopback origin proxy listening"
+        );
+        Ok(Self { port, _task: task })
+    }
+}
+
+impl Drop for LoopbackOriginProxy {
+    fn drop(&mut self) {
+        self._task.abort();
+    }
+}
+
+async fn proxy_connection(mut client: TcpStream, upstream_port: u16) -> Result<(), String> {
+    let mut request = Vec::with_capacity(4096);
+    loop {
+        if request.len() >= PROXY_HEADER_LIMIT {
+            return Err("web client proxy request headers exceed limit".to_string());
+        }
+        let mut chunk = [0u8; 2048];
+        let read = client
+            .read(&mut chunk)
+            .await
+            .map_err(|error| format!("web client proxy could not read request: {error}"))?;
+        if read == 0 {
+            return Ok(());
+        }
+        request.extend_from_slice(&chunk[..read]);
+        if let Some(headers_end) = request.windows(4).position(|window| window == b"\r\n\r\n") {
+            let headers_end = headers_end + 4;
+            let rewritten = rewrite_loopback_authority(&request[..headers_end], upstream_port)?;
+            let mut upstream = TcpStream::connect((Ipv4Addr::LOCALHOST, upstream_port))
+                .await
+                .map_err(|error| format!("web client proxy could not connect upstream: {error}"))?;
+            upstream
+                .write_all(&rewritten)
+                .await
+                .map_err(|error| format!("web client proxy could not forward headers: {error}"))?;
+            upstream
+                .write_all(&request[headers_end..])
+                .await
+                .map_err(|error| format!("web client proxy could not forward request: {error}"))?;
+            tokio::io::copy_bidirectional(&mut client, &mut upstream)
+                .await
+                .map_err(|error| format!("web client proxy stream failed: {error}"))?;
+            return Ok(());
+        }
+    }
+}
+
+fn rewrite_loopback_authority(headers: &[u8], upstream_port: u16) -> Result<Vec<u8>, String> {
+    let text = std::str::from_utf8(headers)
+        .map_err(|_| "web client proxy received non-UTF-8 request headers".to_string())?;
+    let lines = text
+        .strip_suffix("\r\n\r\n")
+        .ok_or_else(|| "web client proxy received incomplete request headers".to_string())?;
+    let authority = format!("localhost:{upstream_port}");
+    let mut rewritten = String::new();
+    for line in lines.split("\r\n") {
+        if line.len() >= 5 && line[..5].eq_ignore_ascii_case("host:") {
+            rewritten.push_str("Host: ");
+            rewritten.push_str(&authority);
+        } else if line.len() >= 7 && line[..7].eq_ignore_ascii_case("origin:") {
+            rewritten.push_str("Origin: http://");
+            rewritten.push_str(&authority);
+        } else {
+            rewritten.push_str(line);
+        }
+        rewritten.push_str("\r\n");
+    }
+    rewritten.push_str("\r\n");
+    Ok(rewritten.into_bytes())
 }
 
 /// A free loopback port. Small TOCTOU window: the server binds it right after.
@@ -548,23 +813,42 @@ fn free_loopback_port() -> Result<u16, String> {
 }
 
 /// Poll until the loopback server answers HTTP (any status = listening).
-async fn wait_ready(port: u16) -> bool {
+async fn wait_ready(port: u16, probe: &ReadinessProbe) -> Result<(), String> {
     let client = reqwest::Client::new();
-    let url = format!("http://127.0.0.1:{port}/");
+    let url = format!("http://127.0.0.1:{port}{}", probe.path);
     let deadline = Instant::now() + READY_TIMEOUT;
     while Instant::now() < deadline {
-        if client
+        let response = client
             .get(&url)
             .timeout(Duration::from_secs(1))
             .send()
-            .await
-            .is_ok()
-        {
-            return true;
+            .await;
+        if let Ok(response) = response {
+            if !response.status().is_success() {
+                tokio::time::sleep(READY_POLL).await;
+                continue;
+            }
+            let marker_present = match probe.required_marker {
+                Some(marker) => response
+                    .text()
+                    .await
+                    .map(|body| body.contains(marker))
+                    .unwrap_or(false),
+                None => true,
+            };
+            if marker_present {
+                return Ok(());
+            }
         }
         tokio::time::sleep(READY_POLL).await;
     }
-    false
+    match probe.required_marker {
+        Some(_) => Err(format!(
+            "{} did not expose the required web-client capability",
+            probe.path
+        )),
+        None => Err(format!("{} did not respond successfully", probe.path)),
+    }
 }
 
 #[cfg(test)]
@@ -582,9 +866,170 @@ mod tests {
         assert!(agent::actor("opencode")
             .expect("opencode actor registered")
             .has_web_client());
+        assert!(agent::actor("hermes")
+            .expect("hermes actor registered")
+            .has_web_client());
         assert!(!agent::actor("claude")
             .expect("claude actor registered")
             .has_web_client());
+    }
+
+    #[test]
+    fn loopback_proxy_rewrites_browser_authority() {
+        let request = b"GET / HTTP/1.1\r\nHost: puma.zedra.test:9119\r\nOrigin: http://puma.zedra.test:9119\r\n\r\n";
+        let rewritten = rewrite_loopback_authority(request, 4567).expect("headers rewrite");
+        let rewritten = String::from_utf8(rewritten).expect("ASCII headers");
+        assert!(rewritten.contains("Host: localhost:4567\r\n"));
+        assert!(rewritten.contains("Origin: http://localhost:4567\r\n"));
+        assert!(rewritten.starts_with("GET / HTTP/1.1\r\n"));
+        assert!(rewritten.ends_with("\r\n\r\n"));
+        assert!(!rewritten.ends_with("\r\n\r\n\r\n"));
+    }
+
+    #[tokio::test]
+    async fn loopback_proxy_preserves_websocket_streams() {
+        let upstream_listener = TokioTcpListener::bind((Ipv4Addr::LOCALHOST, 0))
+            .await
+            .expect("upstream listener");
+        let upstream_port = upstream_listener
+            .local_addr()
+            .expect("upstream address")
+            .port();
+        let (headers_tx, headers_rx) = tokio::sync::oneshot::channel();
+        let upstream = tokio::spawn(async move {
+            let (mut stream, _) = upstream_listener.accept().await.expect("upstream accept");
+            let headers = read_proxy_headers(&mut stream)
+                .await
+                .expect("upstream headers");
+            headers_tx.send(headers).expect("test receives headers");
+            stream
+                .write_all(b"HTTP/1.1 101 Switching Protocols\r\nConnection: Upgrade\r\nUpgrade: websocket\r\n\r\n")
+                .await
+                .expect("upgrade response");
+            let mut payload = [0; 4];
+            stream
+                .read_exact(&mut payload)
+                .await
+                .expect("websocket bytes");
+            stream.write_all(&payload).await.expect("websocket echo");
+        });
+        let proxy = LoopbackOriginProxy::start(upstream_port)
+            .await
+            .expect("origin proxy");
+        let mut client = TcpStream::connect((Ipv4Addr::LOCALHOST, proxy.port))
+            .await
+            .expect("proxy connection");
+        client
+            .write_all(b"GET /api/ws HTTP/1.1\r\nHost: puma.zedra.test:9119\r\nOrigin: http://puma.zedra.test:9119\r\nConnection: Upgrade\r\nUpgrade: websocket\r\n\r\n")
+            .await
+            .expect("upgrade request");
+        let response = read_proxy_headers(&mut client)
+            .await
+            .expect("upgrade response");
+        assert!(String::from_utf8(response)
+            .expect("ASCII response")
+            .starts_with("HTTP/1.1 101"));
+        client.write_all(b"ping").await.expect("websocket payload");
+        let mut echoed = [0; 4];
+        client
+            .read_exact(&mut echoed)
+            .await
+            .expect("echoed payload");
+        assert_eq!(&echoed, b"ping");
+        let headers =
+            String::from_utf8(headers_rx.await.expect("upstream headers")).expect("ASCII headers");
+        assert!(headers.contains(&format!("Host: localhost:{upstream_port}\r\n")));
+        assert!(headers.contains(&format!("Origin: http://localhost:{upstream_port}\r\n")));
+        upstream.await.expect("upstream task");
+    }
+
+    /// Runs two real Hermes cards. It stays opt-in because it needs the locally
+    /// installed Hermes CLI and its prebuilt dashboard assets.
+    #[tokio::test]
+    #[ignore = "needs hermes on PATH and its dashboard web assets"]
+    async fn hermes_cards_share_a_dashboard_with_distinct_proxy_origins() {
+        let available = std::process::Command::new("hermes")
+            .arg("--version")
+            .output()
+            .map(|output| output.status.success())
+            .unwrap_or(false);
+        assert!(available, "hermes must be available on PATH");
+
+        let workdir = tempfile::tempdir().expect("temporary workdir");
+        let manager = WebClientManager::new(workdir.path().to_path_buf());
+        let first = manager.start("hermes").await.expect("first Hermes card");
+        let second = manager.start("hermes").await.expect("second Hermes card");
+        assert_eq!(first.path, "/chat");
+        assert_eq!(second.path, "/chat");
+        assert_ne!(first.port, second.port, "each card has its own origin");
+
+        let client = reqwest::Client::builder()
+            .http1_only()
+            .build()
+            .expect("HTTP client");
+        for card in [&first, &second] {
+            let response = client
+                .get(format!("http://127.0.0.1:{}/chat", card.port))
+                .header("Host", format!("puma.zedra.test:{}", card.port))
+                .send()
+                .await
+                .expect("alias request through proxy");
+            assert_eq!(response.status(), reqwest::StatusCode::OK);
+            assert!(
+                response
+                    .text()
+                    .await
+                    .expect("Hermes chat page")
+                    .contains("__HERMES_DASHBOARD_EMBEDDED_CHAT__=true"),
+                "card only opens a dashboard that supports embedded chat"
+            );
+        }
+
+        manager.stop(&first.id).await.expect("close first card");
+        assert_eq!(
+            manager.list().await.len(),
+            1,
+            "second card keeps server leased"
+        );
+
+        {
+            let mut pool = manager.inner.pool.lock().await;
+            let server = pool
+                .servers
+                .get_mut("hermes-dashboard")
+                .expect("shared Hermes dashboard");
+            server
+                .process
+                ._child
+                .start_kill()
+                .expect("stop shared Hermes dashboard");
+        }
+        tokio::time::timeout(Duration::from_secs(3), async {
+            loop {
+                if manager.list().await.is_empty() {
+                    return;
+                }
+                tokio::time::sleep(Duration::from_millis(25)).await;
+            }
+        })
+        .await
+        .expect("server exit closes remaining card");
+    }
+
+    async fn read_proxy_headers(stream: &mut TcpStream) -> Result<Vec<u8>, std::io::Error> {
+        let mut request = Vec::new();
+        loop {
+            let mut chunk = [0u8; 1024];
+            let read = stream.read(&mut chunk).await?;
+            if read == 0 {
+                return Ok(request);
+            }
+            request.extend_from_slice(&chunk[..read]);
+            if let Some(end) = request.windows(4).position(|window| window == b"\r\n\r\n") {
+                request.truncate(end + 4);
+                return Ok(request);
+            }
+        }
     }
 
     /// `list` seeds every `WebClientWatch` subscriber, so a hash-map order would
