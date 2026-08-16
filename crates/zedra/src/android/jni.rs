@@ -537,6 +537,17 @@ pub extern "system" fn Java_dev_zedra_app_MainActivity_nativeWebViewPresented(
 }
 
 #[unsafe(no_mangle)]
+pub extern "system" fn Java_dev_zedra_app_MainActivity_nativeWebViewFailed(
+    _env: JNIEnv,
+    _class: JClass,
+    callback_id: jint,
+) {
+    if callback_id > 0 {
+        crate::webview::dispatch_failed(callback_id as u32);
+    }
+}
+
+#[unsafe(no_mangle)]
 pub extern "system" fn Java_dev_zedra_app_MainActivity_nativeFloatingButtonPressed(
     _env: JNIEnv,
     _class: JClass,

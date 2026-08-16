@@ -451,6 +451,8 @@ class MainActivity : AppCompatActivity() {
 
         @JvmStatic external fun nativeWebViewPresented(callbackId: Int)
 
+        @JvmStatic external fun nativeWebViewFailed(callbackId: Int)
+
         @JvmStatic external fun nativeFloatingButtonPressed(callbackId: Int)
 
         @JvmStatic external fun nativeDictationPreviewDismiss(previewId: Int)

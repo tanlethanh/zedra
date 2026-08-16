@@ -2878,7 +2878,12 @@ private enum NativeWebViewPresenter {
               let data = configJSON.data(using: .utf8),
               let config = try? JSONDecoder().decode(NativeWebViewConfig.self, from: data),
               let url = URL(string: config.url)
-        else { return }
+        else {
+            // Rust already registered handlers, so a rejected config must report
+            // failure or the opening progress never settles.
+            zedra_ios_webview_failed(callbackID)
+            return
+        }
         DispatchQueue.main.async {
             let present = {
                 let controller = NativeWebViewController(callbackID: callbackID, config: config, url: url)
