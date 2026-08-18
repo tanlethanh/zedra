@@ -488,8 +488,20 @@ impl WorkspaceState {
     /// navigation stack, never a pushed route, so this clears the stack rather
     /// than navigating onto it.
     pub fn reset_to_default(&mut self, cx: &mut Context<Self>) {
-        self.main_view_stack.reset(WorkspaceMainView::Default);
-        self.set_active_main_view(WorkspaceMainView::Default, cx);
+        self.reset_navigation_root(WorkspaceMainView::Default, cx);
+    }
+
+    pub(crate) fn reset_navigation_root(
+        &mut self,
+        route: WorkspaceMainView,
+        cx: &mut Context<Self>,
+    ) {
+        self.main_view_stack.reset(route.clone());
+        if let WorkspaceMainView::Terminal { ref id } = route {
+            self.active_terminal_id = Some(id.clone());
+            cx.emit(WorkspaceStateEvent::TerminalOpened { id: id.clone() });
+        }
+        self.set_active_main_view(route, cx);
     }
 
     pub fn navigate(&mut self, route: WorkspaceMainView, cx: &mut Context<Self>) {
@@ -809,6 +821,22 @@ mod tests {
         assert_eq!(stack.active(), terminal);
         assert_eq!(stack.go_back(), Some(diff));
         assert_eq!(stack.go_back(), Some(file));
+        assert_eq!(stack.go_back(), None);
+    }
+
+    #[test]
+    fn navigation_stack_reset_discards_history() {
+        let mut stack = WorkspaceNavigationStack::default();
+        stack.open(WorkspaceMainView::File {
+            path: "src/main.rs".into(),
+        });
+        let terminal = WorkspaceMainView::Terminal {
+            id: "terminal-1".into(),
+        };
+
+        stack.reset(terminal.clone());
+
+        assert_eq!(stack.active(), terminal);
         assert_eq!(stack.go_back(), None);
     }
 

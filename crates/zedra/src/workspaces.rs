@@ -208,12 +208,28 @@ impl Workspaces {
 
         let endpoint_addr = state.read(cx).endpoint_addr.clone();
         if let Some(entry_index) = self.entry_index_by_endpoint_addr(&endpoint_addr, cx) {
+            self.switch_to(entry_index, cx);
+            self.prepare_active_for_home_entry(window, cx);
             self.open_connecting_for_entry(entry_index, window, cx);
             OpenConnectingForState::ActiveEntry
         } else {
             self.connect_saved(state_index, window, cx);
+            self.prepare_active_for_home_entry(window, cx);
             OpenConnectingForState::StartedConnect
         }
+    }
+
+    pub(crate) fn prepare_active_for_home_entry(
+        &mut self,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let Some(workspace) = self.active().cloned() else {
+            return;
+        };
+        workspace.update(cx, |workspace, cx| {
+            workspace.prepare_for_home_entry(window, cx);
+        });
     }
 
     /// Connect via QR pairing ticket (new device pairing).

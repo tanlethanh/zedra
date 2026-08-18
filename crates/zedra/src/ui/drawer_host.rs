@@ -93,6 +93,8 @@ pub struct DrawerHost {
     gesture_state: GestureState,
     /// Dropping this cancels the pending state commit task.
     _snap_task: Option<Task<()>>,
+    /// A close requested while the opening animation is still running.
+    close_after_snap: bool,
 }
 
 impl DrawerHost {
@@ -121,6 +123,7 @@ impl DrawerHost {
             last_drag_dx: 0.0,
             gesture_state: GestureState::Idle,
             _snap_task: None,
+            close_after_snap: false,
         }
     }
 
@@ -167,6 +170,11 @@ impl DrawerHost {
 
     fn close_impl(&mut self, window: Option<&mut Window>, cx: &mut Context<Self>) {
         if self.is_snap_animating() {
+            if self.snap_target.is_some_and(|target| target > 0.0) && !self.close_after_snap {
+                Self::hide_soft_keyboard(window);
+                self.close_after_snap = true;
+                cx.emit(DrawerEvent::Closed);
+            }
             return;
         }
         self.start_snap(0.0, window, cx);
@@ -454,14 +462,20 @@ impl DrawerHost {
                 .await;
             this.update(cx, |this, cx| {
                 this.drawer_offset = target;
+                let close_after_snap = target > 0.0 && this.close_after_snap;
+                this.close_after_snap = false;
+                this.snap_target = None;
+                this.snap_started_at = None;
+                if close_after_snap {
+                    this.start_snap(0.0, None, cx);
+                    return;
+                }
                 let state = if target > 0.0 {
                     DrawerState::Opened
                 } else {
                     DrawerState::Closed
                 };
                 this.set_drawer_state(state, cx);
-                this.snap_target = None;
-                this.snap_started_at = None;
                 cx.notify();
             })
             .ok();
@@ -663,7 +677,10 @@ impl Render for DrawerHost {
 
 #[cfg(test)]
 mod tests {
+    use std::time::Duration;
+
     use super::{DragOrigin, DrawerHost, DrawerSide, DrawerState, GestureState};
+    use crate::theme;
     use gpui::{
         AppContext as _, Empty, Modifiers, PlatformInput, PointerButton, PointerDownEvent,
         PointerKind, PointerMoveEvent, TestAppContext, point, px,
@@ -822,6 +839,54 @@ mod tests {
 
                 assert_eq!(drawer_host.gesture_state, GestureState::Idle);
                 assert_eq!(drawer_host.drawer_state, DrawerState::Closing);
+            })
+            .unwrap();
+
+        cx.quit();
+    }
+
+    #[test]
+    fn close_during_open_snap_finishes_closed() {
+        let mut cx = TestAppContext::single();
+        let window = cx.update(|cx| {
+            cx.open_window(Default::default(), |_, cx| {
+                let content = cx.new(|_| Empty);
+                let drawer = cx.new(|_| Empty);
+                cx.new(|cx| DrawerHost::new(content.into(), drawer.into(), DrawerSide::Left, cx))
+            })
+            .unwrap()
+        });
+
+        window
+            .update(&mut cx, |drawer_host, window, cx| {
+                drawer_host.open_with_window(window, cx);
+                assert_eq!(drawer_host.drawer_state, DrawerState::Snapping);
+
+                drawer_host.close_with_window(window, cx);
+                assert!(drawer_host.close_after_snap);
+            })
+            .unwrap();
+
+        cx.run_until_parked();
+        cx.executor().advance_clock(Duration::from_millis(
+            theme::DRAWER_OPEN_ANIMATION_DURATION_MS,
+        ));
+        cx.run_until_parked();
+        window
+            .update(&mut cx, |drawer_host, _window, _cx| {
+                assert_eq!(drawer_host.drawer_state, DrawerState::Closing);
+                assert!(!drawer_host.close_after_snap);
+            })
+            .unwrap();
+
+        cx.executor().advance_clock(Duration::from_millis(
+            theme::DRAWER_CLOSE_ANIMATION_DURATION_MS,
+        ));
+        cx.run_until_parked();
+        window
+            .update(&mut cx, |drawer_host, _window, _cx| {
+                assert_eq!(drawer_host.drawer_state, DrawerState::Closed);
+                assert_eq!(drawer_host.drawer_offset, 0.0);
             })
             .unwrap();
 

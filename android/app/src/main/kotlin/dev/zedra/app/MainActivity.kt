@@ -25,6 +25,7 @@ import android.view.Gravity
 import android.view.KeyEvent
 import android.view.View
 import android.widget.FrameLayout
+import androidx.activity.OnBackPressedCallback
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.appcompat.app.AppCompatActivity
 import androidx.appcompat.app.AppCompatDelegate
@@ -110,6 +111,22 @@ class MainActivity : AppCompatActivity() {
         )
         installSplashScreen()
         super.onCreate(savedInstanceState)
+
+        onBackPressedDispatcher.addCallback(
+            this,
+            object : OnBackPressedCallback(true) {
+                override fun handleOnBackPressed() {
+                    if (dispatchAppBack()) return
+
+                    isEnabled = false
+                    try {
+                        onBackPressedDispatcher.onBackPressed()
+                    } finally {
+                        isEnabled = true
+                    }
+                }
+            },
+        )
 
         ZedraFirebase.initialize(this)
         createDeltaNotificationChannel(this)
@@ -280,16 +297,17 @@ class MainActivity : AppCompatActivity() {
     // GpuiSurfaceView.onKeyDown() can consume it. This covers hardware back buttons and MIUI's
     // gesture-nav implementation which sends KEYCODE_BACK as a key event (source=SOURCE_KEYBOARD).
     override fun dispatchKeyEvent(event: KeyEvent): Boolean {
-        if (event.keyCode == KeyEvent.KEYCODE_BACK && event.action == KeyEvent.ACTION_UP) {
-            if (NativePresentations.handleBackPressed()) {
-                return true
+        if (event.keyCode == KeyEvent.KEYCODE_BACK) {
+            if (event.action == KeyEvent.ACTION_UP && !event.isCanceled) {
+                onBackPressedDispatcher.onBackPressed()
             }
-            if (nativeSystemBackPressed()) {
-                return true
-            }
+            return true
         }
         return super.dispatchKeyEvent(event)
     }
+
+    private fun dispatchAppBack(): Boolean =
+        NativePresentations.handleBackPressed() || nativeSystemBackPressed()
 
     private fun startKeyBarPolling() {
         if (keyBarPollActive) return

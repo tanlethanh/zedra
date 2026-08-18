@@ -30,7 +30,7 @@ enum AppScreen {
 
 fn app_view_descriptor(screen: AppScreen) -> Option<ViewDescriptor> {
     match screen {
-        // Open project is a Home subscreen; report it as Home.
+        // Open Project shares the Home telemetry descriptor in every launch context.
         AppScreen::Home | AppScreen::OpenProject => Some(view_telemetry::HOME),
         // Web tunnel is a Settings subscreen; report it as Settings.
         AppScreen::Settings | AppScreen::WebTunnel => Some(view_telemetry::SETTINGS),
@@ -44,8 +44,16 @@ fn should_update_drawer_content(current: AppScreen, next: AppScreen) -> bool {
     current != next || next == AppScreen::Workspace
 }
 
+fn open_project_return_screen_for(source: AppScreen) -> AppScreen {
+    match source {
+        AppScreen::Workspace => AppScreen::Workspace,
+        _ => AppScreen::Home,
+    }
+}
+
 pub struct ZedraApp {
     screen: AppScreen,
+    open_project_return_screen: AppScreen,
     home_view: Entity<HomeView>,
     settings_view: Entity<SettingsView>,
     web_tunnel_manager: Entity<WebTunnelManager>,
@@ -155,7 +163,13 @@ impl ZedraApp {
                 };
                 let app = app.clone();
                 cx.defer(move |cx| {
-                    let _ = app.update(cx, |app, cx| app.set_screen(screen, cx));
+                    let _ = app.update(cx, |app, cx| {
+                        if screen == AppScreen::OpenProject {
+                            app.present_open_project(cx);
+                        } else {
+                            app.set_screen(screen, cx);
+                        }
+                    });
                 });
                 serde_json::json!({"ok": true})
             });
@@ -244,6 +258,7 @@ impl ZedraApp {
 
         let app = Self {
             screen: AppScreen::Home,
+            open_project_return_screen: AppScreen::Home,
             home_view,
             settings_view,
             web_tunnel_manager,
@@ -332,6 +347,7 @@ impl ZedraApp {
     }
 
     fn present_open_project(&mut self, cx: &mut Context<Self>) {
+        self.open_project_return_screen = open_project_return_screen_for(self.screen);
         self.open_project_view.update(cx, |view, cx| view.reset(cx));
         self.set_screen(AppScreen::OpenProject, cx);
     }
@@ -344,7 +360,7 @@ impl ZedraApp {
     ) {
         match event {
             OpenProjectEvent::Close => {
-                self.set_screen(AppScreen::Home, cx);
+                self.set_screen(self.open_project_return_screen, cx);
             }
             OpenProjectEvent::NavigateToWorkspace => {
                 self.set_screen(AppScreen::Workspace, cx);
@@ -609,12 +625,18 @@ impl ZedraApp {
                 {
                     return true;
                 }
-                self.set_screen(AppScreen::Home, cx);
+                self.set_screen(self.open_project_return_screen, cx);
                 true
             }
-            AppScreen::Workspace => self.workspaces.update(cx, |workspaces, cx| {
-                workspaces.handle_system_back(window, cx)
-            }),
+            AppScreen::Workspace => {
+                if self.workspaces.update(cx, |workspaces, cx| {
+                    workspaces.handle_system_back(window, cx)
+                }) {
+                    return true;
+                }
+                self.set_screen(screen_after_unhandled_workspace_back(), cx);
+                true
+            }
         }
     }
 
@@ -695,6 +717,10 @@ fn screen_after_workspace_disconnect() -> AppScreen {
     AppScreen::Home
 }
 
+fn screen_after_unhandled_workspace_back() -> AppScreen {
+    AppScreen::Home
+}
+
 /// Shared platform bootstrap (both `ios/app.rs` and `android/entry.rs`): register
 /// the bridge, build the `App`, and init the gpui_tokio runtime that owns all
 /// session/network work.
@@ -729,7 +755,8 @@ pub fn open_zedra_window(app: &mut App, window_options: WindowOptions) -> Result
 #[cfg(test)]
 mod tests {
     use super::{
-        AppScreen, app_view_descriptor, screen_after_workspace_disconnect,
+        AppScreen, app_view_descriptor, open_project_return_screen_for,
+        screen_after_unhandled_workspace_back, screen_after_workspace_disconnect,
         should_process_pending_ticket, should_update_drawer_content,
     };
     use crate::telemetry::view_telemetry;
@@ -758,6 +785,23 @@ mod tests {
     #[test]
     fn manual_workspace_disconnect_returns_home() {
         assert_eq!(screen_after_workspace_disconnect(), AppScreen::Home);
+    }
+
+    #[test]
+    fn unhandled_workspace_system_back_returns_home() {
+        assert_eq!(screen_after_unhandled_workspace_back(), AppScreen::Home);
+    }
+
+    #[test]
+    fn open_project_returns_to_its_launching_context() {
+        assert_eq!(
+            open_project_return_screen_for(AppScreen::Workspace),
+            AppScreen::Workspace
+        );
+        assert_eq!(
+            open_project_return_screen_for(AppScreen::Home),
+            AppScreen::Home
+        );
     }
 
     #[test]

@@ -115,6 +115,9 @@ impl HomeView {
                 ws.connect_saved(state_index, window, cx);
             });
         }
+        self.workspaces.update(cx, |ws, cx| {
+            ws.prepare_active_for_home_entry(window, cx);
+        });
         cx.emit(HomeEvent::NavigateToWorkspace);
     }
 

@@ -465,23 +465,32 @@ app still builds, but push registration reports an error instead of a token.
 22. Expected: a second daemon is running for the chosen workdir
 23. Return Home, tap "Open Project", and open the same folder again
 24. Expected: no second daemon is spawned; the app switches to the existing workspace
-25. Repeat step 3 from the workspaces drawer's "Open Project" button (above its "Scan QR Code")
-26. Expected: the drawer closes and the same screen opens
+25. Repeat step 3 from the Quick Actions drawer's "Open Project" button (above its "Scan QR Code")
+26. Expected: the drawer closes and the same screen opens; back at the host root and the close button both return to the workspace that launched it, not Home
 
 ## 1a-Android. System Back Navigation
 
-1. On Android, connect to a workspace and open Quick Actions from the workspace header
-2. Press the system Back button or gesture
-3. Expected: Quick Actions closes and the app remains on the workspace
-4. Open Settings from Home, then press system Back
-5. Expected: Settings returns to Home
-6. Connect to a workspace, open the workspace drawer, then press system Back
-7. Expected: the workspace drawer closes
-8. Open the connecting overlay from the Session tab, then press system Back
-9. Expected: the connecting overlay closes and the workspace content remains visible
-10. Open a terminal, then a file, then a git diff, then reopen the same terminal
-11. Press system Back repeatedly
-12. Expected: Back visits the previous distinct main content views in order, without duplicate entries for the reopened terminal
+1. Open Settings from Home, then press system Back
+2. Expected: Settings returns to Home
+3. Press system Back again
+4. Expected: Android returns to the launcher
+5. Reopen the app, tap a saved workspace, and wait for its terminal
+6. Press system Back
+7. Expected: the app returns to Home; pressing Back again returns to the launcher
+8. Reopen the terminal and open Quick Actions from the workspace header
+9. Immediately press system Back before the opening animation finishes
+10. Expected: Quick Actions closes and the terminal remains visible
+11. Open the workspace drawer, then immediately press system Back before the opening animation finishes
+12. Expected: the workspace drawer closes and the terminal remains visible
+13. Open the connecting overlay from the Session tab, then press system Back
+14. Expected: the connecting overlay closes and the workspace content remains visible
+15. From the terminal's Quick Actions, open Open Project and press system Back at the host root
+16. Expected: Open Project returns to the terminal, not Home
+17. Repeat Settings, terminal, both drawer checks, and Open Project with the Back button and both edge gestures
+18. Expected: all three inputs follow the same hierarchy
+19. Inside a workspace, open a terminal, a file, a git diff, then the same terminal
+20. Use the workspace's in-app navigation to go back repeatedly
+21. Expected: navigation visits the previous distinct main views without duplicate terminal entries
 
 ## 1a. Host Info Subscription
 
