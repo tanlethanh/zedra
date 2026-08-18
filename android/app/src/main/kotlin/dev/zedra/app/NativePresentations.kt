@@ -619,13 +619,14 @@ object NativePresentations {
     }
 
     @JvmStatic
-    fun openWebView(callbackId: Int, configJson: String?) = onUi {
+    fun openWebView(callbackId: Int, configJson: String?) =
+        onUiOrDismiss({ MainActivity.nativeWebViewDismiss(callbackId) }) {
         // Rust already registered handlers, so a rejected config must report
         // failure or the opening progress never settles.
         val config = parseWebViewConfig(configJson)
         if (config == null || config.url.isBlank()) {
             MainActivity.nativeWebViewFailed(callbackId)
-            return@onUi
+            return@onUiOrDismiss
         }
         closeWebViewNow()
 
