@@ -827,7 +827,7 @@ printf '\033]8;;https://zedra.dev\033\\zedra.dev\033]8;;\033\\\n'
 
 ## 9a. Terminal Localhost Web Tunnel
 
-The default exact-port mode binds `127.0.0.1:<port>` on the device and opens the literal localhost URL. If that port is unavailable, you can opt the workspace into alias mode, which rewrites the host and routes traffic through the in-app SOCKS5 proxy. On the iOS simulator, exact-port can collide with a server using the same Mac loopback port. In alias mode, use `localhost` rather than `127.0.0.1`, which WKWebView can route outside the proxy.
+The default exact-port mode binds `127.0.0.1:<port>` on the device and opens the literal localhost URL. If that port is unavailable, the workspace falls over to alias mode automatically, which rewrites the host and routes traffic through the in-app SOCKS5 proxy. On the iOS simulator, exact-port can collide with a server using the same Mac loopback port. In alias mode, use `localhost` rather than `127.0.0.1`, which WKWebView can route outside the proxy.
 
 1. On the host, run `./examples/webview-tunnel/run.sh` (multi-port test app: page on `5173`, JSON API + SSE on `5174`, WebSocket on `5175`; see `examples/webview-tunnel/README.md`).
 2. Connect to the same workspace from iOS or Android and open a terminal.
@@ -892,11 +892,11 @@ Exercise the exact-port / alias adapters without contriving two hosts. Fire deep
 Devtool actions — `zedra://devtool/tunnel?…`: `url=<url>` open via the real orchestration · `mode=alias` force the alias for this host · `collide=<port>` mark a port as owned by a foreign host (forces the fallback) · `reset=1` clear per-host prefs + port owners. Prereq: `./examples/webview-tunnel/run.sh` on the host, workspace connected.
 
 1. **Exact-port (device)** — `zedra://devtool/tunnel?url=http://localhost:5173`. Expected: webview at the literal `localhost:5173`; page loads; BACKEND/SSE/WS cards work (companion ports sniffed). Log: `exact-port bound 127.0.0.1:5173`.
-2. **Collision → alias prompt** — `zedra://devtool/tunnel?url=http://localhost:5173&reset=1&collide=5173`. Expected: a native notice "localhost:5173 can't be bound…" with **Use alias** + doc link; tapping it reopens the webview at `<label>.zedra.test:5173` and loads. Log: `exact-port unavailable … offering alias`, then `alias SOCKS proxy on …`.
+2. **Collision → automatic alias** — `zedra://devtool/tunnel?url=http://localhost:5173&reset=1&collide=5173`. Expected: **no prompt** — the webview opens straight at `<label>.zedra.test:5173` and loads. Log: `exact-port unavailable for :5173 -> alias`, then `alias SOCKS proxy on …`.
 3. **Alias direct** — `zedra://devtool/tunnel?url=http://localhost:5173&reset=1&mode=alias`. Expected: straight to the alias — address bar shows `<label>.zedra.test:5173` (honest, not spoofed), page loads.
-4. **Per-host memory** — after 2 or 3, fire `zedra://devtool/tunnel?url=http://localhost:5173` again (no reset). Expected: goes straight to the alias, no prompt.
+4. **Per-host memory** — after 2 or 3, fire `zedra://devtool/tunnel?url=http://localhost:5173` again (no reset). Expected: goes straight to the alias without retrying the bind (no `exact-port unavailable` line this time).
 5. **Non-loopback** — `zedra://devtool/tunnel?url=https://example.com`. Expected: opens in the system browser (not tunneled).
-6. **Simulator note** — the simulator shares the Mac's loopback, so exact-port `:5173` collides with `run.sh` and lands on the prompt (case 2) on its own; use a real device for the exact-port happy path (case 1).
+6. **Simulator note** — the simulator shares the Mac's loopback, so exact-port `:5173` collides with `run.sh` and takes the alias (case 2) on its own; use a real device for the exact-port happy path (case 1).
 
 ### Listener manager (devtool)
 
@@ -904,7 +904,7 @@ The **Web tunnel** manager (Settings → Developer → Web tunnel) lists and sto
 
 1. After case 1 binds a listener, open **Settings → Developer → Web tunnel**.
 2. Expected: one `:<port>  <workspace name>` row per bound listener (e.g. `:5173`, plus any companion ports like `:5174`/`:5175` from the sniffer), each with a red **Stop** button. With none bound, an empty "No web tunnel listeners are bound" state.
-3. Tap **Stop** on a row. Expected: a native confirmation alert ("Stop web tunnel listener" / "Free port :&lt;port&gt; for &lt;host&gt;?…") with a destructive **Stop** and **Cancel**. **Cancel** leaves the row untouched. **Stop** removes the row and frees the device port (a fresh open of that port re-binds it, or offers the alias if another app now holds it). Log: `exact-port stopped 127.0.0.1:<port>`.
+3. Tap **Stop** on a row. Expected: a native confirmation alert ("Stop web tunnel listener" / "Free port :&lt;port&gt; for &lt;host&gt;?…") with a destructive **Stop** and **Cancel**. **Cancel** leaves the row untouched. **Stop** removes the row and frees the device port (a fresh open of that port re-binds it, or falls over to the alias if another app now holds it). Log: `exact-port stopped 127.0.0.1:<port>`.
 4. Tap refresh (↻). Expected: the list re-reads live listeners.
 
 ### CLI open + tracked tunnels
@@ -2210,3 +2210,38 @@ Requires `opencode` on the host's PATH and a web-tunnel-capable build.
    shows none).
 10. **Non-web agent**: a non-web agent (e.g. claude) has no globe and creating it
    still opens a terminal, unchanged.
+
+## Web tunnel opening progress
+
+The overlay that reports what an in-app-webview open is doing while it takes
+seconds. Cold-start the first card of the run so `opencode serve` actually has
+to spawn (`pkill -f "opencode serve"` on the host first).
+
+1. **Steps**: tap the globe in **Create Agent**. Expected: the drawer closes and
+   an overlay replaces the main view immediately while the workspace header and
+   actions remain usable. The OpenCode icon and status sit slightly above the
+   main-view centre; a ✕ in the top-right corner and a single spinning line name
+   the step in flight: `Starting opencode server` → `Opening tunnel` → `Loading
+   page`. Past ~2s the line gains an elapsed counter (`… 4s`).
+2. **Handoff**: the overlay remains until the native webview covers the app,
+   then disappears with no bare-workspace gap. Dismiss the webview to confirm
+   the workspace is back.
+3. **Reopen**: dismiss the webview and tap the card. Expected: the overlay opens
+   straight at `Opening tunnel` (the server is already up); usually too fast to
+   read, which is correct.
+4. **Close mid-open**: cold-start again and tap the ✕ while `Starting opencode
+   server` spins. Expected: the overlay closes and returns to the workspace, and
+   **no webview appears afterwards** even though the host finishes the start.
+   Re-tapping the globe opens normally.
+5. **Failure**: make the start fail (stop the host mid-open, or rename the
+   `opencode` binary on PATH). Expected: the spinner turns into a red ✕ and the
+   step line goes red with an explanation below — the overlay stays put until the
+   corner ✕ is tapped instead of vanishing into an unexplained workspace.
+6. **Port conflict**: on the **simulator** (its loopback is the Mac's, so the
+   card's port is already taken) tap the globe. Expected: **no notification and
+   no dead end** — the overlay runs `Opening tunnel` straight through the alias
+   and the opencode page loads at `<label>.zedra.test:<port>`. Tap the card again:
+   it opens via the alias without retrying the bind.
+7. **Workspace switch**: start a slow web client in workspace A, switch to
+   workspace B, then cancel an open in B. Expected: A's open remains owned by A;
+   B cannot dismiss it or cause A's webview to appear over B.

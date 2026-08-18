@@ -9,8 +9,8 @@
 //! Flow:
 //! - [`open`] serializes the config to JSON, stores its callbacks under a fresh
 //!   id, and asks the platform bridge to present the webview.
-//! - The native layer calls back into [`dispatch_message`],
-//!   [`dispatch_navigate`], and [`dispatch_dismiss`] with that id.
+//! - The native layer calls back into [`dispatch_presented`], [`dispatch_failed`],
+//!   [`dispatch_message`], [`dispatch_navigate`], and [`dispatch_dismiss`].
 //! - [`eval_js`] and [`close`] drive the currently presented webview.
 //!
 //! Callbacks run on the native UI thread, off the GPUI thread. Keep them cheap
@@ -20,7 +20,7 @@
 
 use std::collections::HashMap;
 use std::sync::atomic::{AtomicU32, Ordering};
-use std::sync::{Arc, Mutex, OnceLock};
+use std::sync::{Arc, Mutex, MutexGuard, OnceLock};
 
 use serde::Serialize;
 
@@ -42,11 +42,15 @@ pub const MESSAGE_HANDLER_NAME: &str = "zedra";
 type MessageHandler = Arc<dyn Fn(String) + Send + Sync>;
 type NavigationHandler = Arc<dyn Fn(&str) -> NavigationPolicy + Send + Sync>;
 type DismissHandler = Box<dyn FnOnce() + Send>;
+type PresentedHandler = Box<dyn FnOnce() + Send>;
+type FailedHandler = Box<dyn FnOnce() + Send>;
 
 struct Handlers {
     on_message: Option<MessageHandler>,
     on_navigate: Option<NavigationHandler>,
     on_dismiss: Option<DismissHandler>,
+    on_presented: Option<PresentedHandler>,
+    on_failed: Option<FailedHandler>,
 }
 
 static NEXT_ID: AtomicU32 = AtomicU32::new(1);
@@ -57,6 +61,13 @@ static HANDLERS: OnceLock<Mutex<HashMap<u32, Handlers>>> = OnceLock::new();
 
 fn handlers() -> &'static Mutex<HashMap<u32, Handlers>> {
     HANDLERS.get_or_init(|| Mutex::new(HashMap::new()))
+}
+
+fn handlers_lock() -> MutexGuard<'static, HashMap<u32, Handlers>> {
+    handlers().lock().unwrap_or_else(|poisoned| {
+        tracing::warn!("webview: recovering poisoned handler registry lock");
+        poisoned.into_inner()
+    })
 }
 
 /// Description of a native webview to present. Build with [`WebviewConfig::new`]
@@ -71,6 +82,8 @@ pub struct WebviewConfig {
     on_message: Option<MessageHandler>,
     on_navigate: Option<NavigationHandler>,
     on_dismiss: Option<DismissHandler>,
+    on_presented: Option<PresentedHandler>,
+    on_failed: Option<FailedHandler>,
 }
 
 impl WebviewConfig {
@@ -84,6 +97,8 @@ impl WebviewConfig {
             on_message: None,
             on_navigate: None,
             on_dismiss: None,
+            on_presented: None,
+            on_failed: None,
         }
     }
 
@@ -143,6 +158,18 @@ impl WebviewConfig {
         self.on_dismiss = Some(Box::new(handler));
         self
     }
+
+    /// Called once when the native webview is actually covering the app.
+    pub fn on_presented(mut self, handler: impl FnOnce() + Send + 'static) -> Self {
+        self.on_presented = Some(Box::new(handler));
+        self
+    }
+
+    /// Called once when native presentation cannot begin.
+    pub fn on_failed(mut self, handler: impl FnOnce() + Send + 'static) -> Self {
+        self.on_failed = Some(Box::new(handler));
+        self
+    }
 }
 
 /// Data half of [`WebviewConfig`] sent to the native layer. Callbacks stay in
@@ -178,12 +205,14 @@ pub fn open(config: WebviewConfig) -> u32 {
     };
     let config_json = serde_json::to_string(&wire).unwrap_or_default();
 
-    handlers().lock().unwrap().insert(
+    handlers_lock().insert(
         id,
         Handlers {
             on_message: config.on_message,
             on_navigate: config.on_navigate,
             on_dismiss: config.on_dismiss,
+            on_presented: config.on_presented,
+            on_failed: config.on_failed,
         },
     );
 
@@ -191,6 +220,33 @@ pub fn open(config: WebviewConfig) -> u32 {
     crate::native_presentation::set_native_webview_presented(true);
     platform_bridge::bridge().open_webview(id, &config.url, &config_json);
     id
+}
+
+/// Report that native UI has presented the webview. This is deliberately
+/// separate from [`open`], which only schedules a main-thread presentation.
+pub fn dispatch_presented(id: u32) {
+    let handler = handlers_lock()
+        .get_mut(&id)
+        .and_then(|handlers| handlers.on_presented.take());
+    if let Some(handler) = handler {
+        handler();
+    }
+}
+
+/// Report that native UI could not present the webview. Drops its handlers and
+/// fires `on_failed`, so callers can settle loading state without treating it as
+/// a user dismissal.
+pub fn dispatch_failed(id: u32) {
+    if CURRENT_ID
+        .compare_exchange(id, 0, Ordering::Relaxed, Ordering::Relaxed)
+        .is_ok()
+    {
+        crate::native_presentation::set_native_webview_presented(false);
+    }
+    let entry = handlers_lock().remove(&id);
+    if let Some(handler) = entry.and_then(|handlers| handlers.on_failed) {
+        handler();
+    }
 }
 
 /// Dismiss the currently presented webview, if any.
@@ -206,9 +262,7 @@ pub fn eval_js(js: &str) {
 /// Deliver a message the page posted through the JS bridge. Called by the
 /// native layer.
 pub fn dispatch_message(id: u32, message: String) {
-    let handler = handlers()
-        .lock()
-        .unwrap()
+    let handler = handlers_lock()
         .get(&id)
         .and_then(|handlers| handlers.on_message.clone());
     if let Some(handler) = handler {
@@ -220,9 +274,7 @@ pub fn dispatch_message(id: u32, message: String) {
 /// layer synchronously; returns `true` to allow. Allows by default when no
 /// handler is registered.
 pub fn dispatch_navigate(id: u32, url: &str) -> bool {
-    let handler = handlers()
-        .lock()
-        .unwrap()
+    let handler = handlers_lock()
         .get(&id)
         .and_then(|handlers| handlers.on_navigate.clone());
     match handler {
@@ -240,7 +292,7 @@ pub fn dispatch_dismiss(id: u32) {
     {
         crate::native_presentation::set_native_webview_presented(false);
     }
-    let entry = handlers().lock().unwrap().remove(&id);
+    let entry = handlers_lock().remove(&id);
     if let Some(handler) = entry.and_then(|h| h.on_dismiss) {
         handler();
     }
@@ -264,11 +316,63 @@ mod tests {
                     NavigationPolicy::Allow
                 })),
                 on_dismiss: None,
+                on_presented: None,
+                on_failed: None,
             },
         );
 
         dispatch_message(id, String::new());
         assert!(dispatch_navigate(id, "https://example.com"));
         handlers().lock().unwrap().remove(&id);
+    }
+
+    #[test]
+    fn presented_callback_runs_once() {
+        let id = NEXT_ID.fetch_add(1, Ordering::Relaxed);
+        let calls = Arc::new(std::sync::atomic::AtomicU32::new(0));
+        let callback_calls = calls.clone();
+        handlers().lock().unwrap().insert(
+            id,
+            Handlers {
+                on_message: None,
+                on_navigate: None,
+                on_dismiss: None,
+                on_presented: Some(Box::new(move || {
+                    callback_calls.fetch_add(1, Ordering::Relaxed);
+                })),
+                on_failed: None,
+            },
+        );
+
+        dispatch_presented(id);
+        dispatch_presented(id);
+
+        assert_eq!(calls.load(Ordering::Relaxed), 1);
+        handlers().lock().unwrap().remove(&id);
+    }
+
+    #[test]
+    fn failed_callback_removes_the_handler() {
+        let id = NEXT_ID.fetch_add(1, Ordering::Relaxed);
+        let calls = Arc::new(std::sync::atomic::AtomicU32::new(0));
+        let callback_calls = calls.clone();
+        handlers().lock().unwrap().insert(
+            id,
+            Handlers {
+                on_message: None,
+                on_navigate: None,
+                on_dismiss: None,
+                on_presented: None,
+                on_failed: Some(Box::new(move || {
+                    callback_calls.fetch_add(1, Ordering::Relaxed);
+                })),
+            },
+        );
+
+        dispatch_failed(id);
+        dispatch_failed(id);
+
+        assert_eq!(calls.load(Ordering::Relaxed), 1);
+        assert!(handlers_lock().get(&id).is_none());
     }
 }

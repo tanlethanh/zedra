@@ -365,6 +365,16 @@ bool zedra_ios_webview_navigate(uint32_t callback_id, const char *url);
 void zedra_ios_webview_dismiss(uint32_t callback_id);
 
 /**
+ * Called once UIKit has presented the webview over the workspace.
+ */
+void zedra_ios_webview_presented(uint32_t callback_id);
+
+/**
+ * Called when UIKit could not begin presenting the webview.
+ */
+void zedra_ios_webview_failed(uint32_t callback_id);
+
+/**
  * Called by Swift with the processed image bytes ready to upload.
  * `extension` is "jpg" or "png" (lowercase, no dot).
  */

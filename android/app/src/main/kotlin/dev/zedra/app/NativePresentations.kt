@@ -619,9 +619,15 @@ object NativePresentations {
     }
 
     @JvmStatic
-    fun openWebView(callbackId: Int, configJson: String?) = onUi {
-        val config = parseWebViewConfig(configJson) ?: return@onUi
-        if (config.url.isBlank()) return@onUi
+    fun openWebView(callbackId: Int, configJson: String?) =
+        onUiOrDismiss({ MainActivity.nativeWebViewDismiss(callbackId) }) {
+        // Rust already registered handlers, so a rejected config must report
+        // failure or the opening progress never settles.
+        val config = parseWebViewConfig(configJson)
+        if (config == null || config.url.isBlank()) {
+            MainActivity.nativeWebViewFailed(callbackId)
+            return@onUiOrDismiss
+        }
         closeWebViewNow()
 
         val activity = requireActivity()
@@ -685,6 +691,7 @@ object NativePresentations {
             ViewGroup.LayoutParams.MATCH_PARENT,
         ))
         container.bringToFront()
+        MainActivity.nativeWebViewPresented(callbackId)
         applyWebViewProxy(activity, config.socksProxy) { loadWebView(webView, url) }
     }
 
