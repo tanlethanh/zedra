@@ -463,9 +463,9 @@ app still builds, but push registration reports an error instead of a token.
 20. Expected: the screen shows "Starting the host daemon…", then the app navigates to the newly opened workspace and connects
 21. On the host, run `zedra list`
 22. Expected: a second daemon is running for the chosen workdir
-23. Return Home, tap "Open Project", and open the same folder again
-24. Expected: no second daemon is spawned; the app switches to the existing workspace
-25. Repeat step 3 from the Quick Actions drawer's "Open Project" button (above its "Scan QR Code")
+23. Open a file or managed-agent page, return Home, tap "Open Project", and open the same folder again
+24. Expected: no second daemon is spawned; the app switches to the existing workspace, and system Back returns directly to Home instead of older workspace history
+25. Re-enter the workspace and repeat step 3 from the Quick Actions drawer's "Open Project" button (above its "Scan QR Code")
 26. Expected: the drawer closes and the same screen opens; back at the host root and the close button both return to the workspace that launched it, not Home
 
 ## 1a-Android. System Back Navigation
@@ -626,8 +626,8 @@ or beyond.
    ~10s mid-auth, then rescan a fresh QR before the entry times out)
 6. Expected: in-flight attempt is aborted and the fresh ticket drives a new
    Register/Authenticate round on the same entry
-7. While the entry is `Connected`, rescan a still-valid QR for the same endpoint
-8. Expected: just switches to the entry; no restart, no flicker of the connecting view
+7. While the entry is `Connected`, open a file or managed-agent page, return Home, and rescan a still-valid QR for the same endpoint
+8. Expected: just switches to the entry; no restart, no flicker of the connecting view, and system Back returns directly to Home instead of older workspace history
 9. Rescan twice in rapid succession (two fresh QRs back-to-back)
 10. Expected: only the last attempt is alive; no overlapping connect loops
     (`grep` logs for `start connect to` — two entries are fine, but the first

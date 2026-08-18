@@ -67,6 +67,23 @@ fn quick_action_workspace_entry_policy(
     }
 }
 
+fn connected_workspace_entry_policy(
+    screen: AppScreen,
+    open_project_return_screen: AppScreen,
+    preserve_history: bool,
+) -> WorkspaceEntryPolicy {
+    if preserve_history {
+        return WorkspaceEntryPolicy::PreserveHistory;
+    }
+    if screen == AppScreen::Home
+        || (screen == AppScreen::OpenProject && open_project_return_screen == AppScreen::Home)
+    {
+        WorkspaceEntryPolicy::ResetActiveRoot
+    } else {
+        WorkspaceEntryPolicy::PreserveHistory
+    }
+}
+
 fn open_project_return_screen_for(source: AppScreen) -> AppScreen {
     match source {
         AppScreen::Workspace => AppScreen::Workspace,
@@ -247,7 +264,7 @@ impl ZedraApp {
         subscriptions.push(sub);
 
         // --- Workspaces events ---
-        let sub = cx.subscribe(&workspaces, Self::on_workspaces_event);
+        let sub = cx.subscribe_in(&workspaces, window, Self::on_workspaces_event);
         subscriptions.push(sub);
 
         // --- Window activation: check deeplinks + sync state ---
@@ -585,12 +602,23 @@ impl ZedraApp {
 
     fn on_workspaces_event(
         &mut self,
-        _: Entity<Workspaces>,
+        _: &Entity<Workspaces>,
         event: &WorkspacesEvent,
+        window: &mut Window,
         cx: &mut Context<Self>,
     ) {
         match event {
-            WorkspacesEvent::Connected { .. } => {
+            WorkspacesEvent::Connected {
+                preserve_history, ..
+            } => {
+                if connected_workspace_entry_policy(
+                    self.screen,
+                    self.open_project_return_screen,
+                    *preserve_history,
+                ) == WorkspaceEntryPolicy::ResetActiveRoot
+                {
+                    self.prepare_active_workspace_for_home_entry(window, cx);
+                }
                 let screen_changed = self.screen != AppScreen::Workspace;
                 self.set_screen(AppScreen::Workspace, cx);
                 if !screen_changed {
@@ -809,10 +837,10 @@ pub fn open_zedra_window(app: &mut App, window_options: WindowOptions) -> Result
 #[cfg(test)]
 mod tests {
     use super::{
-        AppScreen, WorkspaceEntryPolicy, app_view_descriptor, open_project_return_screen_for,
-        quick_action_workspace_entry_policy, screen_after_unhandled_workspace_back,
-        screen_after_workspace_disconnect, should_process_pending_ticket,
-        should_update_drawer_content,
+        AppScreen, WorkspaceEntryPolicy, app_view_descriptor, connected_workspace_entry_policy,
+        open_project_return_screen_for, quick_action_workspace_entry_policy,
+        screen_after_unhandled_workspace_back, screen_after_workspace_disconnect,
+        should_process_pending_ticket, should_update_drawer_content,
     };
     use crate::quick_action_panel::QuickActionEvent;
     use crate::telemetry::view_telemetry;
@@ -884,6 +912,30 @@ mod tests {
                 AppScreen::Workspace,
                 &QuickActionEvent::NavigateToWorkspace,
             ),
+            WorkspaceEntryPolicy::PreserveHistory
+        );
+    }
+
+    #[test]
+    fn asynchronous_home_entries_reset_unless_they_are_terminal_deeplinks() {
+        assert_eq!(
+            connected_workspace_entry_policy(AppScreen::Home, AppScreen::Home, false),
+            WorkspaceEntryPolicy::ResetActiveRoot
+        );
+        assert_eq!(
+            connected_workspace_entry_policy(AppScreen::OpenProject, AppScreen::Home, false),
+            WorkspaceEntryPolicy::ResetActiveRoot
+        );
+        assert_eq!(
+            connected_workspace_entry_policy(AppScreen::OpenProject, AppScreen::Workspace, false),
+            WorkspaceEntryPolicy::PreserveHistory
+        );
+        assert_eq!(
+            connected_workspace_entry_policy(AppScreen::Workspace, AppScreen::Home, false),
+            WorkspaceEntryPolicy::PreserveHistory
+        );
+        assert_eq!(
+            connected_workspace_entry_policy(AppScreen::Home, AppScreen::Home, true),
             WorkspaceEntryPolicy::PreserveHistory
         );
     }
