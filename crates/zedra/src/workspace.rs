@@ -1768,6 +1768,16 @@ impl Workspace {
         self.activate_existing_terminal(id, cx);
     }
 
+    pub(crate) fn open_terminal_from_home_entry(&mut self, id: String, cx: &mut Context<Self>) {
+        self.drawer_host.update(cx, |host, cx| host.close(cx));
+        if self.terminal_by_id(&id, cx).is_some() {
+            self.reset_navigation_root(WorkspaceMainView::Terminal { id }, cx);
+            self.pending_home_entry_root = false;
+        } else {
+            warn!("requested uninitialized terminal {}", id);
+        }
+    }
+
     fn activate_existing_terminal(&mut self, id: String, cx: &mut Context<Self>) {
         self.drawer_host.update(cx, |host, cx| host.close(cx));
         if self.terminal_by_id(&id, cx).is_some() {

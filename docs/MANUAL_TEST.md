@@ -1300,14 +1300,15 @@ indicator never fades there regardless of the setting.
 ## 12. Quick Action Terminal Navigation
 
 1. Connect to a session with at least two open terminals
-2. Return to the home screen
-3. Open the quick action panel and tap the add icon in the connected workspace header
-4. Expected: the quick action panel closes, the app switches to the workspace screen, and a new terminal becomes the main view
-5. Return to the home screen
-6. Open the quick action panel and tap a terminal card under the connected workspace
-7. Expected: the quick action panel closes, the app switches to the workspace screen, and the tapped terminal becomes the main view
-8. Repeat from the workspace screen with a different terminal card
-9. Expected: the selected terminal becomes active immediately without getting stuck on the previous screen or terminal
+2. Open a file or managed-agent page to seed workspace history, then return to Home
+3. From Home, open the quick action panel and tap a terminal card under the connected workspace
+4. Expected: the panel closes, the app switches to the tapped terminal, and system Back returns directly to Home instead of the previous file or agent page
+5. From Home, open the quick action panel, tap the add icon in the connected workspace header, and choose **Manage Agents**
+6. Expected: the app opens Manage Agents; system Back returns to the terminal root, then a second Back returns to Home without visiting older workspace history
+7. Repeat the add flow and choose **New Terminal**
+8. Expected: the quick action panel closes, the app switches to the workspace screen, and a new terminal becomes the main view
+9. Repeat from the workspace screen with a different terminal card
+10. Expected: the selected terminal becomes active immediately and normal workspace MRU navigation remains available
 
 ## 12a. Drawer Terminal List Stability During Network Reports
 

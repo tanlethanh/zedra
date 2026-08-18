@@ -44,6 +44,29 @@ fn should_update_drawer_content(current: AppScreen, next: AppScreen) -> bool {
     current != next || next == AppScreen::Workspace
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum WorkspaceEntryPolicy {
+    PreserveHistory,
+    ResetActiveRoot,
+    ResetTargetRoot,
+}
+
+fn quick_action_workspace_entry_policy(
+    screen: AppScreen,
+    event: &QuickActionEvent,
+) -> WorkspaceEntryPolicy {
+    if screen != AppScreen::Home {
+        return WorkspaceEntryPolicy::PreserveHistory;
+    }
+    match event {
+        QuickActionEvent::NavigateToWorkspace | QuickActionEvent::OpenWebClient { .. } => {
+            WorkspaceEntryPolicy::ResetActiveRoot
+        }
+        QuickActionEvent::OpenTerminal { .. } => WorkspaceEntryPolicy::ResetTargetRoot,
+        _ => WorkspaceEntryPolicy::PreserveHistory,
+    }
+}
+
 fn open_project_return_screen_for(source: AppScreen) -> AppScreen {
     match source {
         AppScreen::Workspace => AppScreen::Workspace,
@@ -201,7 +224,7 @@ impl ZedraApp {
 
         // --- Home view ---
         let home_view = cx.new(|cx| HomeView::new(workspaces.clone(), cx));
-        let sub = cx.subscribe(&home_view, Self::on_home_event);
+        let sub = cx.subscribe_in(&home_view, window, Self::on_home_event);
         subscriptions.push(sub);
 
         let settings_view =
@@ -220,7 +243,7 @@ impl ZedraApp {
 
         // --- Quick action panel ---
         let quick_action = cx.new(|cx| QuickActionPanel::new(workspaces.clone(), cx));
-        let sub = cx.subscribe(&quick_action, Self::on_quick_action_event);
+        let sub = cx.subscribe_in(&quick_action, window, Self::on_quick_action_event);
         subscriptions.push(sub);
 
         // --- Workspaces events ---
@@ -332,9 +355,16 @@ impl ZedraApp {
         }
     }
 
-    fn on_home_event(&mut self, _: Entity<HomeView>, event: &HomeEvent, cx: &mut Context<Self>) {
+    fn on_home_event(
+        &mut self,
+        _: &Entity<HomeView>,
+        event: &HomeEvent,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
         match event {
             HomeEvent::NavigateToWorkspace => {
+                self.prepare_active_workspace_for_home_entry(window, cx);
                 self.set_screen(AppScreen::Workspace, cx);
             }
             HomeEvent::NavigateToSettings => {
@@ -402,10 +432,12 @@ impl ZedraApp {
 
     fn on_quick_action_event(
         &mut self,
-        _: Entity<QuickActionPanel>,
+        _: &Entity<QuickActionPanel>,
         event: &QuickActionEvent,
+        window: &mut Window,
         cx: &mut Context<Self>,
     ) {
+        let entry_policy = quick_action_workspace_entry_policy(self.screen, event);
         match event {
             QuickActionEvent::Close => {
                 self.quick_action_drawer.update(cx, |h, cx| h.close(cx));
@@ -414,6 +446,9 @@ impl ZedraApp {
                 self.set_screen(AppScreen::Home, cx);
             }
             QuickActionEvent::NavigateToWorkspace => {
+                if entry_policy == WorkspaceEntryPolicy::ResetActiveRoot {
+                    self.prepare_active_workspace_for_home_entry(window, cx);
+                }
                 self.set_screen(AppScreen::Workspace, cx);
             }
             QuickActionEvent::NavigateToOpenProject => {
@@ -421,12 +456,20 @@ impl ZedraApp {
             }
             QuickActionEvent::OpenTerminal { tid, ws_index } => {
                 self.set_screen(AppScreen::Workspace, cx);
-                self.open_terminal_from_quick_action(*ws_index, tid, cx);
+                self.open_terminal_from_quick_action(
+                    *ws_index,
+                    tid,
+                    entry_policy == WorkspaceEntryPolicy::ResetTargetRoot,
+                    cx,
+                );
             }
             QuickActionEvent::CloseTerminal { tid, ws_index } => {
                 self.close_terminal_from_quick_action(*ws_index, tid, cx);
             }
             QuickActionEvent::OpenWebClient { id, ws_index } => {
+                if entry_policy == WorkspaceEntryPolicy::ResetActiveRoot {
+                    self.prepare_active_workspace_for_home_entry(window, cx);
+                }
                 self.set_screen(AppScreen::Workspace, cx);
                 self.web_client_from_quick_action(*ws_index, id, false, cx);
             }
@@ -434,6 +477,12 @@ impl ZedraApp {
                 self.web_client_from_quick_action(*ws_index, id, true, cx);
             }
         }
+    }
+
+    fn prepare_active_workspace_for_home_entry(&self, window: &mut Window, cx: &mut Context<Self>) {
+        self.workspaces.update(cx, |workspaces, cx| {
+            workspaces.prepare_active_for_home_entry(window, cx);
+        });
     }
 
     fn web_client_from_quick_action(
@@ -485,6 +534,7 @@ impl ZedraApp {
         &self,
         ws_index: usize,
         terminal_id: &str,
+        reset_navigation_root: bool,
         cx: &mut Context<Self>,
     ) {
         if let Some(workspace) = self
@@ -494,7 +544,11 @@ impl ZedraApp {
             .cloned()
         {
             workspace.update(cx, |ws, cx| {
-                ws.open_terminal_from_quick_action(terminal_id.to_string(), cx);
+                if reset_navigation_root {
+                    ws.open_terminal_from_home_entry(terminal_id.to_string(), cx);
+                } else {
+                    ws.open_terminal_from_quick_action(terminal_id.to_string(), cx);
+                }
             });
         } else {
             tracing::warn!(
@@ -755,10 +809,12 @@ pub fn open_zedra_window(app: &mut App, window_options: WindowOptions) -> Result
 #[cfg(test)]
 mod tests {
     use super::{
-        AppScreen, app_view_descriptor, open_project_return_screen_for,
-        screen_after_unhandled_workspace_back, screen_after_workspace_disconnect,
-        should_process_pending_ticket, should_update_drawer_content,
+        AppScreen, WorkspaceEntryPolicy, app_view_descriptor, open_project_return_screen_for,
+        quick_action_workspace_entry_policy, screen_after_unhandled_workspace_back,
+        screen_after_workspace_disconnect, should_process_pending_ticket,
+        should_update_drawer_content,
     };
+    use crate::quick_action_panel::QuickActionEvent;
     use crate::telemetry::view_telemetry;
 
     #[test]
@@ -801,6 +857,34 @@ mod tests {
         assert_eq!(
             open_project_return_screen_for(AppScreen::Home),
             AppScreen::Home
+        );
+    }
+
+    #[test]
+    fn home_quick_actions_reset_the_workspace_entry_root() {
+        assert_eq!(
+            quick_action_workspace_entry_policy(
+                AppScreen::Home,
+                &QuickActionEvent::NavigateToWorkspace,
+            ),
+            WorkspaceEntryPolicy::ResetActiveRoot
+        );
+        assert_eq!(
+            quick_action_workspace_entry_policy(
+                AppScreen::Home,
+                &QuickActionEvent::OpenTerminal {
+                    tid: "terminal-2".into(),
+                    ws_index: 1,
+                },
+            ),
+            WorkspaceEntryPolicy::ResetTargetRoot
+        );
+        assert_eq!(
+            quick_action_workspace_entry_policy(
+                AppScreen::Workspace,
+                &QuickActionEvent::NavigateToWorkspace,
+            ),
+            WorkspaceEntryPolicy::PreserveHistory
         );
     }
 
