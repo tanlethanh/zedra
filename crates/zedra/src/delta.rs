@@ -355,14 +355,25 @@ impl DeltaState {
     /// Merge a fetched node list into the live state. Keyed on the stack alone —
     /// this is derived cache data, so an unrelated token refresh must not
     /// discard it the way `apply_if_current` would.
+    ///
+    /// `expected` is the state the fetch started from: when the live state still
+    /// matches it, credentials `get_bearer` refreshed mid-fetch are adopted, so
+    /// persisting the node cache cannot write stale tokens back over them.
     pub fn apply_nodes(
         &mut self,
-        stack_id: Uuid,
+        expected: &DeltaState,
+        fetched: DeltaState,
         nodes: Vec<StoredNode>,
         cx: &mut Context<Self>,
     ) -> bool {
-        if self.stack_id != Some(stack_id) {
+        if self.stack_id.is_none() || self.stack_id != fetched.stack_id {
             return false;
+        }
+        if self.matches_client_binding_state(expected) {
+            self.access_token = fetched.access_token;
+            self.refresh_token = fetched.refresh_token;
+            self.expires_at = fetched.expires_at;
+            self.user_id = fetched.user_id;
         }
         self.nodes = nodes;
         self.nodes_fetched_at = Some(chrono::Utc::now().to_rfc3339());
@@ -371,6 +382,23 @@ impl DeltaState {
         }
         cx.emit(DeltaStateEvent::DeltaStateChanged);
         cx.notify();
+        true
+    }
+
+    /// Adopt the signed-out state after the account was erased server-side.
+    /// Unlike `apply_if_current` this only guards on the stack: the account is
+    /// already gone, so an unrelated push-token write must not leave the app
+    /// signed in to it.
+    pub fn apply_deleted(
+        &mut self,
+        deleted_stack: Option<Uuid>,
+        next: DeltaState,
+        cx: &mut Context<Self>,
+    ) -> bool {
+        if deleted_stack.is_none() || self.stack_id != deleted_stack {
+            return false;
+        }
+        self.apply(next, cx);
         true
     }
 
@@ -622,9 +650,9 @@ async fn sign_in_with_oauth(
 /// How long the cached node list stays fresh before the Account screen refetches.
 const NODES_CACHE_TTL: Duration = Duration::from_secs(300);
 
-/// Fetch the stack's registered nodes. Returns the stack the list belongs to so
-/// the caller can reject it if the account changed mid-flight.
-pub async fn fetch_nodes(mut state: DeltaState) -> Result<(Uuid, Vec<StoredNode>)> {
+/// Fetch the stack's registered nodes. Returns the state as it stands after the
+/// call so a token refresh triggered by `get_bearer` is not lost.
+pub async fn fetch_nodes(mut state: DeltaState) -> Result<(DeltaState, Vec<StoredNode>)> {
     let stack_id = state.stack_id.context("Delta stack is missing")?;
     let path = format!("/v1/stacks/{stack_id}/nodes");
     let list = get_bearer::<NodeListResponse>(&mut state, &path)
@@ -641,7 +669,7 @@ pub async fn fetch_nodes(mut state: DeltaState) -> Result<(Uuid, Vec<StoredNode>
             joined_at: node.joined_at,
         })
         .collect();
-    Ok((stack_id, nodes))
+    Ok((state, nodes))
 }
 
 /// Native permission prompt, then registration of the returned token on Delta,

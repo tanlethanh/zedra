@@ -96,8 +96,36 @@ Verifies a `zedra/rpc/3` host still serves a pre-bump app.
 2. Expected: `Profile` and `Notifications` appear above `Appearance`
 3. Start sign-in or notification registration
 4. Expected: progress or error status replaces the relevant row description, with no separate `Status` row and no combined status/description text
-5. Sign in to Delta, then tap the logout icon in the profile row
-6. Expected: a native confirmation alert appears; cancelling keeps the profile signed in, and confirming returns the profile row to `Sign In`
+5. Sign in to Delta, then tap the profile row
+6. Expected: the Account screen opens, showing the signed-in email, notification state, and the stack and device identifiers
+
+### Account screen
+
+1. Sign in to Delta, then open Settings and tap the profile row
+2. Expected: the header title matches the Settings title size, and no content sits under the status bar
+3. Tap the `Stack`, device, and any `Devices` row
+4. Expected: each copies its full identifier, the icon turns into a green check for about a second, and pasting elsewhere yields the whole id with no trailing characters
+5. Compare the `Devices` list against `zedra stack list` on the paired host
+6. Expected: the same nodes appear, this device is marked, and each row shows its kind and joined date
+7. Leave the screen and reopen it within five minutes
+8. Expected: the list paints immediately with no refetch; relaunching the app also shows it before any network call
+9. With notifications not yet enabled, tap the `Notifications` row
+10. Expected: the native permission prompt appears, and the row settles on `Enabled` with the provider once registration finishes
+11. Tap `Log Out`
+12. Expected: the app signs out immediately and returns to Settings, with the profile row back to `Sign In`
+
+### Account deletion
+
+1. Sign in with a throwaway account, then open Account and tap `Delete Account`
+2. Expected: a native destructive alert appears; cancelling leaves the account signed in and unchanged
+3. Confirm the deletion
+4. Expected: the app returns to Settings signed out, and `delta.json` no longer holds tokens, stack, node, or cached nodes
+5. Run `zedra stack list` against the deleted stack
+6. Expected: the stack is gone and the CLI reports the account no longer exists
+7. Confirm saved workspaces still appear on Home
+8. Expected: pairings survive — only the Delta host binding fields were cleared
+9. Sign in again with the same provider
+10. Expected: a fresh stack and node are created, and the email still populates the profile row
 
 ### Mobile node metadata reconciliation
 

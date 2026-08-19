@@ -67,14 +67,15 @@ impl AccountView {
         let delta_state = self.delta_state.clone();
         let snapshot = delta_state.read(cx).snapshot();
         cx.spawn(async move |this, cx| {
-            let result = Tokio::spawn_result(cx, delta::fetch_nodes(snapshot)).await;
+            let result = Tokio::spawn_result(cx, delta::fetch_nodes(snapshot.clone())).await;
             let _ = this.update(cx, |this, cx| {
                 this.nodes_busy = false;
                 match result {
-                    Ok((stack_id, nodes)) => {
+                    Ok((fetched, nodes)) => {
                         let count = nodes.len();
-                        let applied = delta_state
-                            .update(cx, |state, cx| state.apply_nodes(stack_id, nodes, cx));
+                        let applied = delta_state.update(cx, |state, cx| {
+                            state.apply_nodes(&snapshot, fetched, nodes, cx)
+                        });
                         if applied {
                             tracing::info!(count, "account: cached stack nodes");
                         } else {
@@ -173,15 +174,22 @@ impl AccountView {
         self.deleting = true;
         self.message = None;
         let snapshot = self.delta_state.read(cx).snapshot();
+        let deleted_stack = self.delta_state.read(cx).status().stack_id;
         cx.spawn(async move |this, cx| {
-            let result = Tokio::spawn_result(cx, delta::delete_account(snapshot.clone())).await;
+            let result = Tokio::spawn_result(cx, delta::delete_account(snapshot)).await;
             let _ = this.update(cx, |this, cx| {
                 this.deleting = false;
                 match result {
                     Ok(next) => {
-                        this.delta_state.update(cx, |state, cx| {
-                            state.apply_if_current(&snapshot, next, cx);
-                        });
+                        let applied = this
+                            .delta_state
+                            .update(cx, |state, cx| state.apply_deleted(deleted_stack, next, cx));
+                        if !applied {
+                            tracing::warn!(
+                                "account: deleted account state was not adopted; signing out"
+                            );
+                            this.log_out(cx);
+                        }
                         cx.emit(AccountEvent::Close);
                     }
                     Err(error) => {
