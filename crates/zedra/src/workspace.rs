@@ -20,7 +20,7 @@ use crate::agent_detail::AgentDetail;
 use crate::agent_manage::AgentManage;
 use crate::agent_picker::AgentPicker;
 use crate::agent_sessions::AgentSessions;
-use crate::delta::{ClientDeltaInfo, DeltaState};
+use crate::delta::{ClientDeltaInfo, DeltaPatch, DeltaState};
 use crate::editor::git_sidebar::GitFileSection;
 use crate::file_search::{FileSearchEvent, FileSearchPanel};
 use crate::pending::{SharedPendingSlot, shared_pending_slot, spawn_periodic_task};
@@ -1442,7 +1442,7 @@ impl Workspace {
                 Ok((Some(result), next)) => {
                     let applied = delta_state.update(cx, |state, cx| {
                         // Skip stale host registration results if Delta auth state changed mid-flight.
-                        state.apply_if_current(&snapshot, next, cx)
+                        state.merge(DeltaPatch::between(&snapshot, &next), cx)
                     });
                     let _ = workspace.update(cx, |ws, cx| {
                         ws.delta_host_reconciling = false;

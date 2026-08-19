@@ -3,6 +3,7 @@ use std::time::Duration;
 use gpui::*;
 use zedra_telemetry::*;
 
+use crate::account_view::{AccountEvent, AccountView};
 use crate::app_action::SystemBack;
 use crate::deeplink::{self, DeeplinkAction};
 use crate::fonts;
@@ -25,6 +26,7 @@ enum AppScreen {
     OpenProject,
     Settings,
     WebTunnel,
+    Account,
     Workspace,
 }
 
@@ -33,7 +35,9 @@ fn app_view_descriptor(screen: AppScreen) -> Option<ViewDescriptor> {
         // Open project is a Home subscreen; report it as Home.
         AppScreen::Home | AppScreen::OpenProject => Some(view_telemetry::HOME),
         // Web tunnel is a Settings subscreen; report it as Settings.
-        AppScreen::Settings | AppScreen::WebTunnel => Some(view_telemetry::SETTINGS),
+        AppScreen::Settings | AppScreen::WebTunnel | AppScreen::Account => {
+            Some(view_telemetry::SETTINGS)
+        }
         AppScreen::Workspace => None,
     }
 }
@@ -49,6 +53,7 @@ pub struct ZedraApp {
     home_view: Entity<HomeView>,
     settings_view: Entity<SettingsView>,
     web_tunnel_manager: Entity<WebTunnelManager>,
+    account_view: Entity<AccountView>,
     open_project_view: Entity<OpenProjectView>,
     workspaces: Entity<Workspaces>,
     quick_action_drawer: Entity<DrawerHost>,
@@ -196,6 +201,9 @@ impl ZedraApp {
         subscriptions.push(sub);
 
         let web_tunnel_manager = cx.new(|cx| WebTunnelManager::new(workspaces.clone(), cx));
+        let account_view = cx.new(|cx| AccountView::new(delta_state.clone(), cx));
+        let sub = cx.subscribe(&account_view, Self::on_account_event);
+        subscriptions.push(sub);
 
         let open_project_view = cx.new(|cx| OpenProjectView::new(workspaces.clone(), cx));
         let sub = cx.subscribe(&open_project_view, Self::on_open_project_event);
@@ -247,6 +255,7 @@ impl ZedraApp {
             home_view,
             settings_view,
             web_tunnel_manager,
+            account_view,
             open_project_view,
             workspaces,
             quick_action_drawer,
@@ -363,6 +372,13 @@ impl ZedraApp {
             SettingsEvent::NavigateHome => {
                 self.set_screen(AppScreen::Home, cx);
             }
+            SettingsEvent::OpenAccount => {
+                // The view is built once at startup, so the node list refreshes
+                // on open rather than on construction.
+                self.account_view
+                    .update(cx, |view, cx| view.refresh_nodes_if_stale(cx));
+                self.set_screen(AppScreen::Account, cx);
+            }
             SettingsEvent::OpenWebTunnel => {
                 self.set_screen(AppScreen::WebTunnel, cx);
             }
@@ -373,6 +389,15 @@ impl ZedraApp {
                 });
             }
         }
+    }
+
+    fn on_account_event(
+        &mut self,
+        _: Entity<AccountView>,
+        _: &AccountEvent,
+        cx: &mut Context<Self>,
+    ) {
+        self.set_screen(AppScreen::Settings, cx);
     }
 
     fn on_theme_changed(
@@ -602,6 +627,10 @@ impl ZedraApp {
                 self.set_screen(AppScreen::Settings, cx);
                 true
             }
+            AppScreen::Account => {
+                self.set_screen(AppScreen::Settings, cx);
+                true
+            }
             AppScreen::OpenProject => {
                 if self
                     .open_project_view
@@ -640,6 +669,7 @@ impl ZedraApp {
             AppScreen::Home => self.home_view.clone().into(),
             AppScreen::Settings => self.settings_view.clone().into(),
             AppScreen::WebTunnel => self.web_tunnel_manager.clone().into(),
+            AppScreen::Account => self.account_view.clone().into(),
             AppScreen::OpenProject => self.open_project_view.clone().into(),
             AppScreen::Workspace => self
                 .workspaces

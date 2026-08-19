@@ -19,6 +19,7 @@ const PRIVACY_POLICY_URL: &str = "https://zedra.dev/privacy";
 #[derive(Clone, Debug)]
 pub enum SettingsEvent {
     NavigateHome,
+    OpenAccount,
     OpenWebTunnel,
     DropletToggled(bool),
 }
@@ -36,7 +37,7 @@ pub fn reconcile_delta_on_launch<T: 'static>(delta_state: Entity<DeltaState>, cx
             Ok((outcome, next)) => {
                 let applied = delta_state.update(cx, |state, cx| {
                     // Skip launch-time reconciliation if Delta state changed while it was in flight.
-                    state.apply_if_current(&snapshot, next, cx)
+                    state.merge(delta::DeltaPatch::between(&snapshot, &next), cx)
                 });
                 if applied {
                     tracing::info!(?outcome, "Delta mobile node reconciliation completed");
@@ -231,6 +232,7 @@ impl SettingsView {
         cx.notify();
     }
 
+    /// Shared with the Account screen: see `delta::acquire_and_register_push_token`.
     fn request_push_token(&mut self, cx: &mut Context<Self>) {
         if self.delta_busy {
             return;
@@ -239,60 +241,31 @@ impl SettingsView {
         self.delta_message_target = DeltaMessageTarget::Notifications;
         self.delta_message = Some("Requesting notification permission".to_string());
         platform_bridge::trigger_haptic(HapticFeedback::ImpactLight);
-        let (tx, rx) = oneshot::channel();
-        platform_bridge::request_delta_push_token(move |result| {
-            let _ = tx.send(result);
-        });
         let delta_state = self.delta_state.clone();
         cx.spawn(async move |this, cx| {
-            let token = match rx.await {
-                Ok(Ok(token)) => token,
-                Ok(Err(message)) => {
-                    tracing::error!(error = %message, "Push token acquisition failed before Delta registration");
-                    return Self::report_error(&this, cx, message);
-                }
-                Err(_) => return,
-            };
-            let _ = this.update(cx, |this, cx| {
-                this.delta_message = Some("Registering push token".to_string());
-                cx.notify();
-            });
-            let snapshot = delta_state.read_with(cx, |state, _| state.snapshot());
-            let result = Tokio::spawn_result(
-                cx,
-                delta::register_push_token(
-                    snapshot.clone(),
-                    token.provider,
-                    token.token,
-                    token.environment,
-                ),
-            )
+            let result = delta::acquire_and_register_push_token(delta_state, cx, |cx| {
+                let _ = this.update(cx, |this, cx| {
+                    this.delta_message = Some("Registering push token".to_string());
+                    cx.notify();
+                });
+            })
             .await;
-            Self::apply_delta_result(
-                &this,
-                &delta_state,
-                cx,
-                snapshot,
-                result,
-                DeltaMessageTarget::Notifications,
-            );
+            match result {
+                Ok(_) => {
+                    let _ = this.update(cx, |this, cx| {
+                        this.delta_busy = false;
+                        this.delta_message_target = DeltaMessageTarget::Notifications;
+                        this.delta_message = None;
+                        cx.notify();
+                    });
+                }
+                Err(error) => {
+                    tracing::error!(error = %error, "Delta push token registration failed");
+                    Self::report_error(&this, cx, format!("{error:#}"));
+                }
+            }
         })
         .detach();
-        cx.notify();
-    }
-
-    fn confirm_logout(&mut self, cx: &mut Context<Self>) {
-        self.delta_message_target = DeltaMessageTarget::Profile;
-        let snapshot = self.delta_state.read(cx).snapshot();
-        match delta::sign_out(snapshot) {
-            Ok(next) => {
-                self.delta_state
-                    .update(cx, |state, cx| state.apply(next, cx));
-                self.delta_busy = false;
-                self.delta_message = Some("Signed out of Delta".to_string());
-            }
-            Err(error) => self.finish_delta_error(format!("{error:#}")),
-        }
         cx.notify();
     }
 
@@ -310,7 +283,7 @@ impl SettingsView {
             Ok(next) => {
                 let applied = delta_state.update(cx, |state, cx| {
                     // Keep newer Delta state changes from being overwritten by a stale async result.
-                    state.apply_if_current(&snapshot, next, cx)
+                    state.merge(delta::DeltaPatch::between(&snapshot, &next), cx)
                 });
                 let _ = this.update(cx, |this, cx| {
                     this.delta_busy = false;
@@ -383,28 +356,6 @@ impl SettingsView {
             (false, Some(provider), _, true) => format!("{provider} token not registered"),
             _ => "Request permission and register this device".to_string(),
         }
-    }
-
-    fn show_logout_confirmation(&self, cx: &mut Context<Self>) {
-        platform_bridge::trigger_haptic(HapticFeedback::ImpactLight);
-        let (tx, rx) = oneshot::channel();
-        platform_bridge::show_alert(
-            "Log out of Delta?",
-            "",
-            vec![
-                AlertButton::destructive("Log Out"),
-                AlertButton::cancel("Cancel"),
-            ],
-            move |button_index| {
-                let _ = tx.send(button_index);
-            },
-        );
-        cx.spawn(async move |this, cx| {
-            if let Ok(0) = rx.await {
-                let _ = this.update(cx, |this, cx| this.confirm_logout(cx));
-            }
-        })
-        .detach();
     }
 
     fn set_theme_preference(&self, preference: ThemePreference, cx: &mut Context<Self>) {
@@ -695,9 +646,9 @@ impl Render for SettingsView {
                                     profile_initial,
                                     profile_title,
                                     profile_summary,
-                                    Some(cx.listener(|this, _event, _window, cx| {
-                                        this.show_logout_confirmation(cx);
-                                    })),
+                                    cx.listener(|_this, _event, _window, cx| {
+                                        cx.emit(SettingsEvent::OpenAccount);
+                                    }),
                                 ))
                             })
                             .when(!signed_in, |this| {
@@ -1252,7 +1203,7 @@ fn profile_info_row(
     initials: impl Into<SharedString>,
     title: impl Into<SharedString>,
     description: impl Into<SharedString>,
-    on_logout: Option<impl Fn(&PressEvent, &mut Window, &mut App) + 'static>,
+    on_press: impl Fn(&PressEvent, &mut Window, &mut App) + 'static,
 ) -> Stateful<Div> {
     let initials = initials.into();
     let title = title.into();
@@ -1307,33 +1258,15 @@ fn profile_info_row(
                 ),
         );
 
-    if let Some(on_logout) = on_logout {
-        row = row.child(logout_button(cx, on_logout));
-    }
-
-    row
-}
-
-fn logout_button(
-    cx: &App,
-    on_press: impl Fn(&PressEvent, &mut Window, &mut App) + 'static,
-) -> Stateful<Div> {
-    div()
-        .id("settings-delta-logout")
-        .flex_none()
-        .size(px(16.0))
-        .flex()
-        .items_center()
-        .justify_center()
-        .cursor_pointer()
-        .hit_slop(px(14.0))
-        .on_press(on_press)
-        .child(
+    row = row.cursor_pointer().on_press(on_press).child(
+        div().pl(px(8.0)).child(
             svg()
-                .path("icons/log-out.svg")
-                .size(px(12.0))
-                .text_color(rgb(theme::accent_red(cx))),
-        )
+                .path("icons/chevron-right.svg")
+                .size(px(theme::ICON_SM))
+                .text_color(rgb(theme::text_muted(cx))),
+        ),
+    );
+    row
 }
 
 fn short_id(id: uuid::Uuid) -> String {

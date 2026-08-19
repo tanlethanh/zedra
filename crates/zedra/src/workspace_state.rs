@@ -622,6 +622,18 @@ impl WorkspaceState {
         Ok(())
     }
 
+    /// Forget Delta's server-side host mappings without removing paired hosts.
+    pub fn clear_delta_bindings() -> Result<(), String> {
+        let _guard = workspace_store_lock()
+            .lock()
+            .map_err(|e| format!("Failed to lock workspace store: {e}"))?;
+        let mut store = WorkspaceStore::load()?;
+        if store.clear_delta_bindings() {
+            store.save()?;
+        }
+        Ok(())
+    }
+
     pub fn now_u64() -> u64 {
         std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
@@ -708,6 +720,19 @@ impl WorkspaceStore {
         let before = self.workspaces.len();
         self.workspaces.retain(|w| w.endpoint_addr != endpoint_addr);
         self.workspaces.len() != before
+    }
+
+    fn clear_delta_bindings(&mut self) -> bool {
+        let mut changed = false;
+        for workspace in &mut self.workspaces {
+            if workspace.delta_host_pubkey.take().is_some() {
+                changed = true;
+            }
+            if workspace.delta_host_node_id.take().is_some() {
+                changed = true;
+            }
+        }
+        changed
     }
 }
 
@@ -1156,6 +1181,30 @@ mod tests {
         let loaded = WorkspaceState::load().unwrap();
         assert_eq!(loaded[0].delta_host_pubkey, Some(delta_host_pubkey));
         assert_eq!(loaded[0].delta_host_node_id, Some(delta_host_node_id));
+    }
+
+    #[test]
+    fn clear_delta_bindings_preserves_paired_workspace() {
+        let _guard = set_test_data_directory("clear-delta-bindings");
+        WorkspaceState::upsert(WorkspaceState {
+            endpoint_addr: "endpoint-a".into(),
+            custom_name: Some("Paired Mac".into()),
+            delta_host_pubkey: Some([7u8; 32]),
+            delta_host_node_id: Some(
+                Uuid::parse_str("33333333-3333-3333-3333-333333333333").unwrap(),
+            ),
+            ..Default::default()
+        })
+        .unwrap();
+
+        WorkspaceState::clear_delta_bindings().unwrap();
+
+        let loaded = WorkspaceState::load().unwrap();
+        assert_eq!(loaded.len(), 1);
+        assert_eq!(loaded[0].endpoint_addr, "endpoint-a");
+        assert_eq!(loaded[0].custom_name.as_deref(), Some("Paired Mac"));
+        assert_eq!(loaded[0].delta_host_pubkey, None);
+        assert_eq!(loaded[0].delta_host_node_id, None);
     }
 
     #[test]

@@ -27,6 +27,7 @@ pub mod ui;
 pub mod vfx;
 
 // Sceens
+pub mod account_view;
 pub mod home_view;
 pub mod open_project;
 pub mod settings_view;
