@@ -874,6 +874,19 @@ pub fn apply_cached_account_usage(
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn registry_slugs_are_unique() {
+        let mut seen = std::collections::HashSet::new();
+        for actor in super::actors() {
+            assert!(!actor.slug().is_empty(), "actor with empty slug");
+            assert!(
+                seen.insert(actor.slug()),
+                "duplicate registry slug `{}`",
+                actor.slug()
+            );
+        }
+    }
+
     use super::*;
 
     #[test]

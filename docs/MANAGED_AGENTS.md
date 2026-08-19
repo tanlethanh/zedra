@@ -6,6 +6,13 @@ is optional and only covers local behavior (paste formatting, notifications,
 icon branding). Agents are stable slug strings over RPC — adding one never
 bumps ALPN or adds a protocol enum.
 
+`zedra agent list` prints the whole registry — slug, installed, managed vs
+detect-only, enabled state, capabilities, launch command — straight from the
+actor registry and the user config, with no daemon and no provider CLI spawn.
+Use it to find the slug for `agents.disabled` / `agents.order`, or with
+`--installed`, `--disabled`, `--json`. The daemon-backed workspace view (session
+counts, account, setup state) is `zedra agent status`.
+
 ## Host Actor
 
 Every agent is one `AgentActor` implementation in
