@@ -6,7 +6,7 @@ use zedra_rpc::proto::*;
 
 use super::utils::{
     command_on_path, cwd_matches, file_size_bytes, home_path, info_field, resume_summary,
-    session_title, shell_quote,
+    session_title,
 };
 use super::{AgentActor, ScanCtx, SessionCounts as ActorSessionCounts};
 
@@ -209,6 +209,7 @@ impl AgentActor for FxActor {
 
 #[cfg(test)]
 mod tests {
+    use super::super::utils::shell_quote;
     use super::*;
 
     fn write_index(dir: &Path, entries: &str) {

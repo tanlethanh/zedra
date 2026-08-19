@@ -2210,3 +2210,27 @@ Requires `opencode` on the host's PATH and a web-tunnel-capable build.
    shows none).
 10. **Non-web agent**: a non-web agent (e.g. claude) has no globe and creating it
    still opens a terminal, unchanged.
+
+## 26. fx and OpenCode v2 agents
+
+Host-side prerequisites: `fx` on PATH with at least one saved session in the
+connected workspace (`fx` then `/exit`), `opencode2` installed
+(`npm i -g @opencode-ai/cli@next`).
+
+1. Host: `cargo run -p zedra-host -- agent scan installed`. Expected: rows for
+   `fx` (`FX_PERMISSION_MODE=yolo fx`) and `opencode2` (`opencode2 --auto`).
+2. Host: `cargo run -p zedra-host -- agent scan sessions fx` from the workspace
+   used above. Expected: only that workspace's sessions, newest first, with
+   titles from `~/.fx/sessions/index.json`.
+3. App: open the agent picker. Expected: `fx` shows the fx mark and `OpenCode v2`
+   shows the opencode mark; both sit right after their neighbours in registry
+   order (`OpenCode v2` directly after `OpenCode`).
+4. Tap `fx`. Expected: a terminal starts fx inline — the scrollback above the
+   prompt stays scrollable (no alt screen) — and `/status` inside fx reports
+   permission mode `yolo`.
+5. Open the agent detail screen for fx. Expected: sessions list matches step 2,
+   and account fields show the auth source and Vercel team.
+6. Resume a session from that list. Expected: a new terminal reopens the prior
+   transcript.
+7. Tap `OpenCode v2`. Expected: a terminal runs `opencode2 --auto`; the agent
+   badge on the terminal card reads OpenCode v2, not OpenCode.
