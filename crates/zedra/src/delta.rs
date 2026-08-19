@@ -4,13 +4,15 @@ use std::time::Duration;
 
 use anyhow::{Context as _, Result, bail};
 use base64::{Engine as _, engine::general_purpose::STANDARD_NO_PAD};
-use gpui::{Context, EventEmitter};
+use futures::channel::oneshot;
+use gpui::{AsyncApp, Context, Entity, EventEmitter};
+use gpui_tokio::Tokio;
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use uuid::Uuid;
 use zedra_session::signer::ClientSigner;
 
-use crate::platform_bridge;
+use crate::{platform_bridge, workspace_state::WorkspaceState};
 
 const DEFAULT_BASE_URL: &str = "https://delta.zedra.dev";
 const STORE_DIR: &str = "zedra";
@@ -62,6 +64,20 @@ enum NodeKind {
     Ios,
     Android,
     Host,
+    Agent,
+    External,
+}
+
+impl NodeKind {
+    fn as_str(self) -> &'static str {
+        match self {
+            Self::Ios => "ios",
+            Self::Android => "android",
+            Self::Host => "host",
+            Self::Agent => "agent",
+            Self::External => "external",
+        }
+    }
 }
 
 #[derive(Deserialize)]
@@ -79,6 +95,46 @@ struct NodeSummary {
     display_name: Option<String>,
     #[serde(default)]
     metadata: Value,
+    #[serde(default)]
+    joined_at: Option<String>,
+}
+
+#[derive(Deserialize)]
+struct NodeListResponse {
+    nodes: Vec<NodeSummary>,
+}
+
+/// One registered node in the stack, cached in `delta.json` so the Account
+/// screen paints immediately on a cold start.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct StoredNode {
+    pub id: Uuid,
+    #[serde(default)]
+    pub alias: Option<String>,
+    pub kind: String,
+    #[serde(default)]
+    pub display_name: Option<String>,
+    #[serde(default)]
+    pub joined_at: Option<String>,
+}
+
+impl StoredNode {
+    /// Alias, then display name, then a short id — never empty.
+    pub fn name(&self) -> String {
+        self.alias
+            .as_deref()
+            .or(self.display_name.as_deref())
+            .map(str::trim)
+            .filter(|name| !name.is_empty())
+            .map(str::to_string)
+            .unwrap_or_else(|| self.id.to_string().chars().take(8).collect())
+    }
+
+    /// `2026-08-18` from the stored RFC 3339 timestamp.
+    pub fn joined_date(&self) -> Option<String> {
+        let joined = self.joined_at.as_deref()?;
+        joined.split('T').next().map(str::to_string)
+    }
 }
 
 #[derive(Deserialize)]
@@ -129,6 +185,9 @@ pub struct DeltaStatus {
     pub push_provider: Option<String>,
     pub push_environment: Option<String>,
     pub push_registered: bool,
+    pub nodes: Vec<StoredNode>,
+    /// `true` when the cached node list is missing or past its TTL.
+    pub nodes_stale: bool,
 }
 
 #[derive(Clone)]
@@ -232,6 +291,10 @@ pub struct DeltaState {
     push_token: Option<StoredPushToken>,
     #[serde(default)]
     host_nodes_by_pubkey: HashMap<String, DeltaHostNode>,
+    #[serde(default)]
+    nodes: Vec<StoredNode>,
+    #[serde(default)]
+    nodes_fetched_at: Option<String>,
 }
 
 #[derive(Clone, PartialEq, Serialize, Deserialize)]
@@ -257,6 +320,8 @@ impl Default for DeltaState {
             email: None,
             push_token: None,
             host_nodes_by_pubkey: HashMap::new(),
+            nodes: Vec::new(),
+            nodes_fetched_at: None,
         }
     }
 }
@@ -287,6 +352,28 @@ impl DeltaState {
     /// Apply a snapshot only if the entity still matches the state that
     /// produced it. This avoids stale async results overwriting newer user
     /// changes like sign-out or push settings edits.
+    /// Merge a fetched node list into the live state. Keyed on the stack alone —
+    /// this is derived cache data, so an unrelated token refresh must not
+    /// discard it the way `apply_if_current` would.
+    pub fn apply_nodes(
+        &mut self,
+        stack_id: Uuid,
+        nodes: Vec<StoredNode>,
+        cx: &mut Context<Self>,
+    ) -> bool {
+        if self.stack_id != Some(stack_id) {
+            return false;
+        }
+        self.nodes = nodes;
+        self.nodes_fetched_at = Some(chrono::Utc::now().to_rfc3339());
+        if let Err(error) = save_state(self) {
+            tracing::warn!(error = %error, "delta: persisting the node cache failed");
+        }
+        cx.emit(DeltaStateEvent::DeltaStateChanged);
+        cx.notify();
+        true
+    }
+
     pub fn apply_if_current(
         &mut self,
         expected: &DeltaState,
@@ -336,7 +423,23 @@ impl DeltaState {
                 .as_ref()
                 .map(|token| token.registered)
                 .unwrap_or(false),
+            nodes: self.nodes.clone(),
+            nodes_stale: self.nodes_are_stale(),
         }
+    }
+
+    fn nodes_are_stale(&self) -> bool {
+        let Some(fetched_at) = self
+            .nodes_fetched_at
+            .as_deref()
+            .and_then(|value| chrono::DateTime::parse_from_rfc3339(value).ok())
+        else {
+            return true;
+        };
+        let age = chrono::Utc::now().signed_duration_since(fetched_at.with_timezone(&chrono::Utc));
+        age.to_std()
+            .map(|age| age >= NODES_CACHE_TTL)
+            .unwrap_or(true)
     }
 
     /// Stack/node identity to hand to a paired host so it can address push
@@ -391,6 +494,14 @@ pub fn sign_out(current: DeltaState) -> Result<DeltaState> {
     };
     save_state(&state)?;
     Ok(state)
+}
+
+/// Permanently delete the signed-in Delta account and its server-side data.
+/// Paired-host transport identities stay on-device, but Delta host bindings do not.
+pub async fn delete_account(mut state: DeltaState) -> Result<DeltaState> {
+    delete_bearer(&mut state, "/v1/me").await?;
+    WorkspaceState::clear_delta_bindings().map_err(anyhow::Error::msg)?;
+    sign_out(state)
 }
 
 #[derive(Debug, PartialEq, Eq)]
@@ -506,6 +617,69 @@ async fn sign_in_with_oauth(
     }
 
     Ok(state)
+}
+
+/// How long the cached node list stays fresh before the Account screen refetches.
+const NODES_CACHE_TTL: Duration = Duration::from_secs(300);
+
+/// Fetch the stack's registered nodes. Returns the stack the list belongs to so
+/// the caller can reject it if the account changed mid-flight.
+pub async fn fetch_nodes(mut state: DeltaState) -> Result<(Uuid, Vec<StoredNode>)> {
+    let stack_id = state.stack_id.context("Delta stack is missing")?;
+    let path = format!("/v1/stacks/{stack_id}/nodes");
+    let list = get_bearer::<NodeListResponse>(&mut state, &path)
+        .await?
+        .context("Delta stack was not found")?;
+    let nodes = list
+        .nodes
+        .into_iter()
+        .map(|node| StoredNode {
+            id: node.id,
+            alias: node.alias,
+            kind: node.kind.as_str().to_string(),
+            display_name: node.display_name,
+            joined_at: node.joined_at,
+        })
+        .collect();
+    Ok((stack_id, nodes))
+}
+
+/// Native permission prompt, then registration of the returned token on Delta,
+/// applied onto `delta_state`. Shared by every screen that offers to enable
+/// notifications. `Ok(false)` means the request was abandoned before a token
+/// arrived, which is silent — the user dismissed it or the screen went away.
+pub async fn acquire_and_register_push_token(
+    delta_state: Entity<DeltaState>,
+    cx: &mut AsyncApp,
+    on_registering: impl FnOnce(&mut AsyncApp),
+) -> Result<bool> {
+    let (tx, rx) = oneshot::channel();
+    platform_bridge::request_delta_push_token(move |result| {
+        let _ = tx.send(result);
+    });
+    let token = match rx.await {
+        Ok(Ok(token)) => token,
+        Ok(Err(message)) => bail!(message),
+        Err(_) => return Ok(false),
+    };
+    on_registering(cx);
+    let snapshot = delta_state.read_with(cx, |state, _| state.snapshot());
+    let next = Tokio::spawn_result(
+        cx,
+        register_push_token(
+            snapshot.clone(),
+            token.provider,
+            token.token,
+            token.environment,
+        ),
+    )
+    .await?;
+    // Keep a newer state change from being overwritten by this stale result.
+    let applied = delta_state.update(cx, |state, cx| state.apply_if_current(&snapshot, next, cx));
+    if !applied {
+        tracing::info!("delta: push registration finished after state changed; skipped");
+    }
+    Ok(true)
 }
 
 pub async fn register_push_token(
@@ -705,6 +879,37 @@ where
         }
 
         return decode_response(response, path).await;
+    }
+}
+
+async fn delete_bearer(state: &mut DeltaState, path: &str) -> Result<()> {
+    let mut did_refresh = false;
+    loop {
+        let access_token = state
+            .access_token
+            .as_deref()
+            .context("Delta auth token is missing")?
+            .to_string();
+        let response = http()
+            .delete(delta_url(state, path))
+            .bearer_auth(access_token)
+            .send()
+            .await
+            .with_context(|| format!("send Delta request {path}"))?;
+        if response.status() == reqwest::StatusCode::UNAUTHORIZED
+            && !did_refresh
+            && state.refresh_token.is_some()
+        {
+            did_refresh = true;
+            refresh_access_token(state).await?;
+            continue;
+        }
+        if response.status().is_success() || response.status() == reqwest::StatusCode::NOT_FOUND {
+            return Ok(());
+        }
+        let status = response.status();
+        let text = response.text().await.unwrap_or_default();
+        bail!("Delta request failed: {path} returned HTTP {status}: {text}");
     }
 }
 
@@ -951,6 +1156,7 @@ mod tests {
                 "os_version": "26.0",
                 "server_owned": true,
             }),
+            joined_at: None,
         };
 
         assert!(mobile_node_matches(
@@ -972,6 +1178,7 @@ mod tests {
             kind: NodeKind::Android,
             display_name: Some("Phone".into()),
             metadata: json!({ "app_version": "1.0(1)" }),
+            joined_at: None,
         };
 
         assert!(!mobile_node_matches(
