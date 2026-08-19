@@ -147,5 +147,8 @@ mod tests {
         assert_eq!(detect("qwen --provider openai"), Some("qwen"));
         assert_eq!(detect("qwen --provider gemini"), Some("qwen"));
         assert_eq!(detect("pip install pytest"), None);
+        // v1 and v2 ship as separate binaries; neither may claim the other.
+        assert_eq!(detect("opencode2 --auto"), Some("opencode2"));
+        assert_eq!(detect("opencode --auto"), Some("opencode"));
     }
 }

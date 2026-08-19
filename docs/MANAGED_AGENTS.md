@@ -85,6 +85,7 @@ managed agents override `default_launch_command` (and put the flag in
 | gemini | `--yolo` | Downgraded to prompting in an untrusted folder; trust it once interactively or set `GEMINI_CLI_TRUST_WORKSPACE=true` |
 | amp | none | Bypass is a config setting (`amp.dangerouslyAllowAll`), not a flag |
 | openclaw, pi, maki | none | No such flag in their CLIs |
+| opencode2 | `--auto` | OpenCode 2.0 beta; separate `opencode2` binary installed next to v1 |
 | fx | `FX_PERMISSION_MODE=yolo` | Env var, not a flag; fx reads the permission mode from the environment |
 | omp | none | `tools.approvalMode: yolo` is the default; critical destructive patterns and pending provider safety checks still prompt |
 
