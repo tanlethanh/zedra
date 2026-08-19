@@ -85,6 +85,7 @@ managed agents override `default_launch_command` (and put the flag in
 | gemini | `--yolo` | Downgraded to prompting in an untrusted folder; trust it once interactively or set `GEMINI_CLI_TRUST_WORKSPACE=true` |
 | amp | none | Bypass is a config setting (`amp.dangerouslyAllowAll`), not a flag |
 | openclaw, pi, maki | none | No such flag in their CLIs |
+| fx | `FX_PERMISSION_MODE=yolo` | Env var, not a flag; fx reads the permission mode from the environment |
 | omp | none | `tools.approvalMode: yolo` is the default; critical destructive patterns and pending provider safety checks still prompt |
 
 ### Alt screen
@@ -103,6 +104,7 @@ in their launch command; the rest keep their default.
 | amp, copilot | none | Alt screen |
 | hermes | `--cli` (classic REPL) | Config-driven (`display.interface`) |
 | omp | none needed | Already inline (pty capture shows no `\e[?1049h`) |
+| fx | none needed | Already inline (pty capture shows no `\e[?1049h`) |
 
 Verify a CLI's behavior by running it under a pty and looking for the
 `\e[?1049h` (alt screen enter) sequence rather than trusting its help text.
