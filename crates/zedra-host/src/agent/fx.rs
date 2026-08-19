@@ -5,17 +5,19 @@ use serde::Deserialize;
 use zedra_rpc::proto::*;
 
 use super::utils::{
-    command_on_path, cwd_matches, file_size_bytes, home_path, info_field, resume_summary,
-    session_title,
+    command_on_path, command_output_with_timeout, cwd_matches, file_size_bytes, home_path,
+    info_field, resume_summary, session_title, spawn_blocking_opt,
 };
 use super::{AgentActor, ScanCtx, SessionCounts as ActorSessionCounts};
 
-/// fx keeps one index of every saved session, so a workspace scan is a single
-/// file read; per-session files are only touched for transcript size.
+/// `fx sessions --json` and the on-disk index share this shape, so one type
+/// parses both the CLI page and the fallback store read.
 #[derive(Debug, Deserialize)]
-struct SessionIndex {
+struct SessionPage {
     #[serde(default)]
     sessions: Vec<IndexEntry>,
+    #[serde(default)]
+    has_more: bool,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -35,6 +37,11 @@ fn timestamp(ms: Option<i64>) -> Option<DateTime<Utc>> {
     ms.and_then(DateTime::<Utc>::from_timestamp_millis)
 }
 
+/// fx pages sessions at 100; a wider request is an error, not a bigger page.
+const SESSION_PAGE_MAX: usize = 100;
+const CLI_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(10);
+const NETWORK_CLI_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(15);
+
 pub(super) struct FxActor;
 
 impl FxActor {
@@ -50,6 +57,71 @@ impl FxActor {
         command_on_path("fx") || Self::state_dir().is_dir()
     }
 
+    /// Run an `fx` subcommand and parse its `--json` output.
+    fn run_json(
+        args: &[&str],
+        cwd: Option<&Path>,
+        timeout: std::time::Duration,
+    ) -> Result<serde_json::Value, String> {
+        let output = command_output_with_timeout("fx", args, cwd, timeout)?;
+        if !output.status.success() {
+            let stderr = String::from_utf8_lossy(&output.stderr);
+            let stderr = stderr.trim();
+            return Err(if stderr.is_empty() {
+                format!("`fx {}` exited with {}", args.join(" "), output.status)
+            } else {
+                format!(
+                    "`fx {}` exited with {}: {stderr}",
+                    args.join(" "),
+                    output.status
+                )
+            });
+        }
+        serde_json::from_slice(&output.stdout)
+            .map_err(|err| format!("failed to parse `fx {}` output: {err}", args.join(" ")))
+    }
+
+    /// Sessions for `workdir`, newest first. `fx sessions` is the source of
+    /// truth — it is workspace-scoped by cwd and answers in single-digit ms —
+    /// with the on-disk index as the fallback when the CLI is missing or fails.
+    fn fetch_sessions(workdir: &Path, limit: usize) -> Result<(Vec<IndexEntry>, usize), String> {
+        let page_limit = limit.clamp(1, SESSION_PAGE_MAX);
+        let cli_error = match Self::cli_sessions(workdir, page_limit) {
+            Ok((entries, has_more)) => {
+                let count = entries.len();
+                if !has_more {
+                    return Ok((entries, count));
+                }
+                // The page is capped, so the exact total comes from the index;
+                // a missing index degrades to "at least this page".
+                let total = Self::scan_sessions(&Self::sessions_dir(), workdir, None)
+                    .map(|(_, total)| total)
+                    .unwrap_or(count);
+                return Ok((entries, total.max(count)));
+            }
+            Err(error) => error,
+        };
+        Self::scan_sessions(&Self::sessions_dir(), workdir, Some(limit))
+            .map_err(|fallback| format!("{cli_error}; session index fallback failed: {fallback}"))
+    }
+
+    fn cli_sessions(workdir: &Path, limit: usize) -> Result<(Vec<IndexEntry>, bool), String> {
+        let limit = limit.to_string();
+        let value = Self::run_json(
+            &["sessions", "--json", "--limit", &limit],
+            Some(workdir),
+            CLI_TIMEOUT,
+        )?;
+        let page: SessionPage = serde_json::from_value(value)
+            .map_err(|err| format!("failed to parse `fx sessions` output: {err}"))?;
+        let entries = page
+            .sessions
+            .into_iter()
+            .filter(|entry| !entry.id.trim().is_empty())
+            .collect();
+        Ok((entries, page.has_more))
+    }
+
     /// Index entries for `workdir`, newest first. `total` is every match; the
     /// returned vec is capped by `limit`.
     fn scan_sessions(
@@ -63,7 +135,7 @@ impl FxActor {
             Err(err) if err.kind() == std::io::ErrorKind::NotFound => return Ok((Vec::new(), 0)),
             Err(err) => return Err(format!("failed to read {}: {err}", path.display())),
         };
-        let index: SessionIndex = serde_json::from_str(&contents)
+        let index: SessionPage = serde_json::from_str(&contents)
             .map_err(|err| format!("failed to parse {}: {err}", path.display()))?;
 
         let mut matched: Vec<IndexEntry> = index
@@ -102,20 +174,135 @@ impl FxActor {
         }
     }
 
-    /// Global preferences; workspace permission rules live under the same file
-    /// keyed by workspace root.
-    fn settings() -> Option<serde_json::Value> {
-        let contents = std::fs::read_to_string(Self::state_dir().join("settings.json")).ok()?;
-        serde_json::from_str(&contents).ok()
+    /// `fx status --json`: resolved model, auth mode, Vercel team, permission
+    /// mode. One local call, no store parsing.
+    fn status(workdir: &Path) -> Option<serde_json::Value> {
+        match Self::run_json(&["status", "--json"], Some(workdir), CLI_TIMEOUT) {
+            Ok(value) => Some(value),
+            Err(error) => {
+                tracing::info!("fx: status probe failed: {error}");
+                None
+            }
+        }
     }
 
-    fn team_slug() -> Option<String> {
-        let contents = std::fs::read_to_string(Self::state_dir().join("auth.json")).ok()?;
-        let auth: serde_json::Value = serde_json::from_str(&contents).ok()?;
-        auth.get("team_slug")
+    /// Auth mode reported by `fx status`; falls back to the stored credential
+    /// source so a missing CLI still shows how the user signed in.
+    fn auth_label(status: Option<&serde_json::Value>) -> Option<String> {
+        if let Some(auth) = status
+            .and_then(|status| status.get("auth"))
             .and_then(serde_json::Value::as_str)
-            .filter(|slug| !slug.is_empty())
-            .map(str::to_string)
+            .filter(|auth| !auth.is_empty())
+        {
+            return Some(auth.to_string());
+        }
+        let contents = std::fs::read_to_string(Self::state_dir().join("settings.json")).ok()?;
+        let settings: serde_json::Value = serde_json::from_str(&contents).ok()?;
+        let source = settings.get("credential_source")?.as_str()?;
+        Some(
+            match source {
+                "fx_login" => "fx login",
+                "api_key" => "AI Gateway API key",
+                other => other,
+            }
+            .to_string(),
+        )
+    }
+
+    /// `fx credits --json`: AI Gateway balance and, when the account has one,
+    /// its plan. This is the only network call the actor makes.
+    fn credits_fields() -> Option<Vec<AgentInfoField>> {
+        let value = match Self::run_json(&["credits", "--json"], None, NETWORK_CLI_TIMEOUT) {
+            Ok(value) => value,
+            Err(error) => {
+                tracing::info!("fx: credits probe failed: {error}");
+                return None;
+            }
+        };
+        Self::credits_fields_from(&value)
+    }
+
+    fn credits_fields_from(value: &serde_json::Value) -> Option<Vec<AgentInfoField>> {
+        let mut fields = Vec::new();
+        if let Some(plan) = string_or_number(value.get("plan")) {
+            fields.push(info_field(
+                "Plan",
+                &super::utils::humanize_plan_token(&plan),
+            ));
+        }
+        if let Some(balance) = string_or_number(value.get("balance")) {
+            fields.push(info_field("Gateway credits", &balance));
+        }
+        if let Some(used) = string_or_number(value.get("used")) {
+            fields.push(info_field("Credits used", &used));
+        }
+        (!fields.is_empty()).then_some(fields)
+    }
+
+    /// `fx usage --json`: locally recorded token spend. fx has no rate-limit
+    /// windows, so the snapshot carries counters only.
+    fn usage_snapshot() -> Option<AgentUsageSnapshot> {
+        let value = match Self::run_json(&["usage", "--json", "--period", "30d"], None, CLI_TIMEOUT)
+        {
+            Ok(value) => value,
+            Err(error) => {
+                tracing::info!("fx: usage probe failed: {error}");
+                return None;
+            }
+        };
+        Self::usage_snapshot_from(&value)
+    }
+
+    fn usage_snapshot_from(value: &serde_json::Value) -> Option<AgentUsageSnapshot> {
+        let totals = value.get("totals")?;
+        let number = |key: &str| totals.get(key).and_then(serde_json::Value::as_f64);
+
+        let mut extra = Vec::new();
+        if let Some(tokens) = number("total_tokens") {
+            extra.push(info_field("Tokens (30d)", &format_count(tokens)));
+        }
+        if let Some(requests) = number("request_count") {
+            extra.push(info_field("Requests (30d)", &format_count(requests)));
+        }
+        if let Some(spend) = number("spend") {
+            extra.push(info_field("Spend (30d)", &format!("${spend:.2}")));
+        }
+        // fx records usage per machine and only from the moment it was
+        // installed; flag a window it cannot fully cover.
+        if value
+            .get("completeness")
+            .and_then(serde_json::Value::as_str)
+            == Some("incomplete")
+        {
+            extra.push(info_field("Window", "partial"));
+        }
+        (!extra.is_empty()).then(|| AgentUsageSnapshot {
+            rate_limit_five_hour_used_percent: None,
+            rate_limit_seven_day_used_percent: None,
+            rate_limit_five_hour_resets_at: None,
+            rate_limit_seven_day_resets_at: None,
+            extra,
+        })
+    }
+}
+
+/// fx emits numeric fields as either JSON numbers or strings (`"balance":"5"`).
+fn string_or_number(value: Option<&serde_json::Value>) -> Option<String> {
+    match value? {
+        serde_json::Value::String(text) if !text.trim().is_empty() => Some(text.trim().to_string()),
+        serde_json::Value::Number(number) => Some(number.to_string()),
+        _ => None,
+    }
+}
+
+fn format_count(value: f64) -> String {
+    let value = value.max(0.0);
+    if value >= 1_000_000.0 {
+        format!("{:.1}M", value / 1_000_000.0)
+    } else if value >= 1_000.0 {
+        format!("{:.1}K", value / 1_000.0)
+    } else {
+        format!("{value:.0}")
     }
 }
 
@@ -147,7 +334,7 @@ impl AgentActor for FxActor {
     }
 
     fn session_counts(&self, ctx: &ScanCtx) -> Result<ActorSessionCounts, String> {
-        let (entries, total) = Self::scan_sessions(&Self::sessions_dir(), ctx.workdir, Some(1))?;
+        let (entries, total) = Self::fetch_sessions(ctx.workdir, 1)?;
         let latest = entries.into_iter().next();
         Ok(ActorSessionCounts::from_latest(
             total,
@@ -162,8 +349,7 @@ impl AgentActor for FxActor {
         ctx: &ScanCtx,
         limit: usize,
     ) -> Result<(Vec<AgentSessionSummary>, usize), String> {
-        let (entries, total) =
-            Self::scan_sessions(&Self::sessions_dir(), ctx.workdir, Some(limit))?;
+        let (entries, total) = Self::fetch_sessions(ctx.workdir, limit)?;
         let summaries = entries
             .iter()
             .map(|entry| self.session_summary(entry))
@@ -171,29 +357,38 @@ impl AgentActor for FxActor {
         Ok((summaries, total))
     }
 
-    fn account_fields(&self, _workdir: &Path) -> Vec<AgentInfoField> {
+    fn account_fields(&self, workdir: &Path) -> Vec<AgentInfoField> {
+        let status = Self::status(workdir);
         let mut fields = Vec::new();
-        if let Some(source) = Self::settings()
-            .as_ref()
-            .and_then(|settings| settings.get("credential_source"))
-            .and_then(serde_json::Value::as_str)
-        {
-            let label = match source {
-                "fx_login" => "Vercel login",
-                "api_key" => "AI Gateway API key",
-                other => other,
-            };
-            fields.push(info_field("Auth", label));
+        if let Some(auth) = Self::auth_label(status.as_ref()) {
+            fields.push(info_field("Auth", &auth));
         }
-        if let Some(team) = Self::team_slug() {
+        let string = |key: &str| {
+            status
+                .as_ref()
+                .and_then(|status| status.get(key))
+                .and_then(serde_json::Value::as_str)
+                .filter(|value| !value.is_empty())
+                .map(str::to_string)
+        };
+        if let Some(team) = string("team") {
             fields.push(info_field("Team", &team));
         }
-        if let Ok(model) = std::env::var("FX_MODEL") {
-            if !model.is_empty() {
-                fields.push(info_field("Model", &model));
-            }
+        if let Some(model) = string("model") {
+            fields.push(info_field("Model", &model));
+        }
+        if let Some(mode) = string("permission_mode") {
+            fields.push(info_field("Permissions", &mode));
         }
         fields
+    }
+
+    fn subscription_plan<'a>(&'a self) -> super::ActorFuture<'a, Option<Vec<AgentInfoField>>> {
+        spawn_blocking_opt(Self::credits_fields)
+    }
+
+    fn account_usage<'a>(&'a self) -> super::ActorFuture<'a, Option<AgentUsageSnapshot>> {
+        spawn_blocking_opt(Self::usage_snapshot)
     }
 
     // fx reads the permission mode from the environment; `yolo` is its bypass.
@@ -253,6 +448,40 @@ mod tests {
             FxActor::scan_sessions(dir.path(), Path::new("/repo"), None).unwrap();
         assert!(entries.is_empty());
         assert_eq!(total, 0);
+    }
+
+    #[test]
+    fn parses_credits_plan_and_balance() {
+        let value = serde_json::json!({"kind":"credits","balance":"5","used":null,"plan":"pro"});
+        let fields = FxActor::credits_fields_from(&value).unwrap();
+        assert_eq!(fields[0].label, "Plan");
+        assert_eq!(fields[0].value, "Pro");
+        assert_eq!(fields[1].label, "Gateway credits");
+        assert_eq!(fields[1].value, "5");
+        // A response with nothing usable yields no plan section at all.
+        assert!(
+            FxActor::credits_fields_from(&serde_json::json!({"balance":null,"plan":null}))
+                .is_none()
+        );
+    }
+
+    #[test]
+    fn usage_snapshot_reports_counters_not_rate_limits() {
+        let value = serde_json::json!({
+            "kind": "usage",
+            "completeness": "incomplete",
+            "totals": {"total_tokens": 1_608_639, "request_count": 41, "spend": 0.0},
+        });
+        let usage = FxActor::usage_snapshot_from(&value).unwrap();
+        assert!(usage.rate_limit_five_hour_used_percent.is_none());
+        let labels: Vec<_> = usage.extra.iter().map(|f| f.label.as_str()).collect();
+        assert_eq!(
+            labels,
+            ["Tokens (30d)", "Requests (30d)", "Spend (30d)", "Window"]
+        );
+        assert_eq!(usage.extra[0].value, "1.6M");
+        assert_eq!(usage.extra[2].value, "$0.00");
+        assert_eq!(usage.extra[3].value, "partial");
     }
 
     #[test]

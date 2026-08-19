@@ -2228,8 +2228,11 @@ connected workspace (`fx` then `/exit`), `opencode2` installed
 4. Tap `fx`. Expected: a terminal starts fx inline — the scrollback above the
    prompt stays scrollable (no alt screen) — and `/status` inside fx reports
    permission mode `yolo`.
-5. Open the agent detail screen for fx. Expected: sessions list matches step 2,
-   and account fields show the auth source and Vercel team.
+5. Open the agent detail screen for fx. Expected: sessions list matches step 2;
+   account fields show auth mode, Vercel team, model, and permission mode (from
+   `fx status --json`); usage shows 30d tokens/requests/spend (`fx usage`) and
+   the plan section shows the AI Gateway credits (`fx credits`, network call).
+   Cross-check with `cargo run -p zedra-host -- agent scan usage --json`.
 6. Resume a session from that list. Expected: a new terminal reopens the prior
    transcript.
 7. Tap `OpenCode v2`. Expected: a terminal runs `opencode2 --auto`; the agent
