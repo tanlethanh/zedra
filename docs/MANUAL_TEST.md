@@ -491,25 +491,34 @@ app still builds, but push registration reports an error instead of a token.
 20. Expected: the screen shows "Starting the host daemon…", then the app navigates to the newly opened workspace and connects
 21. On the host, run `zedra list`
 22. Expected: a second daemon is running for the chosen workdir
-23. Return Home, tap "Open Project", and open the same folder again
-24. Expected: no second daemon is spawned; the app switches to the existing workspace
-25. Repeat step 3 from the workspaces drawer's "Open Project" button (above its "Scan QR Code")
-26. Expected: the drawer closes and the same screen opens
+23. Open a file or managed-agent page, return Home, tap "Open Project", and open the same folder again
+24. Expected: no second daemon is spawned; the app switches to the existing workspace, and system Back returns directly to Home instead of older workspace history
+25. Re-enter the workspace and repeat step 3 from the Quick Actions drawer's "Open Project" button (above its "Scan QR Code")
+26. Expected: the drawer closes and the same screen opens; back at the host root and the close button both return to the workspace that launched it, not Home
 
 ## 1a-Android. System Back Navigation
 
-1. On Android, connect to a workspace and open Quick Actions from the workspace header
-2. Press the system Back button or gesture
-3. Expected: Quick Actions closes and the app remains on the workspace
-4. Open Settings from Home, then press system Back
-5. Expected: Settings returns to Home
-6. Connect to a workspace, open the workspace drawer, then press system Back
-7. Expected: the workspace drawer closes
-8. Open the connecting overlay from the Session tab, then press system Back
-9. Expected: the connecting overlay closes and the workspace content remains visible
-10. Open a terminal, then a file, then a git diff, then reopen the same terminal
-11. Press system Back repeatedly
-12. Expected: Back visits the previous distinct main content views in order, without duplicate entries for the reopened terminal
+1. Open Settings from Home, then press system Back
+2. Expected: Settings returns to Home
+3. Press system Back again
+4. Expected: Android returns to the launcher
+5. Reopen the app, tap a saved workspace, and wait for its terminal
+6. Press system Back
+7. Expected: the app returns to Home; pressing Back again returns to the launcher
+8. Reopen the terminal and open Quick Actions from the workspace header
+9. Immediately press system Back before the opening animation finishes
+10. Expected: Quick Actions closes and the terminal remains visible
+11. Open the workspace drawer, then immediately press system Back before the opening animation finishes
+12. Expected: the workspace drawer closes and the terminal remains visible
+13. Open the connecting overlay from the Session tab, then press system Back
+14. Expected: the connecting overlay closes and the workspace content remains visible
+15. From the terminal's Quick Actions, open Open Project and press system Back at the host root
+16. Expected: Open Project returns to the terminal, not Home
+17. Repeat Settings, terminal, both drawer checks, and Open Project with the Back button and both edge gestures
+18. Expected: all three inputs follow the same hierarchy
+19. Inside a workspace, open a terminal, a file, a git diff, then the same terminal
+20. Use the workspace's in-app navigation to go back repeatedly
+21. Expected: navigation visits the previous distinct main views without duplicate terminal entries
 
 ## 1a. Host Info Subscription
 
@@ -645,8 +654,8 @@ or beyond.
    ~10s mid-auth, then rescan a fresh QR before the entry times out)
 6. Expected: in-flight attempt is aborted and the fresh ticket drives a new
    Register/Authenticate round on the same entry
-7. While the entry is `Connected`, rescan a still-valid QR for the same endpoint
-8. Expected: just switches to the entry; no restart, no flicker of the connecting view
+7. While the entry is `Connected`, open a file or managed-agent page, return Home, and rescan a still-valid QR for the same endpoint
+8. Expected: just switches to the entry; no restart, no flicker of the connecting view, and system Back returns directly to Home instead of older workspace history
 9. Rescan twice in rapid succession (two fresh QRs back-to-back)
 10. Expected: only the last attempt is alive; no overlapping connect loops
     (`grep` logs for `start connect to` — two entries are fine, but the first
@@ -1319,14 +1328,15 @@ indicator never fades there regardless of the setting.
 ## 12. Quick Action Terminal Navigation
 
 1. Connect to a session with at least two open terminals
-2. Return to the home screen
-3. Open the quick action panel and tap the add icon in the connected workspace header
-4. Expected: the quick action panel closes, the app switches to the workspace screen, and a new terminal becomes the main view
-5. Return to the home screen
-6. Open the quick action panel and tap a terminal card under the connected workspace
-7. Expected: the quick action panel closes, the app switches to the workspace screen, and the tapped terminal becomes the main view
-8. Repeat from the workspace screen with a different terminal card
-9. Expected: the selected terminal becomes active immediately without getting stuck on the previous screen or terminal
+2. Open a file or managed-agent page to seed workspace history, then return to Home
+3. From Home, open the quick action panel and tap a terminal card under the connected workspace
+4. Expected: the panel closes, the app switches to the tapped terminal, and system Back returns directly to Home instead of the previous file or agent page
+5. From Home, open the quick action panel, tap the add icon in the connected workspace header, and choose **Manage Agents**
+6. Expected: the app opens Manage Agents; system Back returns to the terminal root, then a second Back returns to Home without visiting older workspace history
+7. Repeat the add flow and choose **New Terminal**
+8. Expected: the quick action panel closes, the app switches to the workspace screen, and a new terminal becomes the main view
+9. Repeat from the workspace screen with a different terminal card
+10. Expected: the selected terminal becomes active immediately and normal workspace MRU navigation remains available
 
 ## 12a. Drawer Terminal List Stability During Network Reports
 

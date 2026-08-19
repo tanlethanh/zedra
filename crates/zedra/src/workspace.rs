@@ -131,6 +131,8 @@ pub struct Workspace {
     _pending_platform_action_task: Task<()>,
     /// Terminal to open immediately after the first sync completes (set by notification deeplink).
     pending_terminal_after_sync: Option<String>,
+    /// Reset the first synchronized terminal as the root after entering from Home.
+    pending_home_entry_root: bool,
     _subscriptions: Vec<Subscription>,
     delta_host_reconciling: bool,
 }
@@ -310,6 +312,16 @@ fn should_initialize_terminals_after_sync(
             matches!(active_main_view, WorkspaceMainView::Default) || terminal_ids.is_empty()
         }
     }
+}
+
+fn home_entry_terminal_id(
+    active_terminal_id: Option<&str>,
+    terminal_ids: &[String],
+) -> Option<String> {
+    active_terminal_id
+        .filter(|active_id| terminal_ids.iter().any(|id| id == active_id))
+        .map(ToOwned::to_owned)
+        .or_else(|| terminal_ids.first().cloned())
 }
 
 fn should_apply_connect_event(_event: &ConnectEvent, user_disconnect: bool) -> bool {
@@ -1194,6 +1206,7 @@ impl Workspace {
             pending_platform_action,
             _pending_platform_action_task: pending_platform_action_task,
             pending_terminal_after_sync: None,
+            pending_home_entry_root: false,
             delta_host_reconciling: false,
             _subscriptions: vec![
                 drawer_host_subscription,
@@ -1326,7 +1339,7 @@ impl Workspace {
                                 });
                             });
                             ws.reconcile_terminals_after_sync(cx);
-                            let should_initialize = {
+                            let should_initialize = ws.pending_home_entry_root || {
                                 let state = ws.workspace_state.read(cx);
                                 should_initialize_terminals_after_sync(
                                     sync_refresh_mode,
@@ -1729,8 +1742,49 @@ impl Workspace {
         }
     }
 
+    pub(crate) fn prepare_for_home_entry(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if self.pending_terminal_after_sync.is_some() {
+            return;
+        }
+
+        self.pending_home_entry_root = true;
+        let (target, connection_ready) = {
+            let state = self.workspace_state.read(cx);
+            (
+                home_entry_terminal_id(state.active_terminal_id.as_deref(), &state.terminal_ids),
+                matches!(
+                    state.connect_phase,
+                    Some(ConnectPhase::Connected | ConnectPhase::Idle { .. })
+                ),
+            )
+        };
+
+        if let Some(id) = target {
+            if self.terminal_by_id(&id, cx).is_none() {
+                self.create_terminal_entity(id.clone(), window, cx);
+            }
+            if self.terminal_by_id(&id, cx).is_some() {
+                self.reset_navigation_root(WorkspaceMainView::Terminal { id }, cx);
+                self.pending_home_entry_root = false;
+            }
+        } else if connection_ready {
+            self.reset_navigation_root(WorkspaceMainView::Default, cx);
+            self.pending_home_entry_root = false;
+        }
+    }
+
     pub fn open_terminal_from_quick_action(&mut self, id: String, cx: &mut Context<Self>) {
         self.activate_existing_terminal(id, cx);
+    }
+
+    pub(crate) fn open_terminal_from_home_entry(&mut self, id: String, cx: &mut Context<Self>) {
+        self.drawer_host.update(cx, |host, cx| host.close(cx));
+        if self.terminal_by_id(&id, cx).is_some() {
+            self.reset_navigation_root(WorkspaceMainView::Terminal { id }, cx);
+            self.pending_home_entry_root = false;
+        } else {
+            warn!("requested uninitialized terminal {}", id);
+        }
     }
 
     fn activate_existing_terminal(&mut self, id: String, cx: &mut Context<Self>) {
@@ -2007,6 +2061,23 @@ impl Workspace {
         let prev_terminal_id = self.workspace_state.read(cx).active_terminal_id.clone();
         self.workspace_state.update(cx, |state, cx| {
             state.navigate(route.clone(), cx);
+        });
+        self.apply_route(route, prev_terminal_id, cx);
+    }
+
+    fn reset_navigation_root(&mut self, route: WorkspaceMainView, cx: &mut Context<Self>) {
+        if let WorkspaceMainView::Terminal { ref id } = route {
+            if self.terminal_by_id(id, cx).is_none() {
+                warn!(
+                    terminal_id = id,
+                    "reset_navigation_root: terminal entity missing, skipping"
+                );
+                return;
+            }
+        }
+        let prev_terminal_id = self.workspace_state.read(cx).active_terminal_id.clone();
+        self.workspace_state.update(cx, |state, cx| {
+            state.reset_navigation_root(route.clone(), cx);
         });
         self.apply_route(route, prev_terminal_id, cx);
     }
@@ -3190,15 +3261,27 @@ impl Workspace {
             }
         }
 
-        let target = self
+        let pending_terminal = self
             .pending_terminal_after_sync
             .take()
-            .filter(|id| terminal_ids.contains(id))
+            .filter(|id| terminal_ids.contains(id));
+        let reset_home_entry_root = self.pending_home_entry_root && pending_terminal.is_none();
+        let home_terminal = self.pending_home_entry_root.then(|| {
+            let state = self.workspace_state.read(cx);
+            home_entry_terminal_id(state.active_terminal_id.as_deref(), &terminal_ids)
+        });
+        self.pending_home_entry_root = false;
+        let target = pending_terminal
+            .or_else(|| home_terminal.flatten())
             .or_else(|| terminal_ids.first().cloned());
 
         if let Some(id) = target {
             info!("auto-opening terminal on connect: {}", id);
-            self.handle_open_terminal(&OpenTerminal { id }, window, cx);
+            if reset_home_entry_root {
+                self.reset_navigation_root(WorkspaceMainView::Terminal { id }, cx);
+            } else {
+                self.handle_open_terminal(&OpenTerminal { id }, window, cx);
+            }
         } else {
             info!("no terminals on connect, showing workspace start");
             self.workspace_state
@@ -3518,6 +3601,31 @@ mod tests {
                 path: "src/main.rs".into(),
             },
         ));
+    }
+
+    #[::core::prelude::v1::test]
+    fn home_entry_prefers_valid_active_terminal() {
+        let terminal_ids = vec!["terminal-1".to_string(), "terminal-2".to_string()];
+
+        assert_eq!(
+            home_entry_terminal_id(Some("terminal-2"), &terminal_ids),
+            Some("terminal-2".to_string())
+        );
+    }
+
+    #[::core::prelude::v1::test]
+    fn home_entry_falls_back_to_first_terminal() {
+        let terminal_ids = vec!["terminal-1".to_string(), "terminal-2".to_string()];
+
+        assert_eq!(
+            home_entry_terminal_id(Some("stale-terminal"), &terminal_ids),
+            Some("terminal-1".to_string())
+        );
+        assert_eq!(
+            home_entry_terminal_id(None, &terminal_ids),
+            Some("terminal-1".to_string())
+        );
+        assert_eq!(home_entry_terminal_id(None, &[]), None);
     }
 
     #[::core::prelude::v1::test]

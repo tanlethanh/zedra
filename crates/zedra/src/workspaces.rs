@@ -18,8 +18,13 @@ static PENDING_WORKSPACE_NAV: PendingSlot<(String, Option<String>)> = PendingSlo
 
 #[derive(Clone, Debug)]
 pub enum WorkspacesEvent {
-    Connected { index: usize },
-    Disconnected { index: usize },
+    Connected {
+        index: usize,
+        preserve_history: bool,
+    },
+    Disconnected {
+        index: usize,
+    },
     StatesChanged,
     GoHome,
     OpenQuickAction,
@@ -208,12 +213,28 @@ impl Workspaces {
 
         let endpoint_addr = state.read(cx).endpoint_addr.clone();
         if let Some(entry_index) = self.entry_index_by_endpoint_addr(&endpoint_addr, cx) {
+            self.switch_to(entry_index, cx);
+            self.prepare_active_for_home_entry(window, cx);
             self.open_connecting_for_entry(entry_index, window, cx);
             OpenConnectingForState::ActiveEntry
         } else {
             self.connect_saved(state_index, window, cx);
+            self.prepare_active_for_home_entry(window, cx);
             OpenConnectingForState::StartedConnect
         }
+    }
+
+    pub(crate) fn prepare_active_for_home_entry(
+        &mut self,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let Some(workspace) = self.active().cloned() else {
+            return;
+        };
+        workspace.update(cx, |workspace, cx| {
+            workspace.prepare_for_home_entry(window, cx);
+        });
     }
 
     /// Connect via QR pairing ticket (new device pairing).
@@ -247,7 +268,7 @@ impl Workspaces {
             return;
         }
 
-        self.connect_and_intialize_workspace(addr, Some(ticket), None, None, window, cx);
+        self.connect_and_intialize_workspace(addr, Some(ticket), None, None, false, window, cx);
     }
 
     /// Queue a ticket for deferred connection (when window not available).
@@ -288,13 +309,18 @@ impl Workspaces {
         let Some((endpoint_addr, terminal_id)) = PENDING_WORKSPACE_NAV.take() else {
             return;
         };
+        // Terminal deeplinks intentionally retain the workspace MRU stack.
+        let preserve_history = terminal_id.is_some();
 
         // Workspace already open for this endpoint: switch to it (connecting if stale),
         // then open the requested terminal if one was specified.
         if let Some(index) = self.entry_index_by_endpoint_addr(&endpoint_addr, cx) {
             self.switch_to(index, cx);
             platform_bridge::trigger_haptic(HapticFeedback::ImpactLight);
-            cx.emit(WorkspacesEvent::Connected { index });
+            cx.emit(WorkspacesEvent::Connected {
+                index,
+                preserve_history,
+            });
 
             let Some(entry) = self.entries.get(index).cloned() else {
                 return;
@@ -332,7 +358,7 @@ impl Workspaces {
             return;
         };
 
-        self.connect_saved(state_index, window, cx);
+        self.connect_saved_with_history(state_index, preserve_history, window, cx);
 
         // connect_saved can early-return without pushing an entry (bad index, decode
         // error), so re-resolve by endpoint instead of trusting entries.last().
@@ -359,6 +385,16 @@ impl Workspaces {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
+        self.connect_saved_with_history(state_index, false, window, cx);
+    }
+
+    fn connect_saved_with_history(
+        &mut self,
+        state_index: usize,
+        preserve_history: bool,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
         let state = match self.states.get(state_index) {
             Some(s) => s.clone(),
             None => {
@@ -377,6 +413,7 @@ impl Workspaces {
                     None,
                     Some(session_id),
                     Some(state.clone()),
+                    preserve_history,
                     window,
                     cx,
                 );
@@ -419,7 +456,10 @@ impl Workspaces {
     fn activate_entry(&mut self, index: usize, cx: &mut Context<Self>) {
         self.switch_to(index, cx);
         platform_bridge::trigger_haptic(HapticFeedback::ImpactLight);
-        cx.emit(WorkspacesEvent::Connected { index });
+        cx.emit(WorkspacesEvent::Connected {
+            index,
+            preserve_history: false,
+        });
     }
 
     fn saved_state_by_endpoint_addr(
@@ -450,7 +490,15 @@ impl Workspaces {
         };
 
         info!("Connecting to saved workspace from ticket. sid={session_id:?}");
-        self.connect_and_intialize_workspace(addr, ticket, session_id, Some(saved), window, cx);
+        self.connect_and_intialize_workspace(
+            addr,
+            ticket,
+            session_id,
+            Some(saved),
+            false,
+            window,
+            cx,
+        );
     }
 
     fn connect_and_intialize_workspace(
@@ -459,6 +507,7 @@ impl Workspaces {
         ticket: Option<ZedraPairingTicket>,
         session_id: Option<String>,
         saved: Option<Entity<WorkspaceState>>,
+        preserve_history: bool,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
@@ -504,7 +553,10 @@ impl Workspaces {
         self.sync_active_workspace(cx);
 
         // TODO: this is not connected yet, it's just a signal to navigate to the workspace.
-        cx.emit(WorkspacesEvent::Connected { index: ws_idx });
+        cx.emit(WorkspacesEvent::Connected {
+            index: ws_idx,
+            preserve_history,
+        });
         cx.notify();
     }
 

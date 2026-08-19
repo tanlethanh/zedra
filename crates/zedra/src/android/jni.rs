@@ -714,7 +714,14 @@ pub extern "system" fn Java_dev_zedra_app_MainActivity_nativeSystemBackPressed(
     _env: JNIEnv,
     _class: JClass,
 ) -> jboolean {
-    crate::android::entry::handle_system_back() as jboolean
+    let mut handled = false;
+    jni_call(
+        "system_back_pressed",
+        std::panic::AssertUnwindSafe(|| {
+            handled = crate::android::entry::handle_system_back();
+        }),
+    );
+    handled as jboolean
 }
 
 /// Foreground/background state from the Android activity lifecycle

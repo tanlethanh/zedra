@@ -12,7 +12,7 @@ use crate::theme;
 use crate::transport_badge::ConnectionStatusIndicator;
 use crate::workspaces::Workspaces;
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub enum QuickActionEvent {
     Close,
     GoHome,
@@ -33,6 +33,21 @@ fn is_active_terminal_card(
     terminal_id: &str,
 ) -> bool {
     active_workspace_index == Some(workspace_index) && active_terminal_id == Some(terminal_id)
+}
+
+fn terminal_selection_events(ws_index: usize, tid: String) -> [QuickActionEvent; 2] {
+    [
+        QuickActionEvent::Close,
+        QuickActionEvent::OpenTerminal { tid, ws_index },
+    ]
+}
+
+fn web_client_selection_events(ws_index: usize, id: String) -> [QuickActionEvent; 3] {
+    [
+        QuickActionEvent::Close,
+        QuickActionEvent::NavigateToWorkspace,
+        QuickActionEvent::OpenWebClient { id, ws_index },
+    ]
 }
 
 enum QuickActionPickerPending {
@@ -72,11 +87,11 @@ impl QuickActionPanel {
         action: QuickActionPickerPending,
         cx: &mut Context<Self>,
     ) {
-        let ws_index = match action {
+        let ws_index = match &action {
             QuickActionPickerPending::CreateAgent { ws_index }
             | QuickActionPickerPending::NewTerminal { ws_index }
             | QuickActionPickerPending::ViewSessions { ws_index }
-            | QuickActionPickerPending::ManageAgents { ws_index } => ws_index,
+            | QuickActionPickerPending::ManageAgents { ws_index } => *ws_index,
         };
         self.workspaces
             .update(cx, |ws, cx| ws.switch_to(ws_index, cx));
@@ -90,26 +105,24 @@ impl QuickActionPanel {
         else {
             return;
         };
-        match action {
+        let ws = ws.downgrade();
+        // Let Home-entry navigation clear stale history before applying the selected target.
+        cx.defer(move |cx| match action {
             QuickActionPickerPending::CreateAgent { .. } => {
-                ws.update(cx, |w, cx| w.create_agent_from_quick_action(cx));
+                let _ = ws.update(cx, |w, cx| w.create_agent_from_quick_action(cx));
             }
             QuickActionPickerPending::NewTerminal { .. } => {
-                let ws_weak = ws.downgrade();
-                cx.spawn(async move |_this, cx| {
-                    let _ = ws_weak.update_in(cx, |w, window, cx| {
-                        w.create_terminal_from_quick_action(window, cx);
-                    });
-                })
-                .detach();
+                let _ = ws.update_in(cx, |w, window, cx| {
+                    w.create_terminal_from_quick_action(window, cx);
+                });
             }
             QuickActionPickerPending::ViewSessions { .. } => {
-                ws.update(cx, |w, cx| w.open_agent_sessions_from_quick_action(cx));
+                let _ = ws.update(cx, |w, cx| w.open_agent_sessions_from_quick_action(cx));
             }
             QuickActionPickerPending::ManageAgents { .. } => {
-                ws.update(cx, |w, cx| w.open_agent_manage_from_quick_action(cx));
+                let _ = ws.update(cx, |w, cx| w.open_agent_manage_from_quick_action(cx));
             }
-        }
+        });
     }
 
     fn handle_show_quick_action_picker(&mut self, ws_index: usize, _cx: &mut Context<Self>) {
@@ -186,9 +199,9 @@ impl QuickActionPanel {
     fn handle_switch_terminal(&self, ws_index: usize, tid: String, cx: &mut Context<Self>) {
         self.workspaces
             .update(cx, |ws, cx| ws.switch_to(ws_index, cx));
-        cx.emit(QuickActionEvent::Close);
-        cx.emit(QuickActionEvent::NavigateToWorkspace);
-        cx.emit(QuickActionEvent::OpenTerminal { tid, ws_index });
+        for event in terminal_selection_events(ws_index, tid) {
+            cx.emit(event);
+        }
     }
 
     fn handle_terminal_delete(&self, ws_index: usize, tid: String, cx: &mut Context<Self>) {
@@ -196,8 +209,11 @@ impl QuickActionPanel {
     }
 
     fn handle_open_web_client(&self, ws_index: usize, id: String, cx: &mut Context<Self>) {
-        cx.emit(QuickActionEvent::NavigateToWorkspace);
-        cx.emit(QuickActionEvent::OpenWebClient { id, ws_index });
+        self.workspaces
+            .update(cx, |ws, cx| ws.switch_to(ws_index, cx));
+        for event in web_client_selection_events(ws_index, id) {
+            cx.emit(event);
+        }
     }
 
     fn handle_close_web_client(&self, ws_index: usize, id: String, cx: &mut Context<Self>) {
@@ -541,7 +557,10 @@ impl Render for QuickActionPanel {
 
 #[cfg(test)]
 mod tests {
-    use super::is_active_terminal_card;
+    use super::{
+        QuickActionEvent, is_active_terminal_card, terminal_selection_events,
+        web_client_selection_events,
+    };
 
     #[test]
     fn terminal_card_active_requires_active_workspace_and_terminal() {
@@ -564,5 +583,34 @@ mod tests {
             "term-2"
         ));
         assert!(!is_active_terminal_card(None, 1, Some("term-2"), "term-2"));
+    }
+
+    #[test]
+    fn terminal_selection_keeps_home_as_the_event_origin() {
+        assert_eq!(
+            terminal_selection_events(1, "term-2".into()),
+            [
+                QuickActionEvent::Close,
+                QuickActionEvent::OpenTerminal {
+                    tid: "term-2".into(),
+                    ws_index: 1,
+                },
+            ]
+        );
+    }
+
+    #[test]
+    fn web_client_selection_enters_its_workspace_before_opening() {
+        assert_eq!(
+            web_client_selection_events(1, "client-2".into()),
+            [
+                QuickActionEvent::Close,
+                QuickActionEvent::NavigateToWorkspace,
+                QuickActionEvent::OpenWebClient {
+                    id: "client-2".into(),
+                    ws_index: 1,
+                },
+            ]
+        );
     }
 }
