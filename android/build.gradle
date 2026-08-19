@@ -58,8 +58,8 @@ android {
         applicationId = "dev.zedra.app"
         minSdk = 23
         targetSdk = 36
-        versionCode = 6
-        versionName = "0.6"
+        versionCode = 7
+        versionName = "0.7"
         manifestPlaceholders = [
             appLabel: "@string/app_name",
             firebaseAnalyticsCollectionEnabled: "false",
