@@ -2246,6 +2246,61 @@ to spawn (`pkill -f "opencode serve"` on the host first).
    workspace B, then cancel an open in B. Expected: A's open remains owned by A;
    B cannot dismiss it or cause A's webview to appear over B.
 
+## 26. fx and OpenCode v2 agents
+
+Host-side prerequisites: `fx` on PATH with at least one saved session in the
+connected workspace (`fx` then `/exit`), `opencode2` installed
+(`npm i -g @opencode-ai/cli@next`).
+
+### Host CLI
+
+1. With **no daemon running**: `cargo run -p zedra-host -- agent list`.
+   Expected: every registered agent, `fx` as `managed` with feature `sessions`
+   and `opencode2` as `detect`, both `enabled`, each with its launch command
+   (`FX_PERMISSION_MODE=yolo fx`, `opencode2 --auto`), and a footer counting
+   agents/installed/disabled. No daemon-connection error.
+2. `agent list --installed` drops the uninstalled rows; `agent list --json`
+   emits the same set with `programs`, `web_client`, `setup`, `hooks`.
+3. Add to `~/.config/zedra/config.yaml`:
+
+   ```yaml
+   agents:
+     disabled: [fx]
+   ```
+
+   Expected: `agent list` shows fx as `disabled`, `agent list --disabled` lists
+   only fx, and the app's agent picker no longer offers fx. Remove the key
+   afterwards.
+4. With a daemon running (`cargo run -p zedra-host -- start`):
+   `cargo run -p zedra-host -- agent status`. Expected: the workspace view —
+   session counts, setup state, account — for the daemon's workdir. Without a
+   daemon it fails with a connection error; that is the difference from
+   `agent list`.
+5. `cargo run -p zedra-host -- agent scan installed`. Expected: rows for `fx`
+   and `opencode2` with the same launch commands.
+6. `cargo run -p zedra-host -- agent scan sessions fx` from the workspace above.
+   Expected: only that workspace's sessions, newest first, with their titles.
+
+### App
+
+7. Open the agent picker. Expected: `fx` shows the fx mark and `OpenCode v2`
+   shows the opencode mark; both sit right after their neighbours in registry
+   order (`OpenCode v2` directly after `OpenCode`).
+8. Tap `fx`. Expected: a terminal starts fx inline — the scrollback above the
+   prompt stays scrollable (no alt screen) — and `/status` inside fx reports
+   permission mode `yolo`. The terminal card shows the fx icon, which confirms
+   detection survives the `FX_PERMISSION_MODE=` prefix.
+9. Open the agent detail screen for fx. Expected: sessions list matches step 6;
+   account fields show auth mode, Vercel team, model, and permission mode (from
+   `fx status --json`); usage shows 30d tokens/requests/spend (`fx usage`) and
+   the plan section shows the AI Gateway credits (`fx credits`, network call).
+   Cross-check with `cargo run -p zedra-host -- agent scan usage --json`.
+10. Resume a session from that list. Expected: a new terminal reopens the prior
+   transcript, and the card still shows the fx icon (the resume command is
+   `FX_PERMISSION_MODE=yolo fx --resume <id>`).
+11. Tap `OpenCode v2`. Expected: a terminal runs `opencode2 --auto`; the agent
+   badge on the terminal card reads OpenCode v2, not OpenCode.
+
 ## AndroidX Core pin (Play Services error-resolution path)
 
 `androidx.core:core` is pinned to 1.13.1 because `play-services-basement` calls

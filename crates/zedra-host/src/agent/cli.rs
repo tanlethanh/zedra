@@ -16,8 +16,10 @@ use zedra_rpc::proto::{
 
 #[derive(Debug, Subcommand)]
 pub enum AgentCommand {
-    /// List managed-agent summaries for this workspace
+    /// List every registered agent, its slug, and whether its CLI is installed
     List(AgentListArgs),
+    /// Show managed-agent summaries for this workspace (needs a running daemon)
+    Status(AgentStatusArgs),
     /// List sessions for one managed agent
     Sessions(AgentSessionsArgs),
     /// Resume an agent session in a new phone terminal
@@ -36,6 +38,22 @@ pub enum AgentCommand {
 
 #[derive(Debug, Args)]
 pub struct AgentListArgs {
+    /// Workspace directory used for the CLI availability probe
+    #[arg(short, long, default_value = ".")]
+    workdir: String,
+    /// Only agents whose CLI is installed
+    #[arg(long)]
+    installed: bool,
+    /// Only agents hidden via `agents.disabled`
+    #[arg(long, conflicts_with = "installed")]
+    disabled: bool,
+    /// Print JSON output
+    #[arg(long)]
+    json: bool,
+}
+
+#[derive(Debug, Args)]
+pub struct AgentStatusArgs {
     /// Working directory of the running daemon
     #[arg(short, long, default_value = ".")]
     workdir: String,
@@ -214,7 +232,8 @@ fn actor_slug(raw: &str) -> Result<&'static str> {
 
 pub async fn run(command: AgentCommand) -> Result<()> {
     match command {
-        AgentCommand::List(args) => list_agents(args).await,
+        AgentCommand::List(args) => list_agents(args),
+        AgentCommand::Status(args) => agent_status(args).await,
         AgentCommand::Sessions(args) => list_sessions(args).await,
         AgentCommand::Resume(args) => resume_session(args).await,
         AgentCommand::Scan { command } => run_scan(command).await,
@@ -222,7 +241,132 @@ pub async fn run(command: AgentCommand) -> Result<()> {
     }
 }
 
-async fn list_agents(args: AgentListArgs) -> Result<()> {
+/// Registry listing. Runs entirely from the actor registry and the user config
+/// — no daemon, no provider CLI spawn — so it answers even when nothing runs.
+fn list_agents(args: AgentListArgs) -> Result<()> {
+    let workdir = resolve_workdir(&args.workdir);
+    let config = crate::global_config::get();
+    let entries: Vec<AgentListEntry> = agent::actors()
+        .iter()
+        .map(|actor| {
+            let slug = actor.slug();
+            let installed = actor.cli_available(&workdir);
+            AgentListEntry {
+                slug,
+                display_name: actor.display_name(),
+                installed,
+                enabled: !config.agent_disabled(slug),
+                managed: actor.shows_detail(),
+                global: actor.is_global(),
+                web_client: actor.has_web_client(),
+                setup: actor.supports_setup_cli(),
+                hooks: actor.supports_hooks(),
+                programs: actor.programs(),
+                launch_cmd: crate::global_config::agent_launch_cmd(
+                    slug,
+                    actor.default_launch_command().as_deref(),
+                ),
+            }
+        })
+        .filter(|entry| !args.installed || entry.installed)
+        .filter(|entry| !args.disabled || !entry.enabled)
+        .collect();
+
+    if args.json {
+        println!("{}", serde_json::to_string_pretty(&entries)?);
+    } else {
+        println!("{}", render_agent_registry(&entries));
+    }
+    Ok(())
+}
+
+fn render_agent_registry(entries: &[AgentListEntry]) -> String {
+    let rows = entries
+        .iter()
+        .map(|entry| {
+            vec![
+                entry.slug.to_string(),
+                entry.display_name.to_string(),
+                if entry.installed { "yes" } else { "no" }.to_string(),
+                if entry.managed { "managed" } else { "detect" }.to_string(),
+                if entry.enabled { "enabled" } else { "disabled" }.to_string(),
+                entry.features(),
+                entry.launch_cmd.clone().unwrap_or_else(|| "-".to_string()),
+            ]
+        })
+        .collect::<Vec<_>>();
+
+    let mut sections = vec!["Agents".to_string(), String::new()];
+    if rows.is_empty() {
+        sections.push("No agents matched.".to_string());
+    } else {
+        sections.push(utils::render_table(
+            &[
+                "SLUG",
+                "NAME",
+                "INSTALLED",
+                "KIND",
+                "STATE",
+                "FEATURES",
+                "LAUNCH",
+            ],
+            &rows,
+        ));
+        sections.push(String::new());
+        sections.push(format!(
+            "{} agents · {} installed · {} disabled",
+            entries.len(),
+            entries.iter().filter(|entry| entry.installed).count(),
+            entries.iter().filter(|entry| !entry.enabled).count(),
+        ));
+        sections.push(
+            "Hide an agent with `agents.disabled: [<slug>]` in ~/.config/zedra/config.yaml; \
+             reorder the picker with `agents.order`."
+                .to_string(),
+        );
+    }
+    sections.join("\n")
+}
+
+#[derive(Serialize)]
+struct AgentListEntry {
+    slug: &'static str,
+    display_name: &'static str,
+    /// CLI found on PATH (or the agent's local data dir, for actors that accept it).
+    installed: bool,
+    /// False when `agents.disabled` hides the agent from the app.
+    enabled: bool,
+    /// Managed agents have a detail screen: sessions, account, resume.
+    managed: bool,
+    global: bool,
+    web_client: bool,
+    setup: bool,
+    hooks: bool,
+    programs: &'static [&'static str],
+    launch_cmd: Option<String>,
+}
+
+impl AgentListEntry {
+    fn features(&self) -> String {
+        let features = [
+            (self.managed, "sessions"),
+            (self.setup, "setup"),
+            (self.hooks, "hooks"),
+            (self.web_client, "web"),
+            (self.global, "global"),
+        ]
+        .into_iter()
+        .filter_map(|(on, label)| on.then_some(label))
+        .collect::<Vec<_>>();
+        if features.is_empty() {
+            "-".to_string()
+        } else {
+            features.join(",")
+        }
+    }
+}
+
+async fn agent_status(args: AgentStatusArgs) -> Result<()> {
     let workdir = resolve_workdir(&args.workdir);
     let result: AgentListResult = api_get(&workdir, "/api/agents").await?;
     if args.json {
@@ -1198,5 +1342,29 @@ mod tests {
             .unwrap()
             .with_timezone(&Utc);
         assert_eq!(format_session_time(time), "2026-05-21 08:07");
+    }
+
+    #[test]
+    fn agent_list_row_lists_only_supported_features() {
+        let entry = AgentListEntry {
+            slug: "fx",
+            display_name: "fx",
+            installed: true,
+            enabled: true,
+            managed: true,
+            global: false,
+            web_client: false,
+            setup: false,
+            hooks: false,
+            programs: &["fx"],
+            launch_cmd: Some("FX_PERMISSION_MODE=yolo fx".to_string()),
+        };
+        assert_eq!(entry.features(), "sessions");
+
+        let detect_only = AgentListEntry {
+            managed: false,
+            ..entry
+        };
+        assert_eq!(detect_only.features(), "-");
     }
 }

@@ -6,7 +6,6 @@ use serde::Deserialize;
 use serde_json::Value;
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
-use std::process::Command;
 use std::sync::Arc;
 use zedra_rpc::proto::*;
 
@@ -40,6 +39,7 @@ impl OpenCodeActor {
     /// Source tag for SQLite-sourced sessions, whose rows already carry sizes;
     /// the message-table size scan runs only for the CLI-list source.
     const DB_SOURCE: &'static str = "opencode sqlite";
+    const SESSION_LIST_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(10);
 
     pub fn cli_available() -> bool {
         Self::db_path().is_file() || command_on_path("opencode")
@@ -143,57 +143,14 @@ impl OpenCodeActor {
     }
 
     /// Run `opencode session list` with a deadline, killing the child on timeout
-    /// so the SQLite fallback can run. Pipes drain on threads to avoid deadlock.
+    /// so the SQLite fallback can run.
     fn opencode_session_list_output() -> Result<std::process::Output, String> {
-        use std::io::Read;
-        use std::time::{Duration, Instant};
-
-        const SESSION_LIST_TIMEOUT: Duration = Duration::from_secs(10);
-
-        let mut child = Command::new("opencode")
-            .args(["session", "list", "--format", "json", "--pure"])
-            .stdout(std::process::Stdio::piped())
-            .stderr(std::process::Stdio::piped())
-            .spawn()
-            .map_err(|error| error.to_string())?;
-
-        let mut stdout_pipe = child.stdout.take();
-        let mut stderr_pipe = child.stderr.take();
-        let stdout_reader = std::thread::spawn(move || {
-            let mut buf = Vec::new();
-            if let Some(pipe) = stdout_pipe.as_mut() {
-                let _ = pipe.read_to_end(&mut buf);
-            }
-            buf
-        });
-        let stderr_reader = std::thread::spawn(move || {
-            let mut buf = Vec::new();
-            if let Some(pipe) = stderr_pipe.as_mut() {
-                let _ = pipe.read_to_end(&mut buf);
-            }
-            buf
-        });
-
-        let start = Instant::now();
-        let status = loop {
-            match child.try_wait().map_err(|error| error.to_string())? {
-                Some(status) => break status,
-                None if start.elapsed() >= SESSION_LIST_TIMEOUT => {
-                    let _ = child.kill();
-                    let _ = child.wait();
-                    return Err("`opencode session list` timed out".to_string());
-                }
-                None => std::thread::sleep(Duration::from_millis(50)),
-            }
-        };
-
-        let stdout = stdout_reader.join().unwrap_or_default();
-        let stderr = stderr_reader.join().unwrap_or_default();
-        Ok(std::process::Output {
-            status,
-            stdout,
-            stderr,
-        })
+        super::utils::command_output_with_timeout(
+            "opencode",
+            &["session", "list", "--format", "json", "--pure"],
+            None,
+            Self::SESSION_LIST_TIMEOUT,
+        )
     }
 
     fn fetch_sessions_json_from_db() -> Result<Vec<u8>, String> {

@@ -47,6 +47,7 @@ pub(crate) mod codex;
 mod copilot;
 mod cursor;
 pub mod detect;
+mod fx;
 mod gemini;
 mod goose;
 mod grok;
@@ -59,6 +60,7 @@ mod maki;
 mod omp;
 mod openclaw;
 pub(crate) mod opencode;
+mod opencode2;
 mod openhands;
 pub(crate) mod pi;
 mod qoder;
@@ -723,11 +725,13 @@ pub(crate) trait AgentActor: Sync {
 
 // Registry order is the app's agent-picker order; `agents.order` in the user
 // config reorders it.
-static ACTORS: [&dyn AgentActor; 23] = [
+static ACTORS: [&dyn AgentActor; 25] = [
     &claude::ClaudeActor,
     &codex::CodexActor,
     &opencode::OpenCodeActor,
+    &opencode2::OpenCode2Actor,
     &pi::PiActor,
+    &fx::FxActor,
     &omp::OmpActor,
     &cursor::CursorActor,
     &grok::GrokActor,
@@ -870,6 +874,19 @@ pub fn apply_cached_account_usage(
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn registry_slugs_are_unique() {
+        let mut seen = std::collections::HashSet::new();
+        for actor in super::actors() {
+            assert!(!actor.slug().is_empty(), "actor with empty slug");
+            assert!(
+                seen.insert(actor.slug()),
+                "duplicate registry slug `{}`",
+                actor.slug()
+            );
+        }
+    }
+
     use super::*;
 
     #[test]

@@ -57,6 +57,76 @@ pub fn parse_rfc3339(value: Option<&str>) -> Option<DateTime<Utc>> {
         .map(|dt| dt.with_timezone(&Utc))
 }
 
+/// Run `program` with a deadline, killing the child on timeout so a hung CLI
+/// cannot stall a scan. Pipes drain on threads: a child writing more than one
+/// pipe buffer would otherwise block forever while we wait on it.
+pub fn command_output_with_timeout(
+    program: &str,
+    args: &[&str],
+    cwd: Option<&Path>,
+    timeout: std::time::Duration,
+) -> Result<std::process::Output, String> {
+    use std::io::Read;
+    use std::sync::mpsc;
+    use std::time::Instant;
+
+    let mut command = Command::new(program);
+    command
+        .args(args)
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped());
+    if let Some(cwd) = cwd {
+        command.current_dir(cwd);
+    }
+    let mut child = command.spawn().map_err(|error| error.to_string())?;
+
+    // Readers report over a channel rather than a join handle: a background
+    // process that inherited the pipe keeps it open past the child's exit, and
+    // an unbounded join there would outlive the deadline it exists to enforce.
+    fn drain<R: Read + Send + 'static>(pipe: Option<R>) -> mpsc::Receiver<Vec<u8>> {
+        let (tx, rx) = mpsc::channel();
+        std::thread::spawn(move || {
+            let mut buf = Vec::new();
+            if let Some(mut pipe) = pipe {
+                let _ = pipe.read_to_end(&mut buf);
+            }
+            let _ = tx.send(buf);
+        });
+        rx
+    }
+    let stdout_rx = drain(child.stdout.take());
+    let stderr_rx = drain(child.stderr.take());
+
+    let start = Instant::now();
+    let status = loop {
+        match child.try_wait().map_err(|error| error.to_string())? {
+            Some(status) => break status,
+            None if start.elapsed() >= timeout => {
+                let _ = child.kill();
+                let _ = child.wait();
+                return Err(format!("`{program}` timed out"));
+            }
+            None => std::thread::sleep(std::time::Duration::from_millis(50)),
+        }
+    };
+
+    // The exited child's output is normally already buffered; the floor keeps a
+    // child that used the whole budget from losing it to a zero-length wait.
+    let remaining = || {
+        timeout
+            .saturating_sub(start.elapsed())
+            .max(std::time::Duration::from_millis(500))
+    };
+    let stdout = stdout_rx.recv_timeout(remaining()).unwrap_or_default();
+    let stderr = stderr_rx.recv_timeout(remaining()).unwrap_or_default();
+
+    Ok(std::process::Output {
+        status,
+        stdout,
+        stderr,
+    })
+}
+
 pub fn file_size_bytes(path: &Path) -> Option<u64> {
     std::fs::metadata(path).ok().map(|meta| meta.len())
 }
@@ -486,6 +556,31 @@ pub fn write_file_checked(
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn command_timeout_kills_a_hung_child_and_captures_output() {
+        use std::time::Duration;
+
+        let output = super::command_output_with_timeout(
+            "sh",
+            &["-c", "printf out; printf err 1>&2"],
+            None,
+            Duration::from_secs(5),
+        )
+        .unwrap();
+        assert!(output.status.success());
+        assert_eq!(output.stdout, b"out");
+        assert_eq!(output.stderr, b"err");
+
+        let error = super::command_output_with_timeout(
+            "sh",
+            &["-c", "sleep 5"],
+            None,
+            Duration::from_millis(200),
+        )
+        .unwrap_err();
+        assert!(error.contains("timed out"), "unexpected error: {error}");
+    }
+
     use super::*;
 
     #[test]
