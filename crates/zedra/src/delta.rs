@@ -326,6 +326,72 @@ impl Default for DeltaState {
     }
 }
 
+/// The groups of persisted Delta state an operation may change. Built by
+/// diffing what an operation started from against what it returned, so network
+/// functions keep returning a whole `DeltaState` and only the merge is precise.
+#[derive(Default)]
+pub struct DeltaPatch {
+    base_url: Option<String>,
+    session: Option<SessionFields>,
+    push_token: Option<Option<StoredPushToken>>,
+    host_nodes: Option<HashMap<String, DeltaHostNode>>,
+    nodes: Option<(Option<Uuid>, Vec<StoredNode>, Option<String>)>,
+}
+
+struct SessionFields {
+    access_token: Option<String>,
+    refresh_token: Option<String>,
+    expires_at: Option<String>,
+    user_id: Option<Uuid>,
+    stack_id: Option<Uuid>,
+    node_id: Option<Uuid>,
+    email: Option<String>,
+}
+
+impl DeltaPatch {
+    /// The groups that differ between the state an operation started from and
+    /// the state it produced.
+    pub fn between(before: &DeltaState, after: &DeltaState) -> Self {
+        let session_changed = before.access_token != after.access_token
+            || before.refresh_token != after.refresh_token
+            || before.expires_at != after.expires_at
+            || before.user_id != after.user_id
+            || before.stack_id != after.stack_id
+            || before.node_id != after.node_id
+            || before.email != after.email;
+        Self {
+            base_url: (before.base_url != after.base_url).then(|| after.base_url.clone()),
+            session: session_changed.then(|| SessionFields {
+                access_token: after.access_token.clone(),
+                refresh_token: after.refresh_token.clone(),
+                expires_at: after.expires_at.clone(),
+                user_id: after.user_id,
+                stack_id: after.stack_id,
+                node_id: after.node_id,
+                email: after.email.clone(),
+            }),
+            push_token: (before.push_token != after.push_token).then(|| after.push_token.clone()),
+            host_nodes: (before.host_nodes_by_pubkey != after.host_nodes_by_pubkey)
+                .then(|| after.host_nodes_by_pubkey.clone()),
+            nodes: (before.nodes != after.nodes).then(|| {
+                (
+                    after.stack_id,
+                    after.nodes.clone(),
+                    after.nodes_fetched_at.clone(),
+                )
+            }),
+        }
+    }
+
+    fn is_empty(&self) -> bool {
+        self.base_url.is_none()
+            && self.session.is_none()
+            && self.push_token.is_none()
+            && self.host_nodes.is_none()
+            && self.nodes.is_none()
+    }
+}
+
 impl DeltaState {
     /// Load the persisted state from disk, falling back to defaults. Used to
     /// seed the shared entity at app launch.
@@ -341,88 +407,76 @@ impl DeltaState {
         self.clone()
     }
 
-    /// Apply a snapshot produced by an async operation back onto the shared
-    /// entity, notifying observers.
-    pub fn apply(&mut self, next: DeltaState, cx: &mut Context<Self>) {
-        *self = next;
-        cx.emit(DeltaStateEvent::DeltaStateChanged);
-        cx.notify();
-    }
-
-    /// Apply a snapshot only if the entity still matches the state that
-    /// produced it. This avoids stale async results overwriting newer user
-    /// changes like sign-out or push settings edits.
-    /// Merge a fetched node list into the live state. Keyed on the stack alone —
-    /// this is derived cache data, so an unrelated token refresh must not
-    /// discard it the way `apply_if_current` would.
+    /// Merge the groups an async operation actually changed. This is the only
+    /// way persisted state changes: whole-state assignment let two operations in
+    /// flight overwrite each other's untouched fields.
     ///
-    /// `expected` is the state the fetch started from: when the live state still
-    /// matches it, credentials `get_bearer` refreshed mid-fetch are adopted, so
-    /// persisting the node cache cannot write stale tokens back over them.
-    pub fn apply_nodes(
-        &mut self,
-        expected: &DeltaState,
-        fetched: DeltaState,
-        nodes: Vec<StoredNode>,
-        cx: &mut Context<Self>,
-    ) -> bool {
-        if self.stack_id.is_none() || self.stack_id != fetched.stack_id {
-            return false;
+    /// Returns `false` when the patch was dropped as stale.
+    pub fn merge(&mut self, patch: DeltaPatch, cx: &mut Context<Self>) -> bool {
+        if patch.is_empty() {
+            return true;
         }
-        if self.matches_client_binding_state(expected) {
-            self.access_token = fetched.access_token;
-            self.refresh_token = fetched.refresh_token;
-            self.expires_at = fetched.expires_at;
-            self.user_id = fetched.user_id;
-        }
-        self.nodes = nodes;
-        self.nodes_fetched_at = Some(chrono::Utc::now().to_rfc3339());
-        if let Err(error) = save_state(self) {
-            tracing::warn!(error = %error, "delta: persisting the node cache failed");
-        }
+        let applied = self.merge_fields(patch);
+        self.persist();
         cx.emit(DeltaStateEvent::DeltaStateChanged);
         cx.notify();
+        applied
+    }
+
+    /// The merge rules themselves, free of the entity plumbing so they can be
+    /// tested directly. `false` means the node group was dropped as stale.
+    fn merge_fields(&mut self, patch: DeltaPatch) -> bool {
+        if let Some(base_url) = patch.base_url {
+            self.base_url = base_url;
+        }
+        if let Some(session) = patch.session {
+            self.access_token = session.access_token;
+            self.refresh_token = session.refresh_token;
+            self.expires_at = session.expires_at;
+            self.user_id = session.user_id;
+            self.stack_id = session.stack_id;
+            self.node_id = session.node_id;
+            self.email = session.email;
+        }
+        // A signed-out account owns no stack-scoped data, so a late result from
+        // the previous session must not repopulate it.
+        if !self.is_signed_in() {
+            self.push_token = None;
+            self.nodes.clear();
+            self.nodes_fetched_at = None;
+            self.host_nodes_by_pubkey.clear();
+            return true;
+        }
+        if let Some(push_token) = patch.push_token {
+            self.push_token = push_token;
+        }
+        if let Some(host_nodes) = patch.host_nodes {
+            self.host_nodes_by_pubkey = host_nodes;
+        }
+        if let Some((stack_id, nodes, fetched_at)) = patch.nodes {
+            // The cache belongs to one stack; a result for another is stale.
+            if stack_id.is_some() && stack_id != self.stack_id {
+                return false;
+            }
+            self.nodes = nodes;
+            self.nodes_fetched_at = fetched_at;
+        }
         true
     }
 
-    /// Adopt the signed-out state after the account was erased server-side.
-    /// Unlike `apply_if_current` this only guards on the stack: the account is
-    /// already gone, so an unrelated push-token write must not leave the app
-    /// signed in to it.
-    pub fn apply_deleted(
-        &mut self,
-        deleted_stack: Option<Uuid>,
-        next: DeltaState,
-        cx: &mut Context<Self>,
-    ) -> bool {
-        if deleted_stack.is_none() || self.stack_id != deleted_stack {
-            return false;
-        }
-        self.apply(next, cx);
-        true
+    #[cfg(test)]
+    fn apply_patch_for_test(&mut self, patch: DeltaPatch) -> bool {
+        self.merge_fields(patch)
     }
 
-    pub fn apply_if_current(
-        &mut self,
-        expected: &DeltaState,
-        next: DeltaState,
-        cx: &mut Context<Self>,
-    ) -> bool {
-        if self.matches_client_state(expected) {
-            self.apply(next, cx);
-            true
-        } else {
-            false
+    fn persist(&self) {
+        if let Err(error) = save_state(self) {
+            tracing::warn!(error = %error, "delta: persisting state failed");
         }
     }
 
-    pub(crate) fn matches_client_state(&self, expected: &DeltaState) -> bool {
-        self.matches_client_binding_state(expected) && self.push_token == expected.push_token
-    }
-
-    /// Compare only the fields that affect the host/client handoff. Push-token
-    /// registration may mutate DeltaState independently and should not cancel a
-    /// valid host notification replay.
+    /// Compare only the fields that affect the host/client handoff, so a
+    /// push-token write cannot cancel a valid host notification replay.
     pub(crate) fn matches_client_binding_state(&self, expected: &DeltaState) -> bool {
         self.base_url == expected.base_url
             && self.access_token == expected.access_token
@@ -432,6 +486,10 @@ impl DeltaState {
             && self.stack_id == expected.stack_id
             && self.node_id == expected.node_id
             && self.email == expected.email
+    }
+
+    pub(crate) fn is_signed_in(&self) -> bool {
+        self.access_token.is_some() && self.stack_id.is_some()
     }
 
     pub fn status(&self) -> DeltaStatus {
@@ -652,13 +710,13 @@ const NODES_CACHE_TTL: Duration = Duration::from_secs(300);
 
 /// Fetch the stack's registered nodes. Returns the state as it stands after the
 /// call so a token refresh triggered by `get_bearer` is not lost.
-pub async fn fetch_nodes(mut state: DeltaState) -> Result<(DeltaState, Vec<StoredNode>)> {
+pub async fn fetch_nodes(mut state: DeltaState) -> Result<DeltaState> {
     let stack_id = state.stack_id.context("Delta stack is missing")?;
     let path = format!("/v1/stacks/{stack_id}/nodes");
     let list = get_bearer::<NodeListResponse>(&mut state, &path)
         .await?
         .context("Delta stack was not found")?;
-    let nodes = list
+    state.nodes = list
         .nodes
         .into_iter()
         .map(|node| StoredNode {
@@ -669,7 +727,9 @@ pub async fn fetch_nodes(mut state: DeltaState) -> Result<(DeltaState, Vec<Store
             joined_at: node.joined_at,
         })
         .collect();
-    Ok((state, nodes))
+    state.nodes_fetched_at = Some(chrono::Utc::now().to_rfc3339());
+    save_state(&state)?;
+    Ok(state)
 }
 
 /// Native permission prompt, then registration of the returned token on Delta,
@@ -703,7 +763,9 @@ pub async fn acquire_and_register_push_token(
     )
     .await?;
     // Keep a newer state change from being overwritten by this stale result.
-    let applied = delta_state.update(cx, |state, cx| state.apply_if_current(&snapshot, next, cx));
+    let applied = delta_state.update(cx, |state, cx| {
+        state.merge(DeltaPatch::between(&snapshot, &next), cx)
+    });
     if !applied {
         tracing::info!("delta: push registration finished after state changed; skipped");
     }
@@ -1161,7 +1223,123 @@ mod tests {
     use serde_json::json;
     use uuid::Uuid;
 
-    use super::{NodeKind, NodeSummary, mobile_node_matches, normalize_alias_candidate};
+    use super::{
+        DeltaPatch, DeltaState, NodeKind, NodeSummary, StoredNode, StoredPushToken,
+        mobile_node_matches, normalize_alias_candidate,
+    };
+
+    fn signed_in(stack: Uuid) -> DeltaState {
+        DeltaState {
+            access_token: Some("access".into()),
+            refresh_token: Some("refresh".into()),
+            stack_id: Some(stack),
+            user_id: Some(Uuid::from_u128(1)),
+            ..DeltaState::default()
+        }
+    }
+
+    fn node(id: Uuid) -> StoredNode {
+        StoredNode {
+            id,
+            alias: Some("macbook".into()),
+            kind: "host".into(),
+            display_name: None,
+            joined_at: None,
+        }
+    }
+
+    #[test]
+    fn patch_carries_only_the_groups_that_changed() {
+        let stack = Uuid::from_u128(7);
+        let before = signed_in(stack);
+        let mut after = before.clone();
+        after.nodes = vec![node(Uuid::from_u128(2))];
+
+        let patch = DeltaPatch::between(&before, &after);
+        assert!(patch.nodes.is_some());
+        assert!(
+            patch.session.is_none(),
+            "untouched session must not be sent"
+        );
+        assert!(patch.push_token.is_none());
+    }
+
+    #[test]
+    fn node_fetch_keeps_credentials_refreshed_mid_flight() {
+        let stack = Uuid::from_u128(7);
+        let before = signed_in(stack);
+        // `get_bearer` refreshed the token while listing nodes.
+        let mut after = before.clone();
+        after.access_token = Some("rotated".into());
+        after.refresh_token = Some("rotated-refresh".into());
+        after.nodes = vec![node(Uuid::from_u128(2))];
+
+        let mut live = before.clone();
+        let patch = DeltaPatch::between(&before, &after);
+        // Merge without a Context: exercise the field rules directly.
+        live.apply_patch_for_test(patch);
+        assert_eq!(live.access_token.as_deref(), Some("rotated"));
+        assert_eq!(live.nodes.len(), 1);
+    }
+
+    #[test]
+    fn push_registration_does_not_discard_a_concurrent_node_fetch() {
+        let stack = Uuid::from_u128(7);
+        let before = signed_in(stack);
+        let mut fetched = before.clone();
+        fetched.nodes = vec![node(Uuid::from_u128(2))];
+
+        // A push registration landed first, touching only its own group.
+        let mut live = before.clone();
+        live.push_token = Some(StoredPushToken {
+            provider: "apns".into(),
+            token: "token".into(),
+            environment: None,
+            registered: true,
+        });
+
+        live.apply_patch_for_test(DeltaPatch::between(&before, &fetched));
+        assert_eq!(live.nodes.len(), 1, "node list must still land");
+        assert!(live.push_token.is_some(), "push token must survive");
+    }
+
+    #[test]
+    fn signing_out_drops_stack_scoped_data() {
+        let stack = Uuid::from_u128(7);
+        let before = signed_in(stack);
+        let mut live = before.clone();
+        live.nodes = vec![node(Uuid::from_u128(2))];
+        live.push_token = Some(StoredPushToken {
+            provider: "apns".into(),
+            token: "token".into(),
+            environment: None,
+            registered: true,
+        });
+
+        let after = DeltaState::default();
+        live.apply_patch_for_test(DeltaPatch::between(&before, &after));
+        assert!(live.access_token.is_none());
+        assert!(
+            live.nodes.is_empty(),
+            "cached nodes must not outlive sign-out"
+        );
+        assert!(live.push_token.is_none());
+    }
+
+    #[test]
+    fn a_node_list_for_another_stack_is_rejected() {
+        let before = signed_in(Uuid::from_u128(7));
+        let mut after = before.clone();
+        after.stack_id = Some(Uuid::from_u128(9));
+        after.nodes = vec![node(Uuid::from_u128(2))];
+
+        // Only the node group survives the diff onto a live state on stack 7.
+        let mut live = before.clone();
+        let mut patch = DeltaPatch::between(&before, &after);
+        patch.session = None;
+        assert!(!live.apply_patch_for_test(patch));
+        assert!(live.nodes.is_empty());
+    }
 
     #[test]
     fn normalizes_alias_candidates_for_mobile_names() {

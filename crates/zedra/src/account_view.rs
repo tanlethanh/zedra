@@ -71,10 +71,10 @@ impl AccountView {
             let _ = this.update(cx, |this, cx| {
                 this.nodes_busy = false;
                 match result {
-                    Ok((fetched, nodes)) => {
-                        let count = nodes.len();
+                    Ok(next) => {
+                        let count = next.status().nodes.len();
                         let applied = delta_state.update(cx, |state, cx| {
-                            state.apply_nodes(&snapshot, fetched, nodes, cx)
+                            state.merge(delta::DeltaPatch::between(&snapshot, &next), cx)
                         });
                         if applied {
                             tracing::info!(count, "account: cached stack nodes");
@@ -174,22 +174,15 @@ impl AccountView {
         self.deleting = true;
         self.message = None;
         let snapshot = self.delta_state.read(cx).snapshot();
-        let deleted_stack = self.delta_state.read(cx).status().stack_id;
         cx.spawn(async move |this, cx| {
-            let result = Tokio::spawn_result(cx, delta::delete_account(snapshot)).await;
+            let result = Tokio::spawn_result(cx, delta::delete_account(snapshot.clone())).await;
             let _ = this.update(cx, |this, cx| {
                 this.deleting = false;
                 match result {
                     Ok(next) => {
-                        let applied = this
-                            .delta_state
-                            .update(cx, |state, cx| state.apply_deleted(deleted_stack, next, cx));
-                        if !applied {
-                            tracing::warn!(
-                                "account: deleted account state was not adopted; signing out"
-                            );
-                            this.log_out(cx);
-                        }
+                        this.delta_state.update(cx, |state, cx| {
+                            state.merge(delta::DeltaPatch::between(&snapshot, &next), cx)
+                        });
                         cx.emit(AccountEvent::Close);
                     }
                     Err(error) => {
@@ -205,10 +198,11 @@ impl AccountView {
 
     fn log_out(&mut self, cx: &mut Context<Self>) {
         let snapshot = self.delta_state.read(cx).snapshot();
-        match delta::sign_out(snapshot) {
+        match delta::sign_out(snapshot.clone()) {
             Ok(next) => {
-                self.delta_state
-                    .update(cx, |state, cx| state.apply(next, cx));
+                self.delta_state.update(cx, |state, cx| {
+                    state.merge(delta::DeltaPatch::between(&snapshot, &next), cx)
+                });
                 cx.emit(AccountEvent::Close);
             }
             Err(error) => {

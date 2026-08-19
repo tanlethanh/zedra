@@ -37,7 +37,7 @@ pub fn reconcile_delta_on_launch<T: 'static>(delta_state: Entity<DeltaState>, cx
             Ok((outcome, next)) => {
                 let applied = delta_state.update(cx, |state, cx| {
                     // Skip launch-time reconciliation if Delta state changed while it was in flight.
-                    state.apply_if_current(&snapshot, next, cx)
+                    state.merge(delta::DeltaPatch::between(&snapshot, &next), cx)
                 });
                 if applied {
                     tracing::info!(?outcome, "Delta mobile node reconciliation completed");
@@ -283,7 +283,7 @@ impl SettingsView {
             Ok(next) => {
                 let applied = delta_state.update(cx, |state, cx| {
                     // Keep newer Delta state changes from being overwritten by a stale async result.
-                    state.apply_if_current(&snapshot, next, cx)
+                    state.merge(delta::DeltaPatch::between(&snapshot, &next), cx)
                 });
                 let _ = this.update(cx, |this, cx| {
                     this.delta_busy = false;
