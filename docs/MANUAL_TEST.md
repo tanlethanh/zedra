@@ -2245,3 +2245,26 @@ to spawn (`pkill -f "opencode serve"` on the host first).
 7. **Workspace switch**: start a slow web client in workspace A, switch to
    workspace B, then cancel an open in B. Expected: A's open remains owned by A;
    B cannot dismiss it or cause A's webview to appear over B.
+
+## AndroidX Core pin (Play Services error-resolution path)
+
+`androidx.core:core` is pinned to 1.13.1 because `play-services-basement` calls
+`androidx.core.app.PendingIntentCompat` (added in core 1.10.0). Transitive
+resolution landed on 1.9.0, so the GMS error-resolution path crashed with
+`NoClassDefFoundError` on the `GoogleApiHandler` thread.
+
+1. **Resolved version**: run `./gradlew :app:dependencies --configuration releaseRuntimeClasspath | grep 'androidx.core:core:'` in `android/`.
+   Expected: every line resolves to `1.13.1`, no `1.9.0`.
+2. **Class present in the APK**: build with `./scripts/run-android.sh` and check
+   `androidx.core.app.PendingIntentCompat` is in the dex — e.g.
+   `unzip -p android/app/build/outputs/apk/debug/app-debug.apk classes*.dex | strings | grep PendingIntentCompat`.
+   Expected: at least one hit.
+3. **Missing Play Services**: launch on an emulator image without Google APIs
+   (or a device with Play Services disabled in Settings → Apps). Sign in and let
+   push registration run so `GoogleApiManager` hits its error-resolution path.
+   Expected: no crash and no `NoClassDefFoundError` for
+   `androidx.core.app.PendingIntentCompat` in `./scripts/log-android.sh`; the app
+   stays usable with push simply unavailable.
+4. **Outdated Play Services**: on a device with an old Play Services build,
+   repeat step 3 and confirm the "update Google Play services" resolution dialog
+   appears instead of a crash.
