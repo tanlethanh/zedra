@@ -31,6 +31,7 @@ use crate::terminal_state::TerminalState;
 use crate::theme;
 use crate::transport_badge::ConnectionStatusIndicator;
 use crate::ui::{DrawerEvent, DrawerHost, DrawerSide};
+use crate::web_tunnel_opening::WebTunnelOpening;
 use crate::workspace_action::{self, GoHome, OpenFileSearch, OpenQuickAction, RequestDisconnect};
 use crate::workspace_action::{
     AddSelectionToChat, CloseDrawer, CloseTerminal, CloseWebClient, CreateAgent, CreateNewTerminal,
@@ -110,6 +111,10 @@ pub struct Workspace {
     /// Listens for periodic host resource snapshots.
     _host_info_listener: Option<Task<()>>,
     _web_client_listener: Option<Task<()>>,
+    /// In-flight `web_client_start`; dropping it cancels the open the progress
+    /// overlay is reporting.
+    web_client_open_task: Option<Task<()>>,
+    web_tunnel_progress: crate::web_tunnel::progress::Progress,
     /// Listens for foreground resume events and checks the live session phase.
     _foreground_resume_listener: Option<Task<()>>,
     /// Notifies the host when app foreground/background state changes.
@@ -759,6 +764,7 @@ impl Workspace {
         let gitdiff = cx.new(|cx| WorkspaceGitdiff::new(session.handle().clone(), cx));
 
         let connection_banner = cx.new(|cx| ConnectionBanner::new(session_state.clone(), cx));
+        let web_tunnel_progress = crate::web_tunnel::progress::Progress::new();
         let content = cx.new(|cx| {
             WorkspaceContent::new(
                 workspace_state.clone(),
@@ -766,6 +772,7 @@ impl Workspace {
                 session_state.clone(),
                 session.handle().clone(),
                 connection_banner.clone(),
+                web_tunnel_progress.clone(),
                 cx,
             )
         });
@@ -1176,6 +1183,8 @@ impl Workspace {
             _host_event_listener: Some(host_event_listener),
             _host_info_listener: Some(host_info_listener),
             _web_client_listener: Some(web_client_listener),
+            web_client_open_task: None,
+            web_tunnel_progress,
             _foreground_resume_listener: Some(foreground_resume_listener),
             _foreground_state_listener: Some(foreground_state_listener.into()),
             agent_picker,
@@ -2732,23 +2741,37 @@ impl Workspace {
 
     /// Open the card's web client at the path it was last left on.
     fn open_web_client(&mut self, id: &str, cx: &mut Context<Self>) {
-        let Some((port, path)) = self
+        let Some((slug, port, path)) = self
             .workspace_state
             .read(cx)
             .web_clients
             .iter()
             .find(|card| card.id == id)
-            .map(|card| (card.port, card.path.clone()))
+            .map(|card| (card.slug.clone(), card.port, card.path.clone()))
         else {
             return;
         };
-        self.open_web_client_url(id.to_string(), port, &path, cx);
+        // The server is already up on this path, so the open starts at the tunnel
+        // step; naming the agent keeps the overlay consistent with a fresh start.
+        let generation = self.web_tunnel_progress.begin(
+            crate::agent::name(&slug),
+            crate::agent::icon(&slug),
+            crate::web_tunnel::progress::OpenStep::OpeningTunnel,
+        );
+        self.open_web_client_url(id.to_string(), port, &path, generation, cx);
     }
 
     /// Open a host loopback port in the in-app webview over the tunnel, tracking
     /// it for quick reopen from the session panel. Routes the user takes inside
     /// the web UI are reported back to the host, so the card reopens there.
-    fn open_web_client_url(&mut self, id: String, port: u16, path: &str, cx: &mut Context<Self>) {
+    fn open_web_client_url(
+        &mut self,
+        id: String,
+        port: u16,
+        path: &str,
+        generation: u64,
+        cx: &mut Context<Self>,
+    ) {
         let url = format!("http://localhost:{port}{path}");
         let session_handle = self.session.handle().clone();
         let hook_handle = session_handle.clone();
@@ -2763,8 +2786,13 @@ impl Workspace {
                 }
             });
         });
-        if let Some(title) = crate::web_tunnel::open_url_with(session_handle, &url, Some(on_route))
-        {
+        if let Some(title) = crate::web_tunnel::open_url_with_progress(
+            session_handle,
+            &url,
+            Some(on_route),
+            self.web_tunnel_progress.clone(),
+            Some(generation),
+        ) {
             // Track the origin, not `url`: the path identifies a session, and the
             // card already reopens at it. Keeps it out of persisted state.
             let origin = format!("http://localhost:{port}");
@@ -2818,27 +2846,46 @@ impl Workspace {
             .update(cx, |host, cx| host.close_with_window(&mut *window, cx));
         let session_handle = self.session.handle().clone();
         let slug = action.slug.clone();
-        cx.spawn(async move |workspace, cx| {
+        // Spawning the agent's server takes seconds; the overlay owns the screen
+        // from here until the webview is up or the open fails.
+        let generation = self.web_tunnel_progress.begin(
+            crate::agent::name(&slug),
+            crate::agent::icon(&slug),
+            crate::web_tunnel::progress::OpenStep::StartingServer,
+        );
+        self.web_client_open_task = Some(cx.spawn(async move |workspace, cx| {
             match session_handle.web_client_start(slug.clone()).await {
                 // The card appears via the WebClientWatch stream; open it now.
                 Ok((id, port, path)) => {
-                    let _ =
-                        workspace.update(cx, |ws, cx| ws.open_web_client_url(id, port, &path, cx));
+                    let _ = workspace.update(cx, |ws, cx| {
+                        ws.open_web_client_url(id, port, &path, generation, cx)
+                    });
                 }
                 Err(e) => {
                     tracing::error!(agent = slug, "web client start failed: {}", e);
-                    let _ = workspace.update(cx, |_ws, _cx| {
-                        platform_bridge::show_alert(
-                            "Web client",
-                            "Failed to start the web client.",
-                            vec![AlertButton::default("OK")],
-                            |_| {},
-                        );
+                    let _ = workspace.update(cx, |ws, _cx| {
+                        ws.web_tunnel_progress.fail(
+                            generation,
+                            "The host could not start this agent's web server.",
+                        )
                     });
                 }
             }
-        })
-        .detach();
+        }));
+    }
+
+    /// Abandon the in-flight web-tunnel open behind the progress overlay. The
+    /// generation bump stops a tunnel that finishes later from presenting.
+    fn handle_cancel_web_tunnel_open(
+        &mut self,
+        _action: &workspace_action::CancelWebTunnelOpen,
+        _window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        info!("web-tunnel: open cancelled from the progress overlay");
+        self.web_client_open_task = None;
+        self.web_tunnel_progress.cancel();
+        cx.notify();
     }
 
     /// Terminal-specific view effects: deactivate the previous terminal and swap the content
@@ -3170,6 +3217,7 @@ impl Render for Workspace {
             .on_action(cx.listener(Self::handle_open_quick_action))
             .on_action(cx.listener(Self::handle_open_file_search))
             .on_action(cx.listener(Self::handle_request_disconnect))
+            .on_action(cx.listener(Self::handle_cancel_web_tunnel_open))
             .on_action(cx.listener(Self::handle_toggle_drawer))
             .on_action(cx.listener(Self::handle_open_drawer))
             .on_action(cx.listener(Self::handle_close_drawer))
@@ -3800,6 +3848,7 @@ pub struct WorkspaceContent {
     show_connecting: bool,
     connecting_view: Entity<WorkspaceConnecting>,
     connection_banner: Entity<ConnectionBanner>,
+    web_tunnel_opening: Entity<WebTunnelOpening>,
     mainview_bounds: Option<Bounds<Pixels>>,
     _subscriptions: Vec<Subscription>,
 }
@@ -3887,6 +3936,7 @@ impl WorkspaceContent {
         session_state: Entity<SessionState>,
         session_handle: SessionHandle,
         connection_banner: Entity<ConnectionBanner>,
+        web_tunnel_progress: crate::web_tunnel::progress::Progress,
         cx: &mut Context<Self>,
     ) -> Self {
         let empty_view = cx.new(|_cx| Empty);
@@ -3905,6 +3955,7 @@ impl WorkspaceContent {
             show_connecting: false,
             connecting_view: connecting,
             connection_banner,
+            web_tunnel_opening: cx.new(|cx| WebTunnelOpening::new(web_tunnel_progress, cx)),
             mainview_bounds: None,
             _subscriptions: vec![terminal_state_sub, workspace_state_sub],
         }
@@ -4184,7 +4235,10 @@ impl Render for WorkspaceContent {
                     // the connecting detail already conveys full connection status.
                     .when(!self.show_connecting, |d| {
                         d.child(self.connection_banner.clone())
-                    }),
+                    })
+                    // Opening a web client owns the main view, but leaves
+                    // workspace navigation available above it.
+                    .child(self.web_tunnel_opening.clone()),
             )
     }
 }

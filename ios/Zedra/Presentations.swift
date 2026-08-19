@@ -2878,7 +2878,12 @@ private enum NativeWebViewPresenter {
               let data = configJSON.data(using: .utf8),
               let config = try? JSONDecoder().decode(NativeWebViewConfig.self, from: data),
               let url = URL(string: config.url)
-        else { return }
+        else {
+            // Rust already registered handlers, so a rejected config must report
+            // failure or the opening progress never settles.
+            zedra_ios_webview_failed(callbackID)
+            return
+        }
         DispatchQueue.main.async {
             let present = {
                 let controller = NativeWebViewController(callbackID: callbackID, config: config, url: url)
@@ -2895,7 +2900,17 @@ private enum NativeWebViewPresenter {
                 }
                 presentedController = nav
                 activeController = controller
-                NativePresentationBridge.topViewController()?.present(nav, animated: true)
+                guard let presenter = NativePresentationBridge.topViewController() else {
+                    if presentedController === nav {
+                        presentedController = nil
+                        activeController = nil
+                    }
+                    zedra_ios_webview_failed(callbackID)
+                    return
+                }
+                presenter.present(nav, animated: true) {
+                    zedra_ios_webview_presented(callbackID)
+                }
             }
             // Present only after any existing webview finishes dismissing — dismiss
             // and present in the same runloop makes UIKit silently drop the new one.

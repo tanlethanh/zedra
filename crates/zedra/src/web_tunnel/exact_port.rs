@@ -13,7 +13,7 @@ use std::sync::{Mutex, OnceLock};
 use iroh::PublicKey;
 use tokio::net::{TcpListener, TcpStream};
 
-use super::bridge;
+use super::{bridge, recover_lock};
 
 // `owner` reserves a port for a host before the fallible bind (race guard) and is
 // the ownership source of truth. `bound` tracks the live accept task per port so
@@ -45,10 +45,7 @@ pub(crate) struct ListenerInfo {
 
 /// Live listeners sorted by device port.
 pub(crate) fn list_listeners() -> Vec<ListenerInfo> {
-    let mut listeners: Vec<ListenerInfo> = state()
-        .bound
-        .lock()
-        .unwrap()
+    let mut listeners: Vec<ListenerInfo> = recover_lock(&state().bound, "exact-port listeners")
         .iter()
         .map(|(&port, bound)| ListenerInfo {
             port,
@@ -62,8 +59,8 @@ pub(crate) fn list_listeners() -> Vec<ListenerInfo> {
 /// Stop the listener on `port`, freeing the device port. Aborting the accept task
 /// drops its `TcpListener`. Returns whether a listener was present.
 pub(crate) fn stop(port: u16) -> bool {
-    state().owner.lock().unwrap().remove(&port);
-    match state().bound.lock().unwrap().remove(&port) {
+    recover_lock(&state().owner, "exact-port owners").remove(&port);
+    match recover_lock(&state().bound, "exact-port listeners").remove(&port) {
         Some(bound) => {
             bound.task.abort();
             tracing::info!("web-tunnel: exact-port stopped 127.0.0.1:{port}");
@@ -80,7 +77,7 @@ pub(super) async fn ensure(endpoint_id: PublicKey, port: u16) -> Result<(), ()> 
     // Reserve ownership before the fallible bind so racing callers for the same
     // host reuse the listener and racing callers for another host get Err.
     {
-        let mut owner = state().owner.lock().unwrap();
+        let mut owner = recover_lock(&state().owner, "exact-port owners");
         match owner.get(&port) {
             Some(existing) if *existing == endpoint_id => return Ok(()),
             Some(_) => return Err(()),
@@ -93,15 +90,12 @@ pub(super) async fn ensure(endpoint_id: PublicKey, port: u16) -> Result<(), ()> 
         Ok(listener) => {
             tracing::info!("web-tunnel: exact-port bound 127.0.0.1:{port}");
             let task = spawn_accept_loop(listener, endpoint_id);
-            state()
-                .bound
-                .lock()
-                .unwrap()
+            recover_lock(&state().bound, "exact-port listeners")
                 .insert(port, Bound { endpoint_id, task });
             Ok(())
         }
         Err(_) => {
-            state().owner.lock().unwrap().remove(&port);
+            recover_lock(&state().owner, "exact-port owners").remove(&port);
             Err(())
         }
     }
@@ -186,7 +180,7 @@ impl CompanionSniffer {
 
 #[cfg(debug_assertions)]
 pub(super) fn debug_clear_owners() {
-    state().owner.lock().unwrap().clear();
+    recover_lock(&state().owner, "exact-port owners").clear();
 }
 
 #[cfg(debug_assertions)]
@@ -194,7 +188,7 @@ pub(super) fn debug_mark_foreign(port: u16) {
     // A deterministic key no real host will have, so the next `ensure` for this
     // port by a real host returns Unavailable (simulates a same-port collision).
     let foreign = iroh::SecretKey::from([0x7fu8; 32]).public();
-    state().owner.lock().unwrap().insert(port, foreign);
+    recover_lock(&state().owner, "exact-port owners").insert(port, foreign);
 }
 
 fn find_localhost_ports(data: &[u8]) -> Vec<u16> {

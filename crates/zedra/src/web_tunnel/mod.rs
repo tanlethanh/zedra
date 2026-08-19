@@ -4,10 +4,12 @@
 //! - [`exact_port`] (default): bind a real `127.0.0.1:<port>` listener so the
 //!   webview loads the unmodified `http://localhost:<port>` — honest loopback
 //!   origin, so CORS/cookies/OAuth behave. One host owns a port at a time.
-//! - [`alias`] (opt-in fallback): when a port can't be bound (another app, or a
-//!   second host colliding on the same port), route this host through a
+//! - [`alias`] (automatic fallback): when a port can't be bound (another app, or
+//!   a second host colliding on the same port), route this host through a
 //!   `<label>.zedra.test` alias + in-app SOCKS proxy. A real device bypasses the
 //!   proxy for loopback, so a non-loopback alias is the only proxy-viable form.
+//!   Taken without asking and remembered per host — the bind won't start working
+//!   on a retry, so a prompt would only delay the same page.
 //!
 //! Routing is keyed by the session's stable non-relay endpoint id, so bound
 //! listeners and aliases survive reconnects. See `docs/WEB_TUNNEL_MODES.md`.
@@ -15,10 +17,11 @@
 mod alias;
 mod bridge;
 mod exact_port;
+pub mod progress;
 
 use std::collections::HashMap;
 use std::net::Ipv4Addr;
-use std::sync::{Mutex, OnceLock};
+use std::sync::{Mutex, MutexGuard, OnceLock};
 
 use iroh::PublicKey;
 use reqwest::Url;
@@ -26,6 +29,7 @@ use zedra_rpc::proto::is_loopback_host;
 use zedra_session::SessionHandle;
 
 use crate::platform_bridge::{self, NativeNotificationKind, NativeNotificationOptions};
+use progress::{OpenStep, Progress};
 
 /// Live exact-port listeners + a stop control, for the manager view
 /// (`web_tunnel_manager.rs`) to free a device port that conflicts with another app.
@@ -127,14 +131,19 @@ fn registry() -> &'static Registry {
     })
 }
 
+/// Continue serving tunnels if a prior panic poisoned an in-memory registry.
+pub(super) fn recover_lock<'a, T>(lock: &'a Mutex<T>, name: &'static str) -> MutexGuard<'a, T> {
+    lock.lock().unwrap_or_else(|poisoned| {
+        tracing::warn!(lock = name, "web-tunnel: recovering poisoned lock");
+        poisoned.into_inner()
+    })
+}
+
 /// The latest session for a host, resolved by its stable endpoint id. Both
 /// adapters route through this so listeners/aliases survive reconnects (the
 /// session handle changes on reconnect; the endpoint id stays).
 fn session_for(endpoint_id: &PublicKey) -> Option<SessionHandle> {
-    registry()
-        .sessions
-        .lock()
-        .unwrap()
+    recover_lock(&registry().sessions, "session registry")
         .get(endpoint_id)
         .cloned()
 }
@@ -148,15 +157,11 @@ pub fn register_session(handle: &SessionHandle) {
     let Some(endpoint_id) = handle.endpoint_id() else {
         return;
     };
-    registry()
-        .sessions
-        .lock()
-        .unwrap()
-        .insert(endpoint_id, handle.clone());
+    recover_lock(&registry().sessions, "session registry").insert(endpoint_id, handle.clone());
 }
 
 /// Open `url` the best way: host-local http(s) URLs load in the in-app webview
-/// (exact-port by default, alias on a per-host opt-in fallback); anything else
+/// (exact-port by default, alias as an automatic per-host fallback); anything else
 /// (or an unparseable target) falls back to the system browser. Single "open a
 /// link" seam for the tunnel.
 /// Returns the `host:port` label for a trackable loopback target (so the caller
@@ -175,29 +180,59 @@ pub fn open_url_with(
     url: &str,
     on_route: Option<RouteHook>,
 ) -> Option<String> {
+    open_url_with_progress(session_handle, url, on_route, Progress::new(), None)
+}
+
+/// [`open_url_with`] with progress owned by the workspace that initiated the
+/// open. `generation` is supplied when an earlier step (such as starting an
+/// agent server) already owns this exact operation.
+pub fn open_url_with_progress(
+    session_handle: SessionHandle,
+    url: &str,
+    on_route: Option<RouteHook>,
+    progress: Progress,
+    generation: Option<u64>,
+) -> Option<String> {
     // Log only the origin, never the raw URL: the path/query of a user's local
     // web app can carry session tokens or OAuth params.
     let origin = webview_title(url);
     let Ok(port) = parse_loopback_target(url) else {
         tracing::info!("web-tunnel: {origin} not host-local -> system browser");
+        progress.cancel();
         platform_bridge::bridge().open_url(url);
         return None;
     };
     let (Some(endpoint_id), Ok(runtime)) = (session_handle.endpoint_id(), session_handle.runtime())
     else {
         tracing::info!("web-tunnel: no session endpoint -> system browser: {origin}");
+        progress.cancel();
         platform_bridge::bridge().open_url(url);
         return None;
     };
     tracing::info!("web-tunnel: open {origin} (loopback :{port}) via {endpoint_id}");
-    registry()
-        .sessions
-        .lock()
-        .unwrap()
-        .insert(endpoint_id, session_handle);
+    recover_lock(&registry().sessions, "session registry").insert(endpoint_id, session_handle);
+    let generation = generation
+        .unwrap_or_else(|| progress.begin(&origin, "icons/globe.svg", OpenStep::OpeningTunnel));
+    // A cancellation or another user action may have settled the caller's
+    // generation while the server start RPC was completing.
+    if !progress.is_active(generation) {
+        return None;
+    }
+    progress.advance(generation, OpenStep::OpeningTunnel);
     let spawn_url = url.to_string();
     let spawn_title = origin.clone();
-    runtime.spawn(async move { serve(endpoint_id, spawn_url, spawn_title, port, on_route).await });
+    runtime.spawn(async move {
+        serve(
+            endpoint_id,
+            spawn_url,
+            spawn_title,
+            port,
+            on_route,
+            progress,
+            generation,
+        )
+        .await
+    });
     Some(origin)
 }
 
@@ -223,26 +258,69 @@ async fn serve(
     title: String,
     port: u16,
     on_route: Option<RouteHook>,
+    progress: Progress,
+    generation: u64,
 ) {
     // The alias rewrites the webview host to `<word>.zedra.test`, which changes
     // the TLS SNI; an https host still presents its `localhost` certificate, so
     // validation fails. Alias mode therefore only serves cleartext http.
     let alias_ok = is_cleartext_http(&url);
-    if registry().prefs.lock().unwrap().get(&endpoint_id) == Some(&AdapterKind::Alias) {
+    let prefers_alias = recover_lock(&registry().prefs, "alias preferences").get(&endpoint_id)
+        == Some(&AdapterKind::Alias);
+    if prefers_alias {
         if alias_ok {
-            serve_alias(endpoint_id, &url, title, on_route).await;
+            serve_alias(endpoint_id, &url, title, on_route, progress, generation).await;
         } else {
+            progress.finish(generation);
             notify_https_needs_exact_port(port);
         }
         return;
     }
     match exact_port::ensure(endpoint_id, port).await {
-        Ok(()) => {
-            crate::webview::open(tunnel_webview(url, title, on_route));
+        Ok(()) => present(url, title, on_route, progress, generation, |config| config),
+        // Fall through to the alias without asking: a port this device can't bind
+        // stays unbindable, so a prompt only delays the same outcome. Remembering
+        // the choice skips the doomed bind on later opens for this host.
+        Err(()) if alias_ok => {
+            tracing::info!("web-tunnel: exact-port unavailable for :{port} -> alias");
+            recover_lock(&registry().prefs, "alias preferences")
+                .insert(endpoint_id, AdapterKind::Alias);
+            serve_alias(endpoint_id, &url, title, on_route, progress, generation).await;
         }
-        Err(()) if alias_ok => prompt_alias_fallback(endpoint_id, url, title, port, on_route),
-        Err(()) => notify_https_needs_exact_port(port),
+        Err(()) => {
+            progress.finish(generation);
+            notify_https_needs_exact_port(port);
+        }
     }
+}
+
+/// Present the tunnelled page, unless the user cancelled while the tunnel was
+/// coming up — a webview appearing after a cancel is the one outcome the
+/// progress overlay must never produce.
+fn present(
+    url: String,
+    title: String,
+    on_route: Option<RouteHook>,
+    progress: Progress,
+    generation: u64,
+    configure: impl FnOnce(crate::webview::WebviewConfig) -> crate::webview::WebviewConfig,
+) {
+    if !progress.is_active(generation) {
+        tracing::info!("web-tunnel: open cancelled before the webview was presented");
+        return;
+    }
+    progress.advance(generation, OpenStep::LoadingPage);
+    let presented_progress = progress.clone();
+    crate::webview::open(configure(
+        tunnel_webview(url, title, on_route)
+            .on_presented(move || presented_progress.finish(generation))
+            .on_failed(move || {
+                progress.fail(
+                    generation,
+                    "The native webview could not be presented. Try again.",
+                )
+            }),
+    ));
 }
 
 /// The webview both adapters present: a tunnelled page the user drives with its
@@ -278,7 +356,8 @@ fn notify_https_needs_exact_port(port: u16) {
         NativeNotificationOptions::new("Web tunnel: port unavailable")
             .message(format!(
                 "localhost:{port} can't be bound on this device, and the alias fallback \
-                 can't serve https (its certificate is for localhost). Free the port to load this page."
+                 can't serve https (its certificate is for localhost). Free the port to load \
+                 this page. Learn more: {MODES_DOC_URL}"
             ))
             .kind(NativeNotificationKind::Warning),
     );
@@ -289,56 +368,26 @@ async fn serve_alias(
     url: &str,
     title: String,
     on_route: Option<RouteHook>,
+    progress: Progress,
+    generation: u64,
 ) {
     let proxy_port = match alias::ensure_proxy().await {
         Ok(port) => port,
         Err(error) => {
             tracing::warn!("web-tunnel: alias proxy setup failed: {error}");
+            progress.fail(generation, error.clone());
             notify_failed(&error);
             return;
         }
     };
-    crate::webview::open(
-        tunnel_webview(alias_url(url, &endpoint_id), title, on_route)
-            .socks_proxy(Ipv4Addr::LOCALHOST, proxy_port),
+    present(
+        alias_url(url, &endpoint_id),
+        title,
+        on_route,
+        progress,
+        generation,
+        |config| config.socks_proxy(Ipv4Addr::LOCALHOST, proxy_port),
     );
-}
-
-/// Surface the exact-port failure and let the user opt this host into the alias.
-fn prompt_alias_fallback(
-    endpoint_id: PublicKey,
-    url: String,
-    title: String,
-    port: u16,
-    on_route: Option<RouteHook>,
-) {
-    tracing::info!("web-tunnel: exact-port unavailable for :{port}, offering alias");
-    let message = format!(
-        "localhost:{port} can't be bound on this device (another host or app holds it). \
-         Tap to route this workspace through an alias instead. Learn more: {MODES_DOC_URL}"
-    );
-    platform_bridge::show_native_notification_with_action(
-        NativeNotificationOptions::new("Web tunnel: port unavailable")
-            .message(message)
-            .kind(NativeNotificationKind::Warning),
-        move || approve_alias(endpoint_id, url, title, on_route),
-    );
-}
-
-/// The user approved the alias for this host: remember it and serve now.
-fn approve_alias(endpoint_id: PublicKey, url: String, title: String, on_route: Option<RouteHook>) {
-    registry()
-        .prefs
-        .lock()
-        .unwrap()
-        .insert(endpoint_id, AdapterKind::Alias);
-    let Some(session) = session_for(&endpoint_id) else {
-        return;
-    };
-    let Ok(runtime) = session.runtime() else {
-        return;
-    };
-    runtime.spawn(async move { serve_alias(endpoint_id, &url, title, on_route).await });
 }
 
 fn notify_failed(error: &str) {
@@ -389,18 +438,14 @@ fn webview_title(url: &str) -> String {
 // two real hosts. See docs/WEB_TUNNEL_MODES.md.
 #[cfg(debug_assertions)]
 pub(crate) fn debug_reset() {
-    registry().prefs.lock().unwrap().clear();
+    recover_lock(&registry().prefs, "alias preferences").clear();
     exact_port::debug_clear_owners();
 }
 
 #[cfg(debug_assertions)]
 pub(crate) fn debug_force_alias(session: &SessionHandle) {
     if let Some(id) = session.endpoint_id() {
-        registry()
-            .prefs
-            .lock()
-            .unwrap()
-            .insert(id, AdapterKind::Alias);
+        recover_lock(&registry().prefs, "alias preferences").insert(id, AdapterKind::Alias);
     }
 }
 
@@ -411,7 +456,26 @@ pub(crate) fn debug_collide(port: u16) {
 
 #[cfg(test)]
 mod tests {
-    use super::{normalize_target, parse_loopback_target, webview_title};
+    use std::panic::{AssertUnwindSafe, catch_unwind};
+    use std::sync::Mutex;
+
+    use super::{normalize_target, parse_loopback_target, recover_lock, webview_title};
+
+    #[test]
+    fn recover_lock_preserves_a_poisoned_value() {
+        let lock = Mutex::new(4);
+        let _ = catch_unwind(AssertUnwindSafe(|| {
+            let _guard = match lock.lock() {
+                Ok(guard) => guard,
+                Err(_) => return,
+            };
+            panic!("poison test lock");
+        }));
+
+        let mut guard = recover_lock(&lock, "test");
+        *guard += 1;
+        assert_eq!(*guard, 5);
+    }
 
     #[test]
     fn parse_loopback_accepts_localhost_and_loopback_ips() {

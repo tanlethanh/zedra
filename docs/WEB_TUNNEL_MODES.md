@@ -3,8 +3,9 @@
 The web tunnel opens a host's localhost web app in the in-app webview over the
 authenticated Zedra session. It has two adapters behind one seam, picked per
 host and keyed by the session's stable non-relay **endpoint id** (so routing
-survives reconnects). Default is **exact-port**; **alias** is an opt-in
-fallback. Implementation: `crates/zedra/src/web_tunnel/`.
+survives reconnects). Default is **exact-port**; **alias** is the automatic
+fallback when a port can't be bound. Implementation:
+`crates/zedra/src/web_tunnel/`.
 
 ## Why two modes
 
@@ -31,11 +32,11 @@ Neither is strictly better; they trade origin honesty for multi-host reach.
   by a plaintext byte sniffer and bound the same way.
 - Each device port is owned by **one host** (endpoint id). A second host
   colliding on the same port — or a hard bind failure (another app holds the
-  port, or an OS restriction) — is "exact-port unavailable" and triggers the
-  fallback prompt.
+  port, or an OS restriction) — is "exact-port unavailable" and falls the host
+  over to the alias.
 - Origin stays `localhost` → no CORS/OAuth/navigation surprises.
 
-## Alias (opt-in fallback)
+## Alias (automatic fallback)
 
 - Serves the host under a per-host alias `**<word>.zedra.test**` (`word` = a
   short label from a curated wordlist, assigned per host by `alias::mint_label`
@@ -66,18 +67,22 @@ Neither is strictly better; they trade origin honesty for multi-host reach.
 1. Non-loopback / non-http(s) targets → system browser.
 2. Resolve the host endpoint id; if the host already opted into the alias, use it.
 3. Otherwise try exact-port. Success → load literal `localhost`.
-4. Unavailable → a native notice ("localhost:PORT can't be bound on this
-   device") with a **Use alias** action and a link to this doc. Approving records
-   the choice **for that host** and serves via the alias from then on.
+4. Unavailable → fall over to the alias immediately, recording the choice **for
+   that host** so later opens skip the doomed bind. No prompt: the port won't
+   become bindable on a retry, so asking would only delay the same page. The
+   address bar shows the alias, which is where the user sees the switch.
+5. Unavailable **and** the target is https → the alias can't serve it (its
+   certificate is for `localhost`), so the open stops with a native notice
+   linking this doc.
 
 ## Choosing
 
-| | Exact-port (default) | Alias (opt-in) |
+| | Exact-port (default) | Alias (fallback) |
 |---|---|---|
 | Origin | honest `localhost` | honest `<label>.zedra.test` |
 | CORS / cookies / `localhost` OAuth | work unchanged | need the alias origin configured |
 | Same-port, multiple hosts concurrently | one host per port | each host disambiguated |
-| Port already taken (app/OS) | fails → offers alias | works (one ephemeral proxy port) |
+| Port already taken (app/OS) | falls over to alias | works (one ephemeral proxy port) |
 | Companion ports | sniffer binds them | same-origin/relative only |
 
 Use exact-port for origin-sensitive apps (sign-in, cookies, strict CORS); use
@@ -98,4 +103,5 @@ alias if the port is now taken). `web_tunnel::active_listeners()` /
 
 - **Switch a host to alias from the manager**: the manager only stops listeners
   today. Add a per-row action to opt a host into the alias adapter directly,
-  without waiting for a bind conflict to surface the prompt.
+  without waiting for a bind conflict, and to undo an automatic fallback once the
+  port is free again.
