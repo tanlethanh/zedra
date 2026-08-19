@@ -29,19 +29,25 @@ pub fn resolve_terminal_agent(
 /// Resolve a command line to an agent slug, or `None` for a plain shell.
 pub fn detect_command(raw: &str) -> Option<&'static str> {
     let low = raw.to_ascii_lowercase();
-    let trimmed = low.trim();
+    // Launch commands carry env prefixes (`FX_PERMISSION_MODE=yolo fx`); strip
+    // them so the agent token is what gets matched.
+    let trimmed = strip_env_prefix(low.trim());
 
     // Earliest match wins (`qwen --provider gemini` → qwen); registry order
     // breaks position ties.
     let mut best: Option<(usize, &'static str)> = None;
     for actor in super::actors() {
-        let at = if actor.detect_exact().iter().any(|needle| trimmed == *needle) {
+        let at = if actor
+            .detect_exact()
+            .iter()
+            .any(|needle| matches_exact(trimmed, needle))
+        {
             Some(0)
         } else {
             actor
                 .detect_aliases()
                 .iter()
-                .filter_map(|needle| bounded_find(&low, needle))
+                .filter_map(|needle| bounded_find(trimmed, needle))
                 .min()
         };
         if let Some(at) = at {
@@ -51,6 +57,40 @@ pub fn detect_command(raw: &str) -> Option<&'static str> {
         }
     }
     best.map(|(_, slug)| slug)
+}
+
+/// Drop leading `KEY=value` assignments (`FX_PERMISSION_MODE=yolo fx`), which
+/// the launch commands use to set an agent's permission mode.
+fn strip_env_prefix(command: &str) -> &str {
+    let mut rest = command;
+    loop {
+        let Some((head, tail)) = rest.split_once(' ') else {
+            return rest;
+        };
+        let Some((key, _)) = head.split_once('=') else {
+            return rest;
+        };
+        if key.is_empty()
+            || !key.chars().all(|c| c.is_ascii_alphanumeric() || c == '_')
+            || key.starts_with(|c: char| c.is_ascii_digit())
+        {
+            return rest;
+        }
+        rest = tail.trim_start();
+    }
+}
+
+/// Exact tokens match the whole command, or the command up to its first flag
+/// (`fx --resume <id>`), so a resume command still latches while a token that
+/// doubles as a word (`pi build`, `hermes build`) stays unmatched.
+fn matches_exact(command: &str, needle: &str) -> bool {
+    if command == needle {
+        return true;
+    }
+    command
+        .strip_prefix(needle)
+        .and_then(|rest| rest.strip_prefix(' '))
+        .is_some_and(|rest| rest.trim_start().starts_with('-'))
 }
 
 /// Byte offset of `needle` in `hay`, bounded by non-alphanumerics (or string
@@ -149,6 +189,18 @@ mod tests {
         assert_eq!(detect("pip install pytest"), None);
         // v1 and v2 ship as separate binaries; neither may claim the other.
         assert_eq!(detect("opencode2 --auto"), Some("opencode2"));
+        // Env prefixes and flags must not hide the agent (fx launches as
+        // `FX_PERMISSION_MODE=yolo fx`), while word-like tokens stay strict.
+        assert_eq!(detect("FX_PERMISSION_MODE=yolo fx"), Some("fx"));
+        assert_eq!(
+            detect("FX_PERMISSION_MODE=yolo fx --resume 17-ab"),
+            Some("fx")
+        );
+        assert_eq!(detect("fx --resume 17-ab"), Some("fx"));
+        assert_eq!(detect("CLAUDE_CODE_NO_FLICKER=0 claude"), Some("claude"));
+        assert_eq!(detect("fx ask something"), None);
+        assert_eq!(detect("ffmpeg -vf fx"), None);
+        assert_eq!(detect("pi build"), None);
         assert_eq!(detect("opencode --auto"), Some("opencode"));
     }
 }
