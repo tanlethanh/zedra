@@ -17,9 +17,9 @@ use zedra_rpc::proto::{
 #[derive(Debug, Subcommand)]
 pub enum AgentCommand {
     /// List every registered agent, its slug, and whether its CLI is installed
-    List(AgentRegistryArgs),
+    List(AgentListArgs),
     /// Show managed-agent summaries for this workspace (needs a running daemon)
-    Status(AgentListArgs),
+    Status(AgentStatusArgs),
     /// List sessions for one managed agent
     Sessions(AgentSessionsArgs),
     /// Resume an agent session in a new phone terminal
@@ -37,7 +37,7 @@ pub enum AgentCommand {
 }
 
 #[derive(Debug, Args)]
-pub struct AgentRegistryArgs {
+pub struct AgentListArgs {
     /// Workspace directory used for the CLI availability probe
     #[arg(short, long, default_value = ".")]
     workdir: String,
@@ -53,7 +53,7 @@ pub struct AgentRegistryArgs {
 }
 
 #[derive(Debug, Args)]
-pub struct AgentListArgs {
+pub struct AgentStatusArgs {
     /// Working directory of the running daemon
     #[arg(short, long, default_value = ".")]
     workdir: String,
@@ -232,7 +232,7 @@ fn actor_slug(raw: &str) -> Result<&'static str> {
 
 pub async fn run(command: AgentCommand) -> Result<()> {
     match command {
-        AgentCommand::List(args) => list_registry(args),
+        AgentCommand::List(args) => list_agents(args),
         AgentCommand::Status(args) => agent_status(args).await,
         AgentCommand::Sessions(args) => list_sessions(args).await,
         AgentCommand::Resume(args) => resume_session(args).await,
@@ -243,15 +243,15 @@ pub async fn run(command: AgentCommand) -> Result<()> {
 
 /// Registry listing. Runs entirely from the actor registry and the user config
 /// — no daemon, no provider CLI spawn — so it answers even when nothing runs.
-fn list_registry(args: AgentRegistryArgs) -> Result<()> {
+fn list_agents(args: AgentListArgs) -> Result<()> {
     let workdir = resolve_workdir(&args.workdir);
     let config = crate::global_config::get();
-    let entries: Vec<RegistryEntry> = agent::actors()
+    let entries: Vec<AgentListEntry> = agent::actors()
         .iter()
         .map(|actor| {
             let slug = actor.slug();
             let installed = actor.cli_available(&workdir);
-            RegistryEntry {
+            AgentListEntry {
                 slug,
                 display_name: actor.display_name(),
                 installed,
@@ -275,12 +275,12 @@ fn list_registry(args: AgentRegistryArgs) -> Result<()> {
     if args.json {
         println!("{}", serde_json::to_string_pretty(&entries)?);
     } else {
-        println!("{}", render_registry(&entries));
+        println!("{}", render_agent_registry(&entries));
     }
     Ok(())
 }
 
-fn render_registry(entries: &[RegistryEntry]) -> String {
+fn render_agent_registry(entries: &[AgentListEntry]) -> String {
     let rows = entries
         .iter()
         .map(|entry| {
@@ -329,7 +329,7 @@ fn render_registry(entries: &[RegistryEntry]) -> String {
 }
 
 #[derive(Serialize)]
-struct RegistryEntry {
+struct AgentListEntry {
     slug: &'static str,
     display_name: &'static str,
     /// CLI found on PATH (or the agent's local data dir, for actors that accept it).
@@ -346,7 +346,7 @@ struct RegistryEntry {
     launch_cmd: Option<String>,
 }
 
-impl RegistryEntry {
+impl AgentListEntry {
     fn features(&self) -> String {
         let features = [
             (self.managed, "sessions"),
@@ -366,7 +366,7 @@ impl RegistryEntry {
     }
 }
 
-async fn agent_status(args: AgentListArgs) -> Result<()> {
+async fn agent_status(args: AgentStatusArgs) -> Result<()> {
     let workdir = resolve_workdir(&args.workdir);
     let result: AgentListResult = api_get(&workdir, "/api/agents").await?;
     if args.json {
@@ -1345,8 +1345,8 @@ mod tests {
     }
 
     #[test]
-    fn registry_row_lists_only_supported_features() {
-        let entry = RegistryEntry {
+    fn agent_list_row_lists_only_supported_features() {
+        let entry = AgentListEntry {
             slug: "fx",
             display_name: "fx",
             installed: true,
@@ -1361,7 +1361,7 @@ mod tests {
         };
         assert_eq!(entry.features(), "sessions");
 
-        let detect_only = RegistryEntry {
+        let detect_only = AgentListEntry {
             managed: false,
             ..entry
         };
