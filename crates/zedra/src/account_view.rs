@@ -220,16 +220,8 @@ impl Render for AccountView {
         let top_inset = platform_bridge::status_bar_inset();
         let bottom_inset = platform_bridge::home_indicator_inset();
         let status = self.delta_state.read(cx).status();
-        let email = status
-            .email
-            .clone()
-            .unwrap_or_else(|| "Not signed in".to_string());
-        let initial = email
-            .chars()
-            .next()
-            .unwrap_or('Z')
-            .to_ascii_uppercase()
-            .to_string();
+        let account_label = delta::account_label(&status);
+        let initial = delta::account_initial(&status);
         let stack = status
             .stack_id
             .map(|id| id.to_string())
@@ -315,7 +307,7 @@ impl Render for AccountView {
                             .flex()
                             .flex_col()
                             .gap(px(2.0))
-                            .child(profile_row(&initial, &email, &summary, cx))
+                            .child(profile_row(&initial, &account_label, &summary, cx))
                             .child(divider(cx))
                             .child(if status.push_registered {
                                 info_row(cx, "Notifications", &push_summary(&status))
@@ -409,7 +401,7 @@ impl Render for AccountView {
 
 /// Avatar + identity, matching `settings_view::profile_info_row` metrics. No
 /// remote image loading on this path, so the avatar is the account initial.
-fn profile_row(initial: &str, email: &str, summary: &str, cx: &App) -> impl IntoElement {
+fn profile_row(initial: &str, label: &str, summary: &str, cx: &App) -> impl IntoElement {
     div()
         .min_w_0()
         .py(px(theme::SPACING_SM))
@@ -448,7 +440,7 @@ fn profile_row(initial: &str, email: &str, summary: &str, cx: &App) -> impl Into
                         .text_size(px(theme::FONT_BODY))
                         .font_family(fonts::MONO_FONT_FAMILY)
                         .font_weight(FontWeight::MEDIUM)
-                        .child(email.to_string()),
+                        .child(label.to_string()),
                 )
                 .child(
                     div()

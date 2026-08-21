@@ -190,6 +190,28 @@ pub struct DeltaStatus {
     pub nodes_stale: bool,
 }
 
+/// A missing email never means signed out: Apple hidden-relay sign-in has no email,
+/// so fall back to the sign-in flag rather than the "Not signed in" label.
+pub fn account_label(status: &DeltaStatus) -> String {
+    status.email.clone().unwrap_or_else(|| {
+        if status.signed_in {
+            "Signed in".to_string()
+        } else {
+            "Not signed in".to_string()
+        }
+    })
+}
+
+pub fn account_initial(status: &DeltaStatus) -> String {
+    status
+        .email
+        .as_deref()
+        .and_then(|email| email.chars().next())
+        .unwrap_or('Z')
+        .to_ascii_uppercase()
+        .to_string()
+}
+
 #[derive(Clone)]
 pub struct ClientDeltaInfo {
     pub delta_url: String,

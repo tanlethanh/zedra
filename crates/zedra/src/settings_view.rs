@@ -321,10 +321,7 @@ impl SettingsView {
     }
 
     fn profile_title(status: &delta::DeltaStatus) -> String {
-        status
-            .email
-            .clone()
-            .unwrap_or_else(|| "Signed in".to_string())
+        delta::account_label(status)
     }
 
     fn profile_summary(status: &delta::DeltaStatus) -> String {
@@ -535,12 +532,7 @@ impl Render for SettingsView {
         let status = self.status(cx);
         let delta_message = self.delta_message.clone();
         let profile_title = Self::profile_title(&status);
-        let profile_initial = profile_title
-            .chars()
-            .next()
-            .unwrap_or('Z')
-            .to_ascii_uppercase()
-            .to_string();
+        let profile_initial = delta::account_initial(&status);
         let profile_summary = status_or_summary(
             Self::profile_summary(&status),
             delta_message.as_deref(),
