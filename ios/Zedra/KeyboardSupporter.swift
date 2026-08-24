@@ -1,7 +1,8 @@
 import UIKit
 
 /// Terminal key bar. Renders either the compact single row or the extended
-/// two-row keypad, and swaps in an IME composing field on a left swipe.
+/// two-row keypad, and swaps in an IME composing field on a left swipe or a tap
+/// on the ⌨ key.
 ///
 /// Modifier state is owned by Rust (`zedra_terminal::keyboard_accessory`) because
 /// it must also apply to characters committed by the software keyboard; this view
@@ -14,7 +15,13 @@ final class KeyboardSupporter: NSObject, UITextFieldDelegate, UIGestureRecognize
         var repeats: Bool = false
         /// Set for Shift/Ctrl/Alt: the bit this key highlights from the mask.
         var modifierBit: UInt32?
+        /// Spoken name for keys whose glyph does not read as a word.
+        var accessibilityLabel: String?
     }
+
+    /// Opens the composer instead of reaching the terminal. Handled locally in
+    /// `buttonTouchUpInside`, so it is never forwarded as a key to Rust.
+    private static let composerKey = "zedra:composer"
 
     private let compactRow = [
         KeySpec(label: "Esc", key: "escape"),
@@ -24,6 +31,7 @@ final class KeyboardSupporter: NSObject, UITextFieldDelegate, UIGestureRecognize
         KeySpec(label: "↑", key: "up", repeats: true),
         KeySpec(label: "→", key: "right", repeats: true),
         KeySpec(label: "⏎", key: "enter"),
+        KeySpec(label: "⌨", key: Self.composerKey, accessibilityLabel: "Open composer"),
     ]
 
     private let extendedTopRow = [
@@ -217,6 +225,7 @@ final class KeyboardSupporter: NSObject, UITextFieldDelegate, UIGestureRecognize
             )
             button.setTitle(spec.label, for: .normal)
             button.titleLabel?.font = .systemFont(ofSize: extended ? 14.0 : 16.0)
+            button.accessibilityLabel = spec.accessibilityLabel
             button.tag = buttons.count
             specsByTag[button.tag] = spec
             button.addTarget(self, action: #selector(buttonTouchDown(_:)), for: .touchDown)
@@ -263,7 +272,6 @@ final class KeyboardSupporter: NSObject, UITextFieldDelegate, UIGestureRecognize
 
     @objc
     private func handlePan(_ recognizer: UIPanGestureRecognizer) {
-        guard extended else { return }
         let dx = recognizer.translation(in: recognizer.view).x
         switch recognizer.state {
         case .began:
@@ -452,9 +460,13 @@ final class KeyboardSupporter: NSObject, UITextFieldDelegate, UIGestureRecognize
 
         let repeated = repeatFired
         stopRepeating()
-        if !repeated {
-            sendKey?(spec.key)
+        guard !repeated else { return }
+
+        if spec.key == Self.composerKey {
+            setComposing(true, animated: true)
+            return
         }
+        sendKey?(spec.key)
     }
 
     private func startRepeating(_ key: String) {
