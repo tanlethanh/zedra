@@ -23,7 +23,40 @@
 Pushing the tag triggers `.github/workflows/release.yml`, which:
 - Builds `zedra` for macOS arm64/x86_64 and Linux x86_64/aarch64
 - Packages each binary as `zedra-<target>.tar.gz` with a `.sha256` checksum
+- Builds a signed Android release APK (arm64-v8a) and packages it as
+  `zedra-android-arm64-v8a.apk` with a `.sha256` checksum
 - Creates a GitHub Release with all artifacts and auto-generated notes
+
+## Android APK in GitHub Releases
+
+The same `v*` tag that releases the host CLI also builds and attaches a
+signed Android APK. This is a sideload path alongside the Play Store listing,
+not a replacement for it — until Android gets its own release pipeline
+(separate from Play Store submission and any future manual-upload flow), the
+CI job here is deliberately simple:
+
+- **CI never bumps the Android version.** It builds `android/build.gradle`
+  exactly as committed. Bump `versionCode` (and `versionName` if it changed)
+  in `android/build.gradle` yourself before tagging — the same discipline as
+  the iOS `CURRENT_PROJECT_VERSION` bump described below. If you forget,
+  the tag ships an APK with a stale/duplicate version number.
+- The APK is signed with the real release keystore (`ZEDRA_KEYSTORE*` Gradle
+  properties, see `android/build.gradle`'s `validateZedraReleaseSigning`
+  task), sourced from repo secrets:
+
+  | Secret name | Value |
+  |---|---|
+  | `ZEDRA_KEYSTORE_BASE64` | `base64 -i release.keystore` output |
+  | `ZEDRA_KEYSTORE_ALIAS` | key alias |
+  | `ZEDRA_KEYSTORE_PASSWORD` | keystore password |
+  | `ZEDRA_GOOGLE_SERVICES_JSON_BASE64` | `base64 -i google-services.json` output — release builds hard-require this file |
+
+  `ZEDRA_KEY_PASSWORD` is intentionally not set — `build.gradle` falls back to
+  `ZEDRA_KEYSTORE_PASSWORD` when the key password matches the store password
+  (the common case), same as the local `~/.gradle/gradle.properties` setup.
+
+  This is the same keystore used for local `installRelease`/Play Store
+  builds — see the `~/.gradle/gradle.properties` setup in `docs/GET_STARTED.md`.
 
 ## How users install / update
 
