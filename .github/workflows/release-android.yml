@@ -72,10 +72,17 @@ jobs:
             -PZEDRA_KEYSTORE_ALIAS="${{ secrets.ZEDRA_KEYSTORE_ALIAS }}" \
             -PZEDRA_KEYSTORE_PASSWORD="${{ secrets.ZEDRA_KEYSTORE_PASSWORD }}"
 
+      # `android/` is itself the Gradle app module (no `include ':app'`), so the
+      # APK lands in android/build/, not android/app/build/.
       - name: Package APK
         working-directory: android
         run: |
-          apk="$(find app/build/outputs/apk/release -name '*-release.apk' | head -n1)"
+          apk="$(find build/outputs/apk/release -name '*-release.apk' | head -n1)"
+          if [ -z "$apk" ]; then
+            echo "no release APK under android/build/outputs/apk/release" >&2
+            find build/outputs -name '*.apk' >&2 || true
+            exit 1
+          fi
           cp "$apk" zedra-android-arm64-v8a.apk
           shasum -a 256 zedra-android-arm64-v8a.apk > zedra-android-arm64-v8a.apk.sha256
 
