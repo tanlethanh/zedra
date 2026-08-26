@@ -23,22 +23,38 @@
 Pushing the tag triggers `.github/workflows/release.yml`, which:
 - Builds `zedra` for macOS arm64/x86_64 and Linux x86_64/aarch64
 - Packages each binary as `zedra-<target>.tar.gz` with a `.sha256` checksum
-- Builds a signed Android release APK (arm64-v8a) and packages it as
-  `zedra-android-arm64-v8a.apk` with a `.sha256` checksum
-- Creates a GitHub Release with all artifacts and auto-generated notes
+- Creates a GitHub Release with the CLI artifacts and auto-generated notes
+- Then calls `.github/workflows/release-android.yml`, which builds the signed
+  Android APK and attaches it to that release
 
 ## Android APK in GitHub Releases
 
-The same `v*` tag that releases the host CLI also builds and attaches a
-signed Android APK. This is a sideload path alongside the Play Store listing,
-not a replacement for it — until Android gets its own release pipeline
-(separate from Play Store submission and any future manual-upload flow), the
-CI job here is deliberately simple:
+The Android APK build lives in its own workflow,
+`.github/workflows/release-android.yml`. It takes a `tag` input and always
+attaches `zedra-android-arm64-v8a.apk` (plus its `.sha256`) to the release for
+that tag. Two ways to run it:
+
+- **Automatically**, as the `android` job of `release.yml` — it runs after the
+  `release` job creates the GitHub Release, so the APK lands on a release that
+  already exists.
+- **Manually**, via Actions → *Release Android* → *Run workflow*, passing an
+  existing tag (e.g. `v0.4.3`). Use this to add or replace the APK on a release
+  whose Android build failed or was skipped. The workflow checks out that tag,
+  rebuilds, and re-uploads the asset in place — the release body and the CLI
+  assets are left untouched.
+
+  ```bash
+  gh workflow run release-android.yml -f tag=v0.4.3
+  ```
+
+This is a sideload path alongside the Play Store listing, not a replacement for
+it — until Android gets a full release pipeline (Play Store submission and any
+future manual-upload flow), the CI job here is deliberately simple:
 
 - **CI never bumps the Android version.** It builds `android/build.gradle`
-  exactly as committed. Bump `versionCode` (and `versionName` if it changed)
-  in `android/build.gradle` yourself before tagging — the same discipline as
-  the iOS `CURRENT_PROJECT_VERSION` bump described below. If you forget,
+  exactly as committed at the tag. Bump `versionCode` (and `versionName` if it
+  changed) in `android/build.gradle` yourself before tagging — the same
+  discipline as the iOS `CURRENT_PROJECT_VERSION` bump described below. If you forget,
   the tag ships an APK with a stale/duplicate version number.
 - The APK is signed with the real release keystore (`ZEDRA_KEYSTORE*` Gradle
   properties, see `android/build.gradle`'s `validateZedraReleaseSigning`

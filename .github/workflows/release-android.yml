@@ -1,0 +1,98 @@
+name: Release Android
+
+on:
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "Existing release tag to attach the APK to (e.g. v0.4.3)"
+        required: true
+        type: string
+  workflow_call:
+    inputs:
+      tag:
+        required: true
+        type: string
+
+permissions:
+  contents: write
+
+jobs:
+  android:
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.tag }}
+          submodules: recursive
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: aarch64-linux-android
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: android-release
+
+      - name: Install cargo-ndk
+        run: cargo install cargo-ndk --locked
+
+      - name: Install Android NDK
+        id: ndk
+        uses: nttld/setup-ndk@v1
+        with:
+          ndk-version: r27b
+
+      - name: Set up JDK
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "17"
+
+      - name: Write signing keystore
+        working-directory: android
+        env:
+          ZEDRA_KEYSTORE_BASE64: ${{ secrets.ZEDRA_KEYSTORE_BASE64 }}
+        run: echo "$ZEDRA_KEYSTORE_BASE64" | base64 -d > zedra-release.keystore
+
+      - name: Write google-services.json
+        working-directory: android
+        env:
+          ZEDRA_GOOGLE_SERVICES_JSON_BASE64: ${{ secrets.ZEDRA_GOOGLE_SERVICES_JSON_BASE64 }}
+        run: echo "$ZEDRA_GOOGLE_SERVICES_JSON_BASE64" | base64 -d > google-services.json
+
+      - name: Build signed release APK
+        working-directory: android
+        env:
+          ANDROID_NDK_ROOT: ${{ steps.ndk.outputs.ndk-path }}
+        run: |
+          chmod +x gradlew
+          ./gradlew assembleRelease \
+            -PZEDRA_KEYSTORE=zedra-release.keystore \
+            -PZEDRA_KEYSTORE_ALIAS="${{ secrets.ZEDRA_KEYSTORE_ALIAS }}" \
+            -PZEDRA_KEYSTORE_PASSWORD="${{ secrets.ZEDRA_KEYSTORE_PASSWORD }}"
+
+      - name: Package APK
+        working-directory: android
+        run: |
+          apk="$(find app/build/outputs/apk/release -name '*-release.apk' | head -n1)"
+          cp "$apk" zedra-android-arm64-v8a.apk
+          shasum -a 256 zedra-android-arm64-v8a.apk > zedra-android-arm64-v8a.apk.sha256
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: zedra-android-arm64-v8a
+          path: |
+            android/zedra-android-arm64-v8a.apk
+            android/zedra-android-arm64-v8a.apk.sha256
+
+      # Attaches to the existing release for this tag; softprops keeps the
+      # release body untouched when no `body` input is given.
+      - name: Attach APK to release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ inputs.tag }}
+          files: |
+            android/zedra-android-arm64-v8a.apk
+            android/zedra-android-arm64-v8a.apk.sha256
