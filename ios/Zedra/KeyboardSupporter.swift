@@ -1,8 +1,7 @@
 import UIKit
 
 /// Terminal key bar. Renders either the compact single row or the extended
-/// two-row keypad, and swaps in an IME composing field on a left swipe or a tap
-/// on the ⌨ key.
+/// two-row keypad, and swaps in an IME composing field on a left swipe.
 ///
 /// Modifier state is owned by Rust (`zedra_terminal::keyboard_accessory`) because
 /// it must also apply to characters committed by the software keyboard; this view
@@ -15,13 +14,7 @@ final class KeyboardSupporter: NSObject, UITextFieldDelegate, UIGestureRecognize
         var repeats: Bool = false
         /// Set for Shift/Ctrl/Alt: the bit this key highlights from the mask.
         var modifierBit: UInt32?
-        /// Spoken name for keys whose glyph does not read as a word.
-        var accessibilityLabel: String?
     }
-
-    /// Opens the composer instead of reaching the terminal. Handled locally in
-    /// `buttonTouchUpInside`, so it is never forwarded as a key to Rust.
-    private static let composerKey = "zedra:composer"
 
     private let compactRow = [
         KeySpec(label: "Esc", key: "escape"),
@@ -31,7 +24,6 @@ final class KeyboardSupporter: NSObject, UITextFieldDelegate, UIGestureRecognize
         KeySpec(label: "↑", key: "up", repeats: true),
         KeySpec(label: "→", key: "right", repeats: true),
         KeySpec(label: "⏎", key: "enter"),
-        KeySpec(label: "⌨", key: Self.composerKey, accessibilityLabel: "Open composer"),
     ]
 
     private let extendedTopRow = [
@@ -225,7 +217,6 @@ final class KeyboardSupporter: NSObject, UITextFieldDelegate, UIGestureRecognize
             )
             button.setTitle(spec.label, for: .normal)
             button.titleLabel?.font = .systemFont(ofSize: extended ? 14.0 : 16.0)
-            button.accessibilityLabel = spec.accessibilityLabel
             button.tag = buttons.count
             specsByTag[button.tag] = spec
             button.addTarget(self, action: #selector(buttonTouchDown(_:)), for: .touchDown)
@@ -462,11 +453,14 @@ final class KeyboardSupporter: NSObject, UITextFieldDelegate, UIGestureRecognize
         stopRepeating()
         guard !repeated else { return }
 
-        if spec.key == Self.composerKey {
-            setComposing(true, animated: true)
-            return
-        }
+        fireKeyHaptic()
         sendKey?(spec.key)
+    }
+
+    /// Haptic for a committed key. Held keys haptic on their first repeat only,
+    /// not on every 60 ms tick, so a held arrow stays non-buzzy.
+    private func fireKeyHaptic() {
+        UIImpactFeedbackGenerator(style: .light).impactOccurred()
     }
 
     private func startRepeating(_ key: String) {
@@ -479,7 +473,10 @@ final class KeyboardSupporter: NSObject, UITextFieldDelegate, UIGestureRecognize
             guard let self, self.repeatingKey == key else {
                 return
             }
-            self.repeatFired = true
+            if !self.repeatFired {
+                self.repeatFired = true
+                self.fireKeyHaptic()
+            }
             self.sendKey?(key)
         }
         timer.fireDate = Date(timeIntervalSinceNow: repeatInitialDelay)
