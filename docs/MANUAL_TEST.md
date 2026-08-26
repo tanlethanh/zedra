@@ -2378,3 +2378,25 @@ resolution landed on 1.9.0, so the GMS error-resolution path crashed with
 4. **Outdated Play Services**: on a device with an old Play Services build,
    repeat step 3 and confirm the "update Google Play services" resolution dialog
    appears instead of a crash.
+
+## 27. Codex Resume Guard (Session Open Elsewhere)
+
+Codex locks a session while it runs, so resuming one that is open elsewhere
+fails and exits. `zedra codex resume` prompts instead. No model call is needed:
+`codex resume` takes the lock at startup.
+
+1. In a desktop terminal, run `codex resume <session-id>` on a saved session and
+   leave it running.
+2. In a second terminal, run the same id through
+   `cargo run -p zedra-host -- codex resume <session-id>`. Expected:
+   `Session <short> is open elsewhere`, `pid <n> · ttys<nn> · codex`, then the
+   `y` / `f` / `n` menu and a `[Y/f/n]` prompt.
+3. Answer `n`. Expected: `Cancelled.`, exit code 1, desktop codex still running.
+4. Repeat, answer `f`. Expected: a new session with the same history opens under
+   a new id; the desktop session keeps running.
+5. Repeat, press Enter. Expected: the desktop codex exits and the session
+   resumes here with its history.
+6. `cargo run -p zedra-host -- codex --version` prints the codex version;
+   non-resume arguments forward unchanged.
+7. From the app, tap a session open in a desktop terminal: the terminal shows
+   the same prompt. Tap one open nowhere: codex resumes with no prompt.

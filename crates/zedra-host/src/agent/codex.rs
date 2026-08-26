@@ -3,6 +3,7 @@ use crate::sqlite_readonly;
 use chrono::{DateTime, Utc};
 use serde::Deserialize;
 use serde_json::Value;
+use std::io::{IsTerminal, Write};
 use std::path::{Path, PathBuf};
 use zedra_rpc::proto::*;
 
@@ -697,12 +698,17 @@ impl AgentActor for CodexActor {
         setup_status(available, false, plugin_installed, hooks_installed, None)
     }
 
-    // `--no-alt-screen` runs the TUI inline so the mobile terminal keeps
-    // native scrollback.
+    // `--no-alt-screen` keeps native scrollback; the `zedra codex` prefix
+    // catches a session that is already open.
     fn resume_launch_command(&self, quoted: &str) -> Option<String> {
+        let prefix = super::wrapper_prefix("codex")?;
         Some(format!(
-            "codex resume --no-alt-screen --dangerously-bypass-approvals-and-sandbox {quoted}"
+            "{prefix} resume --no-alt-screen --dangerously-bypass-approvals-and-sandbox {quoted}"
         ))
+    }
+
+    fn run_wrapped(&self, args: &[String]) -> Option<Result<(), String>> {
+        Some(Self::wrap_cli(args))
     }
 
     fn default_launch_command(&self) -> Option<String> {
@@ -840,6 +846,298 @@ impl CodexActor {
         ("PostToolUse", Some("*"), 2),
         ("Stop", None, 2),
     ];
+}
+
+enum Choice {
+    Kill,
+    Fork,
+    Cancel,
+}
+
+struct Holder {
+    pid: u32,
+    detail: String,
+}
+
+// `zedra codex <args>` forwards to the codex CLI, guarding `resume` against the
+// per-thread writer lock (`$CODEX_HOME/thread-writer-locks/<id>.lock`) codex
+// holds for a session's whole life: resuming a session open in another terminal
+// otherwise fails with "already has an active writer" and exits at once.
+impl CodexActor {
+    fn wrap_cli(args: &[String]) -> Result<(), String> {
+        let Some(session_id) = Self::resume_target(args) else {
+            return Self::exec_codex(args.to_vec());
+        };
+        let Some(holder) = Self::lock_holder(&session_id) else {
+            return Self::exec_codex(args.to_vec());
+        };
+        match Self::prompt(&session_id, &holder) {
+            Choice::Kill => {
+                Self::release(&holder, &session_id)?;
+                Self::exec_codex(args.to_vec())
+            }
+            Choice::Fork => Self::exec_codex(Self::fork_args(args)),
+            Choice::Cancel => {
+                println!("Cancelled.");
+                std::process::exit(1);
+            }
+        }
+    }
+
+    /// Session id a `resume` targets; `None` when codex will pick one itself.
+    fn resume_target(args: &[String]) -> Option<String> {
+        if args.first().map(String::as_str) != Some("resume") {
+            return None;
+        }
+        if let Some(id) = args.iter().skip(1).find(|arg| Self::is_session_id(arg)) {
+            return Some(id.clone());
+        }
+        args.iter()
+            .any(|arg| arg == "--last")
+            .then(Self::latest_session)
+            .flatten()
+    }
+
+    fn is_session_id(value: &str) -> bool {
+        value.len() == 36
+            && value.bytes().enumerate().all(|(i, b)| match i {
+                8 | 13 | 18 | 23 => b == b'-',
+                _ => b.is_ascii_hexdigit(),
+            })
+    }
+
+    fn latest_session() -> Option<String> {
+        let cwd = std::env::current_dir().ok()?;
+        Self::threads_for_workdir(&cwd)
+            .ok()?
+            .into_iter()
+            .next()
+            .map(|thread| thread.id)
+    }
+
+    fn lock_path(session_id: &str) -> PathBuf {
+        std::env::var_os("CODEX_HOME")
+            .map(PathBuf::from)
+            .unwrap_or_else(|| home_path(&[".codex"]))
+            .join("thread-writer-locks")
+            .join(format!("{session_id}.lock"))
+    }
+
+    /// `None` when the session is free, or when its holder cannot be named —
+    /// codex then reports the conflict itself, as it did before this wrapper.
+    fn lock_holder(session_id: &str) -> Option<Holder> {
+        let path = Self::lock_path(session_id);
+        if Self::lock_free(&path) {
+            return None;
+        }
+        let pid = Self::lock_pid(&path)?;
+        Some(Holder {
+            pid,
+            detail: Self::describe(pid),
+        })
+    }
+
+    /// A missing file or a probe error counts as free, so a broken probe never
+    /// blocks a resume codex would have allowed.
+    fn lock_free(path: &Path) -> bool {
+        let Ok(file) = std::fs::File::open(path) else {
+            return true;
+        };
+        // The probe lock is released when `file` drops.
+        !matches!(file.try_lock(), Err(std::fs::TryLockError::WouldBlock))
+    }
+
+    fn lock_pid(path: &Path) -> Option<u32> {
+        let output = std::process::Command::new("lsof")
+            .arg("-t")
+            .arg(path)
+            .output()
+            .ok()?;
+        String::from_utf8_lossy(&output.stdout)
+            .split_whitespace()
+            .next()?
+            .parse()
+            .ok()
+    }
+
+    /// `pid 123 · ttys020 · codex`; flags are dropped to fit a phone screen.
+    fn describe(pid: u32) -> String {
+        let Ok(output) = std::process::Command::new("ps")
+            .args(["-o", "tty=,command=", "-p", &pid.to_string()])
+            .output()
+        else {
+            return format!("pid {pid}");
+        };
+        let line = String::from_utf8_lossy(&output.stdout);
+        let mut fields = line.split_whitespace();
+        match (fields.next(), fields.next()) {
+            (Some(tty), Some(program)) => {
+                let program = program.rsplit('/').next().unwrap_or(program);
+                format!("pid {pid} \u{b7} {tty} \u{b7} {program}")
+            }
+            _ => format!("pid {pid}"),
+        }
+    }
+
+    // One fact per line, so nothing wraps on a phone-width terminal.
+    fn prompt(session_id: &str, holder: &Holder) -> Choice {
+        let short = session_id.split('-').next().unwrap_or(session_id);
+        println!("\nSession {short} is open elsewhere");
+        println!("{}", holder.detail);
+        if !std::io::stdin().is_terminal() {
+            println!("\nNot a terminal; cancelled.");
+            return Choice::Cancel;
+        }
+        println!("\n  y  kill it, resume here (default)");
+        println!("  f  fork to a new session");
+        println!("  n  cancel\n");
+        loop {
+            print!("[Y/f/n] ");
+            let _ = std::io::stdout().flush();
+            let mut line = String::new();
+            if std::io::stdin().read_line(&mut line).is_err() {
+                return Choice::Cancel;
+            }
+            match line.trim().to_ascii_lowercase().as_str() {
+                "" | "y" => return Choice::Kill,
+                "f" => return Choice::Fork,
+                "n" => return Choice::Cancel,
+                _ => {}
+            }
+        }
+    }
+
+    /// `codex fork` takes the same flags as `resume` except this one.
+    fn fork_args(args: &[String]) -> Vec<String> {
+        args.iter()
+            .enumerate()
+            .filter(|(_, arg)| arg.as_str() != "--include-non-interactive")
+            .map(|(i, arg)| {
+                if i == 0 {
+                    "fork".to_string()
+                } else {
+                    arg.clone()
+                }
+            })
+            .collect()
+    }
+
+    fn release(holder: &Holder, session_id: &str) -> Result<(), String> {
+        let path = Self::lock_path(session_id);
+        Self::signal(holder.pid, false)?;
+        if Self::wait_free(&path, 3) {
+            return Ok(());
+        }
+        Self::signal(holder.pid, true)?;
+        if Self::wait_free(&path, 2) {
+            return Ok(());
+        }
+        Err(format!(
+            "codex (pid {}) still holds the session",
+            holder.pid
+        ))
+    }
+
+    fn wait_free(path: &Path, secs: u64) -> bool {
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(secs);
+        while std::time::Instant::now() < deadline {
+            if Self::lock_free(path) {
+                return true;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(100));
+        }
+        Self::lock_free(path)
+    }
+
+    #[cfg(unix)]
+    fn signal(pid: u32, force: bool) -> Result<(), String> {
+        let signal = if force { libc::SIGKILL } else { libc::SIGTERM };
+        // Safety: `kill` on a pid read from the lock file; failures are reported.
+        if unsafe { libc::kill(pid as libc::pid_t, signal) } == 0 {
+            return Ok(());
+        }
+        let err = std::io::Error::last_os_error();
+        match err.raw_os_error() {
+            Some(code) if code == libc::ESRCH => Ok(()),
+            _ => Err(format!("failed to signal pid {pid}: {err}")),
+        }
+    }
+
+    #[cfg(not(unix))]
+    fn signal(pid: u32, _force: bool) -> Result<(), String> {
+        Err(format!("cannot stop pid {pid} on this platform"))
+    }
+
+    #[cfg(unix)]
+    fn exec_codex(args: Vec<String>) -> Result<(), String> {
+        use std::os::unix::process::CommandExt;
+        // `exec` replaces this process so the TUI owns the terminal directly.
+        let err = std::process::Command::new("codex").args(&args).exec();
+        Err(format!("failed to run codex: {err}"))
+    }
+
+    #[cfg(not(unix))]
+    fn exec_codex(args: Vec<String>) -> Result<(), String> {
+        let status = std::process::Command::new("codex")
+            .args(&args)
+            .status()
+            .map_err(|err| format!("failed to run codex: {err}"))?;
+        std::process::exit(status.code().unwrap_or(1));
+    }
+}
+
+#[cfg(test)]
+mod wrap_cli_tests {
+    use super::*;
+
+    fn args(values: &[&str]) -> Vec<String> {
+        values.iter().map(|v| v.to_string()).collect()
+    }
+
+    #[test]
+    fn resume_target_reads_the_session_id_past_flags() {
+        let id = "01a03ed7-5678-7002-8eb1-b0d7fc14b291";
+        assert_eq!(
+            CodexActor::resume_target(&args(&["resume", "--no-alt-screen", id])),
+            Some(id.to_string())
+        );
+        assert_eq!(CodexActor::resume_target(&args(&["fork", id])), None);
+        assert_eq!(CodexActor::resume_target(&args(&["resume"])), None);
+        assert_eq!(
+            CodexActor::resume_target(&args(&["resume", "-m", "gpt"])),
+            None
+        );
+    }
+
+    #[test]
+    fn fork_args_swap_the_verb_and_drop_the_resume_only_flag() {
+        let id = "01a03ed7-5678-7002-8eb1-b0d7fc14b291";
+        assert_eq!(
+            CodexActor::fork_args(&args(&[
+                "resume",
+                "--no-alt-screen",
+                "--include-non-interactive",
+                id,
+            ])),
+            args(&["fork", "--no-alt-screen", id])
+        );
+    }
+
+    #[test]
+    fn session_ids_are_uuid_shaped() {
+        assert!(CodexActor::is_session_id(
+            "01a03ed7-5678-7002-8eb1-b0d7fc14b291"
+        ));
+        assert!(!CodexActor::is_session_id("--no-alt-screen"));
+        assert!(!CodexActor::is_session_id("01a03ed7"));
+    }
+
+    #[test]
+    fn a_missing_lock_file_reads_as_free() {
+        assert!(CodexActor::lock_free(Path::new(
+            "/tmp/zedra-no-such-codex-lock"
+        )));
+    }
 }
 
 #[cfg(test)]
