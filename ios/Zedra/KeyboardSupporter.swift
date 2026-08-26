@@ -263,7 +263,6 @@ final class KeyboardSupporter: NSObject, UITextFieldDelegate, UIGestureRecognize
 
     @objc
     private func handlePan(_ recognizer: UIPanGestureRecognizer) {
-        guard extended else { return }
         let dx = recognizer.translation(in: recognizer.view).x
         switch recognizer.state {
         case .began:
@@ -452,9 +451,16 @@ final class KeyboardSupporter: NSObject, UITextFieldDelegate, UIGestureRecognize
 
         let repeated = repeatFired
         stopRepeating()
-        if !repeated {
-            sendKey?(spec.key)
-        }
+        guard !repeated else { return }
+
+        fireKeyHaptic()
+        sendKey?(spec.key)
+    }
+
+    /// Haptic for a committed key. Held keys haptic on their first repeat only,
+    /// not on every 60 ms tick, so a held arrow stays non-buzzy.
+    private func fireKeyHaptic() {
+        UIImpactFeedbackGenerator(style: .light).impactOccurred()
     }
 
     private func startRepeating(_ key: String) {
@@ -467,7 +473,10 @@ final class KeyboardSupporter: NSObject, UITextFieldDelegate, UIGestureRecognize
             guard let self, self.repeatingKey == key else {
                 return
             }
-            self.repeatFired = true
+            if !self.repeatFired {
+                self.repeatFired = true
+                self.fireKeyHaptic()
+            }
             self.sendKey?(key)
         }
         timer.fireDate = Date(timeIntervalSinceNow: repeatInitialDelay)

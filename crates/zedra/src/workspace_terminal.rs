@@ -250,6 +250,7 @@ impl WorkspaceTerminal {
             cx.new(|cx| FilePreviewView::new(session_handle.clone(), workspace_state.clone(), cx));
         let terminal_events_sub =
             cx.subscribe(&terminal_view, |this, _terminal, event, cx| match event {
+                TerminalEvent::PreeditChanged => {}
                 TerminalEvent::RequestResize { cols, rows } => {
                     Self::resize_remote_terminal(
                         this.session_handle.clone(),

@@ -1198,14 +1198,20 @@ printf '\033]8;;file:///tmp/zedra-long-code.rs:41:1\033\\/tmp/zedra-long-code.rs
 18. Expected: normal input uses the same native IME protocol correctly, with marked text committed once and suggestions replacing only the requested range
 19. Commit message input, dictation: tap the microphone, dictate a short phrase, then stop dictation
 20. Expected: the dictated phrase remains in the input after UIKit commits, the final cleanup delete does not clear the field, and any late `insertDictationResult` does not duplicate the phrase
+21. Terminal, Chinese Simplified Stroke: switch to 简体中文 – 笔画, tap strokes, and accept candidates such as 我, 也, 很多
+22. Expected: each accepted candidate reaches the PTY once, even though the keyboard commits with `unmarkText` and never sends `insertText`; no candidate is dropped and none is inserted twice
+23. Terminal, inline composition: keep composing a stroke phrase without committing, then delete strokes and commit with a punctuation key
+24. Expected: the composition is drawn at the cursor with a tinted background and underline while the terminal cursor is replaced by a caret at the IME's insertion point; it wraps at the right edge, updates on every stroke, never reaches the PTY until commit, and leaves no residue after committing or cancelling
+25. Terminal, dictation vs composition: dictate a phrase and watch the preview
+26. Expected: dictation still uses the native preview overlay only — no inline underlined composition appears at the cursor
 
 ## 11e. Terminal Keyboard Accessory Arrow Repeat On iOS
 
 1. Connect to a session on iPhone or iOS simulator and open the terminal view
 2. Tap each arrow button in the keyboard accessory once
-3. Expected: each tap sends exactly one corresponding arrow keystroke
+3. Expected: each tap sends exactly one corresponding arrow keystroke and fires a light haptic
 4. Press and hold each arrow button, then release it
-5. Expected: the corresponding arrow input repeats continuously while held and stops immediately on release
+5. Expected: the corresponding arrow input repeats continuously while held and stops immediately on release; haptics fire on the first repeat only, not on every repeat tick
 6. Start holding an arrow button, then dismiss the keyboard or background the app
 7. Expected: repeat stops and does not resume when the keyboard or app returns
 8. Open floating file search or the git commit message input while a terminal is visible behind it
@@ -1226,9 +1232,9 @@ printf '\033]8;;file:///tmp/zedra-long-code.rs:41:1\033\\/tmp/zedra-long-code.rs
 1. Connect to a session on iOS and on Android, turn Settings → Terminal → Always show keypad On (it ships Off), then open the terminal view without tapping the terminal
 2. Expected: the key bar sits above the home indicator or navigation bar, styled exactly like the keyboard accessory bar
 3. Tap `Esc`, `Tab`, `Enter`, and each arrow in the pinned bar
-4. Expected: each key reaches the PTY exactly once with the keyboard still down
+4. Expected: each key reaches the PTY exactly once with the keyboard still down and fires a light haptic
 5. Press and hold a pinned arrow, then release it
-6. Expected: the arrow repeats while held and stops on release
+6. Expected: the arrow repeats while held and stops on release; haptics fire on the first repeat only, not on every repeat tick
 7. Tap the terminal to raise the keyboard
 8. Expected: the pinned bar disappears as the keyboard accessory bar takes over; exactly one bar is visible at any time
 9. Dismiss the keyboard again
@@ -1267,7 +1273,18 @@ printf '\033]8;;file:///tmp/zedra-long-code.rs:41:1\033\\/tmp/zedra-long-code.rs
 13. From the terminal, tap Upload Image and pick the photo library
 14. Expected: the pinned bar hides while the photo picker is up and returns after a pick or a cancel; pasting an image from the clipboard never hides it, since it presents no UI
 
-## 11g-2. Full-Screen Presentations Pause The GPUI Window (iOS)
+## 11g-2. Composer Keyboard Yields On Focus Leave (iOS)
+
+1. Connect on iOS and open a terminal, then raise the keyboard so the accessory bar shows (Settings → Terminal → Always show keypad may be On or Off)
+2. Swipe the key bar left to the compose page, so the compose field is first responder and its keyboard is up
+3. Open the workspace drawer over the terminal
+4. Expected: the compose keyboard collapses along with the terminal keyboard — no keyboard stays over or beside the drawer
+5. Close the drawer
+6. Expected: the terminal and pinned bar (if enabled) return with the keyboard still down; re-raising the keyboard returns the normal accessory bar, not compose mode
+7. Repeat steps 2-4 from compose mode entered via the pinned bar with Always show keypad On and the keyboard down
+8. Expected: same — the drawer hides the pinned bar and drops the composer's keyboard
+
+## 11g-3. Full-Screen Presentations Pause The GPUI Window (iOS)
 
 1. Start a noisy command in a terminal (`yes`, a build, a running agent), then open the opencode web client webview over it
 2. Expected: page scrolling, dropdowns, and typing stay smooth while the command keeps producing output behind the webview — no stutter that tracks the terminal's output rate

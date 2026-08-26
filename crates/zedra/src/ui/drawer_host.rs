@@ -171,7 +171,7 @@ impl DrawerHost {
     fn close_impl(&mut self, window: Option<&mut Window>, cx: &mut Context<Self>) {
         if self.is_snap_animating() {
             if self.snap_target.is_some_and(|target| target > 0.0) && !self.close_after_snap {
-                Self::hide_soft_keyboard(window);
+                Self::dismiss_terminal_keyboard(window);
                 self.close_after_snap = true;
                 cx.emit(DrawerEvent::Closed);
             }
@@ -244,7 +244,12 @@ impl DrawerHost {
         }
     }
 
-    fn hide_soft_keyboard(window: Option<&mut Window>) {
+    /// Drop the terminal's keyboard affordances as a drawer takes over the screen.
+    /// The soft keyboard and the keypad composer's own keyboard are separate native
+    /// surfaces, so hiding the former alone leaves the composer's field as first
+    /// responder with its keyboard still up.
+    fn dismiss_terminal_keyboard(window: Option<&mut Window>) {
+        crate::platform_bridge::bridge().cancel_keypad_composer();
         if let Some(window) = window {
             window.hide_soft_keyboard();
         }
@@ -376,7 +381,7 @@ impl DrawerHost {
     ) {
         window.prevent_default();
         self.focus_handle.focus(window, cx);
-        window.hide_soft_keyboard();
+        Self::dismiss_terminal_keyboard(Some(window));
         self.gesture_state = GestureState::Dragging { pointer_id };
         self.last_drag_x = position_x;
         self.last_drag_dx = 0.0;
@@ -444,7 +449,7 @@ impl DrawerHost {
             return;
         }
 
-        Self::hide_soft_keyboard(window);
+        Self::dismiss_terminal_keyboard(window);
         self.snap_from = current_offset;
         self.snap_target = Some(target);
         self.snap_started_at = Some(std::time::Instant::now());

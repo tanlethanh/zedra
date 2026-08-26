@@ -711,7 +711,7 @@ impl Render for SettingsView {
                                 "settings-key-bar-off",
                                 "settings-key-bar-toggle",
                                 "Always show keypad",
-                                "Esc, Tab, and arrows stay up when the keyboard is down",
+                                "Keypad stays up when keyboard is down",
                                 key_bar_always_visible,
                                 cx.listener(|this, _event, _window, cx| {
                                     this.set_key_bar_always_visible(true, cx);
@@ -726,7 +726,7 @@ impl Render for SettingsView {
                                 "settings-extended-keypad-off",
                                 "settings-extended-keypad-toggle",
                                 "Extended keypad",
-                                "Adds modifiers, symbols, and a swipe-left composer",
+                                "Add more modifiers, symbols",
                                 extended_keypad,
                                 cx.listener(|this, _event, _window, cx| {
                                     this.set_extended_keypad(true, cx);
@@ -734,6 +734,10 @@ impl Render for SettingsView {
                                 cx.listener(|this, _event, _window, cx| {
                                     this.set_extended_keypad(false, cx);
                                 }),
+                            ))
+                            .child(tip_row(
+                                cx,
+                                "Tip: swipe keypad left to open IME composer",
                             ))
                             .child(section_header(cx, "Privacy"))
                             .child(telemetry_toggle(
@@ -855,6 +859,16 @@ fn section_header(cx: &App, title: &'static str) -> Div {
                 .font_weight(FontWeight::MEDIUM)
                 .child(title),
         )
+}
+
+/// Muted hint under a section's controls: no control, nothing to press.
+fn tip_row(cx: &App, text: &'static str) -> Div {
+    div()
+        .py(px(6.0))
+        .text_color(rgb(theme::text_muted(cx)))
+        .text_size(px(theme::FONT_DETAIL))
+        .font_family(fonts::MONO_FONT_FAMILY)
+        .child(text)
 }
 
 /// Settings row with a compact segmented appearance control.
