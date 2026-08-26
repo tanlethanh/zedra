@@ -136,7 +136,8 @@ pub struct AgentConfig {
     pub launch_cmd: Option<String>,
     /// Full resume command; `{session_id}` is replaced with the shell-quoted
     /// session id (e.g. `claude --dangerously-skip-permissions --resume
-    /// {session_id}`). Wins over the adapter's default resume.
+    /// {session_id}`). Wins over the adapter's default resume. Keep codex's
+    /// `zedra codex` prefix to keep its already-open-session prompt.
     pub resume_cmd: Option<String>,
 }
 

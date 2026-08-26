@@ -294,6 +294,11 @@ enum Commands {
         #[arg(value_name = "COMMAND")]
         command: Vec<String>,
     },
+
+    /// Run an agent CLI through Zedra (e.g. `zedra codex resume <id>`).
+    /// Every argument after the agent slug is forwarded unchanged.
+    #[command(external_subcommand)]
+    External(Vec<String>),
 }
 
 #[derive(Subcommand)]
@@ -1234,6 +1239,13 @@ async fn main() -> Result<()> {
 
         Commands::Agent { command } => {
             agent_cli::run(command).await?;
+        }
+
+        Commands::External(args) => {
+            let (slug, rest) = args
+                .split_first()
+                .ok_or_else(|| anyhow::anyhow!("missing agent name"))?;
+            zedra_host::agent::run_agent_cli(slug, rest).map_err(|e| anyhow::anyhow!(e))?;
         }
 
         Commands::Setup {

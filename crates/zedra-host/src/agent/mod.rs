@@ -291,6 +291,22 @@ pub fn resume_launch_command(slug: &str, session_id: &str) -> Option<String> {
         .or_else(|| actor.resume_launch_command(&quoted))
 }
 
+/// Shell-quoted `<zedra> <slug>` prefix that invokes an agent's wrapper.
+pub fn wrapper_prefix(slug: &str) -> Option<String> {
+    let exe = std::env::current_exe().ok()?;
+    Some(format!("{} {slug}", shell_quote(&exe.to_string_lossy())))
+}
+
+/// Entry point for `zedra <slug> <args>`.
+pub fn run_agent_cli(slug: &str, args: &[String]) -> Result<(), String> {
+    let Some(actor) = actor(slug) else {
+        return Err(format!("unknown command or agent: {slug}"));
+    };
+    actor
+        .run_wrapped(args)
+        .unwrap_or_else(|| Err(format!("{slug} has no zedra CLI wrapper")))
+}
+
 /// Agents whose sessions ignore the workdir (Hermes); cached results stay
 /// valid across workspace switches.
 pub fn is_global(slug: &str) -> bool {
@@ -570,6 +586,11 @@ pub(crate) trait AgentActor: Sync {
 
     /// Shell command that resumes `quoted_session_id` (already shell-quoted).
     fn resume_launch_command(&self, _quoted_session_id: &str) -> Option<String> {
+        None
+    }
+
+    /// Run `zedra <slug> <args>`; `None` when the agent has no wrapper.
+    fn run_wrapped(&self, _args: &[String]) -> Option<Result<(), String>> {
         None
     }
 
@@ -890,8 +911,8 @@ mod tests {
     use super::*;
 
     #[test]
-    // Every resume command must launch the actor's own binary, embed the id
-    // shell-quoted; blank ids and unknown slugs never produce a command.
+    // Every resume command must launch the actor's own binary or Zedra's
+    // wrapper for it, with the id shell-quoted.
     fn resume_launch_commands_are_host_owned() {
         let mut resumable = 0;
         for actor in actors() {
@@ -900,15 +921,19 @@ mod tests {
                 continue;
             };
             resumable += 1;
-            // Commands may lead with `KEY=value` env assignments before the binary.
-            let program = command
-                .split_whitespace()
-                .find(|token| !token.contains('='))
-                .unwrap_or_default();
-            assert!(
-                actor.programs().contains(&program),
-                "`{slug}` resume `{command}` does not launch one of its programs"
-            );
+            let wrapped = wrapper_prefix(slug)
+                .is_some_and(|prefix| command.starts_with(&format!("{prefix} ")));
+            if !wrapped {
+                // Commands may lead with `KEY=value` env assignments before the binary.
+                let program = command
+                    .split_whitespace()
+                    .find(|token| !token.contains('='))
+                    .unwrap_or_default();
+                assert!(
+                    actor.programs().contains(&program),
+                    "`{slug}` resume `{command}` does not launch one of its programs"
+                );
+            }
             assert!(
                 command.contains("ses-123"),
                 "`{slug}` resume `{command}` drops the session id"
