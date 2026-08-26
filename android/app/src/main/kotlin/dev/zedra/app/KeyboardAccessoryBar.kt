@@ -162,11 +162,20 @@ class KeyboardAccessoryBar(
             }
         }
 
+    // ImpactLight — normal key taps use light haptics (matches
+    // HapticFeedback::to_i32() in platform_bridge.rs).
+    private fun triggerKeyHaptic() = MainActivity.triggerHaptic(0)
+
     private val repeatRunnable =
         object : Runnable {
             override fun run() {
                 val key = repeatingKey ?: return
-                repeatFired = true
+                // Held keys haptic on their first repeat only, not on every 60 ms
+                // tick, so a held arrow stays non-buzzy.
+                if (!repeatFired) {
+                    repeatFired = true
+                    triggerKeyHaptic()
+                }
                 sendKey(key)
                 handler.postDelayed(this, repeatIntervalMs)
             }
@@ -494,6 +503,7 @@ class KeyboardAccessoryBar(
                     val repeated = repeatFired
                     stopRepeating()
                     if (!repeated) {
+                        triggerKeyHaptic()
                         sendKey(spec.key)
                     }
                     true
