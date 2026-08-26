@@ -979,6 +979,16 @@ impl InputHandler for TerminalInputHandler {
         self.clear_text_input_preflight();
         let entity = self.entity.clone();
         let _ = entity.update(cx, |term, cx| {
+            // Critical: Chinese stroke/handwriting IMEs commit with unmarkText
+            // and never send insertText, so the preedit has to be committed
+            // here or it is dropped instead of reaching the PTY.
+            if term.has_uncommitted_marked_text() {
+                let text = term.marked_text().unwrap_or_default().to_string();
+                Self::commit_marked_text(term, &text);
+                cx.notify();
+                return;
+            }
+
             // UIKit can call unmarkText between dictation hypothesis updates
             // without first calling insertDictationResultPlaceholder on custom
             // UITextInput clients. Preserve the marked range until a real
@@ -1161,6 +1171,7 @@ mod tests {
         PlatformTextInputTrait, PlatformTextInputTraits, TestAppContext, WindowHandle, point, px,
         size,
     };
+    use tokio::sync::mpsc;
 
     fn terminal_handler_for_output(
         cx: &mut TestAppContext,
@@ -1515,5 +1526,30 @@ mod tests {
                 false
             )
         );
+    }
+
+    #[test]
+    fn unmark_commits_marked_text_to_terminal() {
+        let mut cx = TestAppContext::single();
+        let (terminal, mut handler, window) = terminal_handler_for_output(&mut cx, b"", false);
+        let (input_tx, mut input_rx) = mpsc::channel(4);
+        let (_output_tx, output_rx) = mpsc::channel(4);
+        terminal.update(&mut cx, |term, cx| {
+            term.attach_channel(input_tx, output_rx, cx);
+        });
+
+        window
+            .update(&mut cx, |_, window, cx| {
+                handler.replace_and_mark_text_in_range(None, "\u{6211}", Some(1..1), window, cx);
+                handler.unmark_text(window, cx);
+            })
+            .unwrap();
+
+        let bytes = String::from_utf8(input_rx.try_recv().expect("committed bytes")).unwrap();
+        assert_eq!(bytes, "\u{6211}");
+        terminal.update(&mut cx, |term, _| {
+            assert_eq!(term.marked_text_range(), None);
+            assert!(!term.has_uncommitted_marked_text());
+        });
     }
 }

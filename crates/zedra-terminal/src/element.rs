@@ -709,19 +709,37 @@ impl Element for TerminalElement {
             underline.paint(origin, cell_width, line_height, window);
         }
 
-        // Paint cursor (following Zed's cursor positioning)
-        paint_cursor(
-            window,
-            &layout.content.cursor,
-            origin,
-            layout.content.display_offset as i32,
-            layout.content.grid_rows,
-            layout.content.grid_cols,
-            cell_width,
-            line_height,
-            self.focused,
-            &theme,
-        );
+        // An IME composition owns the caret until it commits, so it replaces the
+        // terminal cursor instead of being painted under it.
+        match &layout.content.preedit {
+            Some(preedit) => paint_preedit(
+                window,
+                cx,
+                preedit,
+                &layout.content.cursor,
+                origin,
+                layout.content.display_offset as i32,
+                layout.content.grid_rows,
+                layout.content.grid_cols,
+                cell_width,
+                line_height,
+                layout.font_size,
+                &layout.font,
+                &theme,
+            ),
+            None => paint_cursor(
+                window,
+                &layout.content.cursor,
+                origin,
+                layout.content.display_offset as i32,
+                layout.content.grid_rows,
+                layout.content.grid_cols,
+                cell_width,
+                line_height,
+                self.focused,
+                &theme,
+            ),
+        }
 
         // Store the actual painted origin (which already incorporates the
         // smooth-scroll and keyboard-cursor offsets) so tap-to-grid conversion
@@ -765,9 +783,10 @@ impl Element for TerminalElement {
 mod tests {
     use gpui::px;
 
-    use super::{LayoutUnderline, TerminalElement};
+    use super::{LayoutUnderline, TerminalElement, layout_preedit};
     use crate::Terminal;
     use crate::TerminalTheme;
+    use crate::terminal::TerminalPreedit;
 
     fn underline_spans(output: &[u8]) -> Vec<LayoutUnderline> {
         let mut terminal = Terminal::new(160, 8, px(10.0), px(20.0));
@@ -882,6 +901,211 @@ mod tests {
         assert_eq!(underlines[0].col, 5);
         assert_eq!(underlines[0].num_cells, 13);
     }
+
+    fn preedit(text: &str, caret_utf16: usize) -> TerminalPreedit {
+        TerminalPreedit {
+            text: text.to_string(),
+            caret_utf16,
+        }
+    }
+
+    #[test]
+    fn preedit_lays_out_wide_characters_as_two_cells() {
+        let (runs, caret) = layout_preedit(&preedit("\u{6765}\u{5709}", 2), 0, 4, 4, 20);
+
+        assert_eq!(runs.len(), 1);
+        assert_eq!(runs[0].col, 4);
+        assert_eq!(runs[0].cells, 2);
+        assert_eq!(runs[0].cell_span, 2);
+        assert_eq!(caret, Some((0, 8)));
+    }
+
+    #[test]
+    fn preedit_splits_runs_when_cell_width_changes() {
+        let (runs, _) = layout_preedit(&preedit("a\u{6765}", 2), 1, 0, 4, 20);
+
+        assert_eq!(runs.len(), 2);
+        assert_eq!((runs[0].col, runs[0].cell_span), (0, 1));
+        assert_eq!((runs[1].col, runs[1].cell_span), (1, 2));
+    }
+
+    #[test]
+    fn preedit_wraps_at_the_right_edge() {
+        let (runs, caret) = layout_preedit(&preedit("abc", 3), 0, 2, 4, 4);
+
+        assert_eq!(runs.len(), 2);
+        assert_eq!((runs[0].line, runs[0].col, runs[0].cells), (0, 2, 2));
+        assert_eq!((runs[1].line, runs[1].col, runs[1].cells), (1, 0, 1));
+        assert_eq!(caret, Some((1, 1)));
+    }
+
+    #[test]
+    fn preedit_stops_at_the_last_visible_row() {
+        let (runs, _) = layout_preedit(&preedit("abcdef", 6), 1, 0, 2, 2);
+
+        assert!(runs.iter().all(|run| run.line < 2));
+        assert_eq!(runs.iter().map(|run| run.cells).sum::<usize>(), 2);
+    }
+}
+
+/// One run of composition characters that share a cell width, placed on the grid.
+struct PreeditRun {
+    line: i32,
+    col: i32,
+    text: String,
+    cells: usize,
+    cell_span: usize,
+}
+
+/// Lay the composition out from `start` across the grid, wrapping at the right
+/// edge and stopping at the last visible row. Returns the runs plus the caret
+/// cell, which is `None` when the caret falls past the visible grid.
+fn layout_preedit(
+    preedit: &TerminalPreedit,
+    start_line: i32,
+    start_col: i32,
+    grid_rows: usize,
+    grid_cols: usize,
+) -> (Vec<PreeditRun>, Option<(i32, i32)>) {
+    use unicode_width::UnicodeWidthChar;
+
+    let mut runs: Vec<PreeditRun> = Vec::new();
+    let mut caret = None;
+    let mut line = start_line;
+    let mut col = start_col;
+    let mut consumed_utf16 = 0usize;
+
+    if preedit.caret_utf16 == 0 {
+        caret = Some((line, col));
+    }
+
+    for ch in preedit.text.chars() {
+        let cell_span = UnicodeWidthChar::width(ch).unwrap_or(1).max(1);
+        if col + cell_span as i32 > grid_cols as i32 {
+            line += 1;
+            col = 0;
+        }
+        if line >= grid_rows as i32 {
+            return (runs, caret);
+        }
+
+        match runs.last_mut() {
+            Some(run)
+                if run.line == line
+                    && run.col + (run.cells * run.cell_span) as i32 == col
+                    && run.cell_span == cell_span =>
+            {
+                run.text.push(ch);
+                run.cells += 1;
+            }
+            _ => runs.push(PreeditRun {
+                line,
+                col,
+                text: ch.to_string(),
+                cells: 1,
+                cell_span,
+            }),
+        }
+
+        col += cell_span as i32;
+        consumed_utf16 += ch.len_utf16();
+        if consumed_utf16 == preedit.caret_utf16 {
+            caret = if col >= grid_cols as i32 {
+                Some((line + 1, 0))
+            } else {
+                Some((line, col))
+            };
+        }
+    }
+
+    (runs, caret)
+}
+
+/// Draw the uncommitted composition at the cursor: tinted background, text, a
+/// 1px underline marking it as provisional, and a beam at the IME caret.
+#[allow(clippy::too_many_arguments)]
+fn paint_preedit(
+    window: &mut Window,
+    cx: &mut App,
+    preedit: &TerminalPreedit,
+    cursor: &CursorState,
+    origin: Point<Pixels>,
+    display_offset: i32,
+    grid_rows: usize,
+    grid_cols: usize,
+    cell_width: Pixels,
+    line_height: Pixels,
+    font_size: Pixels,
+    font: &Font,
+    theme: &TerminalTheme,
+) {
+    let start_col = cursor.point.column.0 as i32;
+    let start_line = cursor.point.line.0 + display_offset;
+    if start_line < 0 || start_line >= grid_rows as i32 || start_col < 0 {
+        return;
+    }
+
+    let (runs, caret) = layout_preedit(preedit, start_line, start_col, grid_rows, grid_cols);
+
+    let underline_color: Hsla = rgb(theme.cursor).into();
+    let text_color: Hsla = rgb(theme.bright_foreground).into();
+    let mut background: Hsla = rgb(theme.cursor).into();
+    background.a = 0.60;
+
+    for run in &runs {
+        let cells = run.cells * run.cell_span;
+        LayoutRect::new(run.line, run.col, cells, background).paint(
+            origin,
+            cell_width,
+            line_height,
+            window,
+        );
+        let text_origin = point(
+            origin.x + run.col as f32 * cell_width,
+            origin.y + run.line as f32 * line_height,
+        );
+        let text_runs = vec![TextRun {
+            len: run.text.len(),
+            font: font.clone(),
+            color: text_color,
+            ..Default::default()
+        }];
+        let shaped = window.text_system().shape_line(
+            run.text.clone().into(),
+            font_size,
+            &text_runs,
+            Some(cell_width * run.cell_span as f32),
+        );
+        let _ = shaped.paint(text_origin, line_height, TextAlign::Left, None, window, cx);
+        LayoutUnderline::new(run.line, run.col, cells, underline_color).paint(
+            origin,
+            cell_width,
+            line_height,
+            window,
+        );
+    }
+
+    let Some((caret_line, caret_col)) = caret else {
+        return;
+    };
+    if caret_line >= grid_rows as i32 {
+        return;
+    }
+    let beam_width = px(2.0);
+    let beam_origin = point(
+        (origin.x + caret_col as f32 * cell_width).floor(),
+        (origin.y + caret_line as f32 * line_height).floor(),
+    );
+    window.paint_quad(fill(
+        Bounds::new(
+            beam_origin,
+            gpui::Size {
+                width: beam_width,
+                height: line_height,
+            },
+        ),
+        underline_color,
+    ));
 }
 
 fn paint_cursor(

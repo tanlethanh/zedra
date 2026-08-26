@@ -10319,6 +10319,7 @@ dependencies = [
  "smallvec",
  "tokio",
  "tracing",
+ "unicode-width",
  "zedra-osc",
 ]
 

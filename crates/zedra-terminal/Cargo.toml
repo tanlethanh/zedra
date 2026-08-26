@@ -11,6 +11,7 @@ itertools.workspace = true
 futures.workspace = true
 tokio.workspace = true
 smallvec = "1"
+unicode-width = "0.2"
 zedra-osc = { path = "../zedra-osc" }
 
 [dev-dependencies]

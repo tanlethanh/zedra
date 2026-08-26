@@ -38,6 +38,8 @@ pub enum TerminalEvent {
     /// `keyboard_accessory::sticky_modifier_mask`.
     StickyModifiersChanged(u32),
     DictationPreviewChanged(Option<String>),
+    /// The inline IME composition changed and the grid has to repaint.
+    PreeditChanged,
     ScrollbackPositionChanged {
         display_offset: usize,
         history_size: usize,
@@ -113,6 +115,16 @@ pub struct TerminalContent {
     pub grid_rows: usize,
     pub grid_cols: usize,
     pub detected_links: Vec<DetectedLink>,
+    /// Uncommitted IME composition, drawn at the cursor and never sent to the PTY.
+    pub preedit: Option<TerminalPreedit>,
+}
+
+/// IME composition still owned by the keyboard, with the caret offset (UTF-16)
+/// the IME reports inside it.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct TerminalPreedit {
+    pub text: String,
+    pub caret_utf16: usize,
 }
 
 /// A terminal cell with its grid position
@@ -504,7 +516,33 @@ impl Terminal {
             grid_rows: self.size.rows,
             grid_cols: self.size.columns,
             detected_links,
+            preedit: self.preedit(),
         }
+    }
+
+    /// Composition to draw inline. Dictation keeps its own preview overlay, so
+    /// only an uncommitted IME composition renders here.
+    fn preedit(&self) -> Option<TerminalPreedit> {
+        if !self.has_uncommitted_marked_text() {
+            return None;
+        }
+
+        let state = self.ime_state.as_ref()?;
+        if state.dictation_active {
+            return None;
+        }
+        let marked_start = state.marked_range.as_ref().map(|range| range.start)?;
+        let marked_len = Self::utf16_len(&state.marked_text);
+        let caret_utf16 = state
+            .selected_range
+            .as_ref()
+            .map(|range| range.end.saturating_sub(marked_start).min(marked_len))
+            .unwrap_or(marked_len);
+
+        Some(TerminalPreedit {
+            text: state.marked_text.clone(),
+            caret_utf16,
+        })
     }
 
     /// Handle a keystroke, converting to escape sequence and sending via SSH or RPC session
@@ -728,6 +766,14 @@ impl Terminal {
                 display_offset: self.display_offset(),
                 history_size: self.history_size(),
             });
+    }
+
+    /// Terminal is a model entity, so its own `notify` never reaches the view.
+    /// Composition changes repaint through the event relay like PTY output does.
+    fn emit_preedit_changed_from(&self, before: Option<TerminalPreedit>) {
+        if before != self.preedit() {
+            let _ = self.event_tx.send(TerminalEvent::PreeditChanged);
+        }
     }
 
     pub fn emit_dictation_preview_changed(&self, text: Option<String>) {
@@ -1088,6 +1134,7 @@ impl Terminal {
         &mut self,
         text: &str,
     ) -> KeyboardInputContextEdit {
+        let preedit_before = self.preedit();
         let state = self.ime_state_mut();
         let committed_before = state.committed_text.clone();
         let document_len = Self::utf16_len(&state.document_text);
@@ -1114,12 +1161,14 @@ impl Terminal {
         let (backspaces, text_to_insert) =
             Self::diff_keyboard_input_context(&committed_before, &state.document_text);
         state.committed_text = state.document_text.clone();
-        KeyboardInputContextEdit {
+        let edit = KeyboardInputContextEdit {
             backspaces,
             text_to_insert,
             document_text: state.document_text.clone(),
             selection_range,
-        }
+        };
+        self.emit_preedit_changed_from(preedit_before);
+        edit
     }
 
     /// Set the marked/composing text. When dictation is active this is the live hypothesis.
@@ -1180,6 +1229,12 @@ impl Terminal {
 
     /// Clear the marked text.
     pub fn clear_marked_state(&mut self) {
+        let preedit_before = self.preedit();
+        self.clear_marked_state_without_preedit_event();
+        self.emit_preedit_changed_from(preedit_before);
+    }
+
+    fn clear_marked_state_without_preedit_event(&mut self) {
         if let Some(state) = self.ime_state.as_mut() {
             let restore_committed_text = !state.dictation_active
                 && !state.committed_dictation_pending_cleanup
@@ -1399,6 +1454,7 @@ impl Terminal {
         text: String,
         selected_range: Option<Range<usize>>,
     ) -> bool {
+        let preedit_before = self.preedit();
         let (dictation_active, preview_visible) = {
             let state = self.ime_state_mut();
             if state.dictation_active && state.document_text.is_empty() {
@@ -1436,6 +1492,7 @@ impl Terminal {
         };
 
         let _ = (dictation_active, preview_visible);
+        self.emit_preedit_changed_from(preedit_before);
         dictation_active
     }
 
@@ -1566,6 +1623,9 @@ impl Terminal {
     }
 
     pub fn cancel_dictation(&mut self) {
+        // Dictation owns the native preview, never the inline composition, so the
+        // snapshot is taken before the flag flips to keep a stray repaint event out.
+        let preedit_before = self.preedit();
         let mut should_hide_preview = false;
         if let Some(state) = self.ime_state.as_mut() {
             state.dictation_active = false;
@@ -1576,7 +1636,8 @@ impl Terminal {
             state.late_dictation_result_after_cleanup = None;
             state.committed_text.clear();
         }
-        self.clear_marked_state();
+        self.clear_marked_state_without_preedit_event();
+        self.emit_preedit_changed_from(preedit_before);
         if should_hide_preview {
             self.emit_dictation_preview_changed(None);
         }

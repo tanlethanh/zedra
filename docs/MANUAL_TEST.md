@@ -1200,6 +1200,10 @@ printf '\033]8;;file:///tmp/zedra-long-code.rs:41:1\033\\/tmp/zedra-long-code.rs
 20. Expected: the dictated phrase remains in the input after UIKit commits, the final cleanup delete does not clear the field, and any late `insertDictationResult` does not duplicate the phrase
 21. Terminal, Chinese Simplified Stroke: switch to 简体中文 – 笔画, tap strokes, and accept candidates such as 我, 也, 很多
 22. Expected: each accepted candidate reaches the PTY once, even though the keyboard commits with `unmarkText` and never sends `insertText`; no candidate is dropped and none is inserted twice
+23. Terminal, inline composition: keep composing a stroke phrase without committing, then delete strokes and commit with a punctuation key
+24. Expected: the composition is drawn at the cursor with a tinted background and underline while the terminal cursor is replaced by a caret at the IME's insertion point; it wraps at the right edge, updates on every stroke, never reaches the PTY until commit, and leaves no residue after committing or cancelling
+25. Terminal, dictation vs composition: dictate a phrase and watch the preview
+26. Expected: dictation still uses the native preview overlay only — no inline underlined composition appears at the cursor
 
 ## 11e. Terminal Keyboard Accessory Arrow Repeat On iOS
 
