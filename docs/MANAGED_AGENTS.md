@@ -58,6 +58,7 @@ list. Override only what the provider supports:
 | Sessions & resume | `session_counts`, `sessions`, `resume_launch_command`, `scan_data_source`, `session_scan_cli` | Custom session-count types register in `session_counts_from!` (`agent/mod.rs`) |
 | Setup & hooks | `setup`, `setup_summary`, `supports_setup_cli`, `setup_cli`, `receive_hook`, `hook_test_payload` | `setup` is the only mutable op: writes the hook runner + provider config, returns the paths |
 | Account & usage | `account_fields`, `subscription_plan`, `account_usage`, `extra`, `config_files` | Async plan/usage default to `None`; skip the overrides when local-only |
+| CLI wrapper | `run_wrapped` | Handles `zedra <slug> <args>`; `None` (default) means the agent has no wrapper |
 | Behavior flags | `is_global`, `shows_detail` | `is_global`: sessions ignore the workdir (Hermes); `shows_detail`: listed on the app's manage screen |
 
 ### Launch commands
@@ -78,6 +79,18 @@ boundary is the host, not the prompt. Users who want prompts back set
 Detect-only agents get their flags from the trailing `simple_actor!` argument;
 managed agents override `default_launch_command` (and put the flag in
 `resume_launch_command` too).
+
+### CLI wrappers
+
+`zedra <slug> <args>` forwards to an agent's own CLI through `run_wrapped`. The
+dispatcher only resolves the slug through the registry; the actor owns the rest,
+because "already running" means something different for every provider.
+
+Codex is the one wrapper today. It locks a thread at
+`$CODEX_HOME/thread-writer-locks/<id>.lock` for the session's whole life, so a
+plain `codex resume` on a session open elsewhere fails and exits. The wrapper
+probes that lock, offers kill / fork / cancel, then `exec`s the real CLI. A
+`resume_cmd` override keeps the guard by keeping the `zedra codex` prefix.
 
 | Agent | Flag | Notes |
 | --- | --- | --- |
