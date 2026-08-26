@@ -859,26 +859,25 @@ struct Holder {
     detail: String,
 }
 
-/// Reads one key at a time; restores the terminal on drop.
+/// Zedra's PTY runs with echo off, which would leave the prompt blank as you
+/// type. Turn echo and line editing back on for the read, restore on drop.
 #[cfg(unix)]
-struct RawMode {
+struct PromptEcho {
     saved: libc::termios,
 }
 
 #[cfg(unix)]
-impl RawMode {
-    fn enter() -> Option<Self> {
+impl PromptEcho {
+    fn enable() -> Option<Self> {
         // Safety: plain termios calls on stdin, which the caller checked is a tty.
         unsafe {
             let mut saved: libc::termios = std::mem::zeroed();
             if libc::tcgetattr(libc::STDIN_FILENO, &mut saved) != 0 {
                 return None;
             }
-            let mut raw = saved;
-            raw.c_lflag &= !(libc::ICANON | libc::ECHO);
-            raw.c_cc[libc::VMIN] = 1;
-            raw.c_cc[libc::VTIME] = 0;
-            if libc::tcsetattr(libc::STDIN_FILENO, libc::TCSANOW, &raw) != 0 {
+            let mut on = saved;
+            on.c_lflag |= libc::ICANON | libc::ECHO | libc::ECHOE | libc::ECHOK;
+            if libc::tcsetattr(libc::STDIN_FILENO, libc::TCSANOW, &on) != 0 {
                 return None;
             }
             Some(Self { saved })
@@ -887,9 +886,9 @@ impl RawMode {
 }
 
 #[cfg(unix)]
-impl Drop for RawMode {
+impl Drop for PromptEcho {
     fn drop(&mut self) {
-        // Safety: restores the attributes read in `enter`.
+        // Safety: restores the attributes read in `enable`.
         unsafe {
             libc::tcsetattr(libc::STDIN_FILENO, libc::TCSANOW, &self.saved);
         }
@@ -1028,39 +1027,21 @@ impl CodexActor {
         println!("\n  y  kill it, resume here (default)");
         println!("  f  fork to a new session");
         println!("  n  cancel\n");
-        loop {
-            print!("[Y/f/n] ");
-            let _ = std::io::stdout().flush();
-            let Some(key) = Self::read_key() else {
-                return Choice::Cancel;
-            };
-            match key.to_ascii_lowercase() {
-                'y' | '\r' | '\n' => return Choice::Kill,
-                'f' => return Choice::Fork,
-                'n' => return Choice::Cancel,
-                _ => println!(),
-            }
+        print!("[Y/f/n] ");
+        let _ = std::io::stdout().flush();
+        match Self::read_answer().trim().to_ascii_lowercase().as_str() {
+            "" | "y" => Choice::Kill,
+            "f" => Choice::Fork,
+            _ => Choice::Cancel,
         }
     }
 
-    /// One keypress, echoed here: Zedra's PTY runs with echo off, so nothing
-    /// else puts the answer on screen.
-    #[cfg(unix)]
-    fn read_key() -> Option<char> {
-        use std::io::Read;
-        let _raw = RawMode::enter()?;
-        let mut byte = [0u8; 1];
-        std::io::stdin().read_exact(&mut byte).ok()?;
-        let key = char::from(byte[0]);
-        println!("{}", if key.is_control() { 'y' } else { key });
-        Some(key)
-    }
-
-    #[cfg(not(unix))]
-    fn read_key() -> Option<char> {
+    fn read_answer() -> String {
+        #[cfg(unix)]
+        let _echo = PromptEcho::enable();
         let mut line = String::new();
-        std::io::stdin().read_line(&mut line).ok()?;
-        Some(line.trim().chars().next().unwrap_or('\r'))
+        let _ = std::io::stdin().read_line(&mut line);
+        line
     }
 
     /// `codex fork` takes the same flags as `resume` except this one.

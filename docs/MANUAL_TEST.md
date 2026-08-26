@@ -2391,12 +2391,13 @@ fails and exits. `zedra codex resume` prompts instead. No model call is needed:
    `cargo run -p zedra-host -- codex resume <session-id>`. Expected:
    `Session <short> is open elsewhere`, `pid <n> · ttys<nn> · codex`, then the
    `y` / `f` / `n` menu and a `[Y/f/n]` prompt.
-3. Press `n` — one keypress, no Enter. Expected: the `n` echoes (Zedra's PTY
-   runs with echo off), then `Cancelled.`, exit 1, desktop codex still running.
-4. Repeat, press `f`. Expected: a new session with the same history opens under
-   a new id; the desktop session keeps running.
-5. Repeat, press Enter. Expected: `y` echoes, the desktop codex exits, and the
-   session resumes here with its history.
+3. Type `n`. Expected: it echoes as you type (Zedra's PTY runs with echo off)
+   and nothing runs until Enter; then `Cancelled.`, exit 1, desktop codex still
+   running. Backspace erases; anything but `y`/`f`/empty cancels the same way.
+4. Repeat with `f`. Expected: a new session with the same history opens under a
+   new id; the desktop session keeps running.
+5. Repeat, pressing Enter alone. Expected: the default is taken — the desktop
+   codex exits and the session resumes here with its history.
 6. `cargo run -p zedra-host -- codex --version` prints the codex version;
    non-resume arguments forward unchanged.
 7. From the app, tap a session open in a desktop terminal: the terminal shows
