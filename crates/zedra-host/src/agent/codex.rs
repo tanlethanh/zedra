@@ -859,6 +859,43 @@ struct Holder {
     detail: String,
 }
 
+/// Reads one key at a time; restores the terminal on drop.
+#[cfg(unix)]
+struct RawMode {
+    saved: libc::termios,
+}
+
+#[cfg(unix)]
+impl RawMode {
+    fn enter() -> Option<Self> {
+        // Safety: plain termios calls on stdin, which the caller checked is a tty.
+        unsafe {
+            let mut saved: libc::termios = std::mem::zeroed();
+            if libc::tcgetattr(libc::STDIN_FILENO, &mut saved) != 0 {
+                return None;
+            }
+            let mut raw = saved;
+            raw.c_lflag &= !(libc::ICANON | libc::ECHO);
+            raw.c_cc[libc::VMIN] = 1;
+            raw.c_cc[libc::VTIME] = 0;
+            if libc::tcsetattr(libc::STDIN_FILENO, libc::TCSANOW, &raw) != 0 {
+                return None;
+            }
+            Some(Self { saved })
+        }
+    }
+}
+
+#[cfg(unix)]
+impl Drop for RawMode {
+    fn drop(&mut self) {
+        // Safety: restores the attributes read in `enter`.
+        unsafe {
+            libc::tcsetattr(libc::STDIN_FILENO, libc::TCSANOW, &self.saved);
+        }
+    }
+}
+
 // `zedra codex <args>` forwards to the codex CLI, guarding `resume` against the
 // per-thread writer lock (`$CODEX_HOME/thread-writer-locks/<id>.lock`) codex
 // holds for a session's whole life: resuming a session open in another terminal
@@ -994,17 +1031,36 @@ impl CodexActor {
         loop {
             print!("[Y/f/n] ");
             let _ = std::io::stdout().flush();
-            let mut line = String::new();
-            if std::io::stdin().read_line(&mut line).is_err() {
+            let Some(key) = Self::read_key() else {
                 return Choice::Cancel;
-            }
-            match line.trim().to_ascii_lowercase().as_str() {
-                "" | "y" => return Choice::Kill,
-                "f" => return Choice::Fork,
-                "n" => return Choice::Cancel,
-                _ => {}
+            };
+            match key.to_ascii_lowercase() {
+                'y' | '\r' | '\n' => return Choice::Kill,
+                'f' => return Choice::Fork,
+                'n' => return Choice::Cancel,
+                _ => println!(),
             }
         }
+    }
+
+    /// One keypress, echoed here: Zedra's PTY runs with echo off, so nothing
+    /// else puts the answer on screen.
+    #[cfg(unix)]
+    fn read_key() -> Option<char> {
+        use std::io::Read;
+        let _raw = RawMode::enter()?;
+        let mut byte = [0u8; 1];
+        std::io::stdin().read_exact(&mut byte).ok()?;
+        let key = char::from(byte[0]);
+        println!("{}", if key.is_control() { 'y' } else { key });
+        Some(key)
+    }
+
+    #[cfg(not(unix))]
+    fn read_key() -> Option<char> {
+        let mut line = String::new();
+        std::io::stdin().read_line(&mut line).ok()?;
+        Some(line.trim().chars().next().unwrap_or('\r'))
     }
 
     /// `codex fork` takes the same flags as `resume` except this one.
