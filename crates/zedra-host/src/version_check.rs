@@ -252,19 +252,11 @@ fn spawn_windows_update_helper(
 
 async fn resolve_latest_tag() -> Result<String> {
     let url = format!("https://github.com/{REPO}/releases/latest");
-    let client = reqwest::Client::builder()
-        .redirect(reqwest::redirect::Policy::none())
-        .build()?;
-    let resp = client.head(&url).send().await?;
+    let resp = reqwest::Client::new().head(&url).send().await?;
 
-    // GitHub responds with 302 → Location: .../releases/tag/vX.Y.Z
-    let location = resp
-        .headers()
-        .get(reqwest::header::LOCATION)
-        .and_then(|v| v.to_str().ok())
-        .unwrap_or("");
-
-    let tag = location.rsplit('/').next().unwrap_or("");
+    // Redirects must be followed: /releases/latest lands on .../releases/tag/vX.Y.Z,
+    // and a renamed repo adds an extra 301 before that.
+    let tag = resp.url().path().rsplit('/').next().unwrap_or("");
     if tag.is_empty() || !tag.starts_with('v') {
         bail!("failed to resolve latest release tag from GitHub");
     }
