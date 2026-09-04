@@ -1,30 +1,34 @@
 # deploy/relay — iroh-relay multi-instance deployment
 
-Self-hosted `iroh-relay` on cloud compute. Three instances across regions:
+Self-hosted `iroh-relay` on cloud compute. Every cloud instance runs on AWS
+`t4g.micro` (Graviton2, ARM64), one Elastic IP each:
 
 | Instance | Region | Hostname |
 | -------- | ------ | -------- |
-| **ap1** | Asia Pacific (Singapore) | `ap1.relay.zedra.dev` |
-| **us1** | US (Iowa / N. Virginia) | `us1.relay.zedra.dev` |
-| **eu1** | Europe (Netherlands / Frankfurt) | `eu1.relay.zedra.dev` |
+| **sg1** | ap-southeast-1 (Singapore) | `sg1.relay.zedra.dev` |
+| **us1** | us-east-1 (N. Virginia) | `us1.relay.zedra.dev` |
+| **eu1** | eu-central-1 (Frankfurt) | `eu1.relay.zedra.dev` |
+| **vn1** | Vietnam (bare metal) | `vn1.relay.zedra.dev` |
+
+All three AWS nodes share one key pair, `zedra-relay-aws` — the same public key
+imported per region, since AWS key pairs are region-scoped.
 
 ## Provider Quick-Reference
 
-Both AWS and GCP are supported. Use whichever has active credits.
+AWS is what production runs on. GCP steps stay documented as a fallback — `deploy.sh`,
+`docker-compose.yml`, and the OS setup are identical on both.
 
 | | AWS | GCP |
 |---|-----|-----|
-| **Instance** | t4g.small (Graviton2, ARM64) | t2a-standard-1 (Ampere Altra, ARM64) |
-| **vCPU / RAM** | 2 vCPU / 2 GB | 1 vCPU / 4 GB |
+| **Instance** | t4g.micro (Graviton2, ARM64) | t2a-standard-1 (Ampere Altra, ARM64) |
+| **vCPU / RAM** | 2 vCPU / 1 GB | 1 vCPU / 4 GB |
 | **Network** | up to 5 Gbps burst | flat 10 Gbps |
-| **Per-node/mo** | ~$13 (us-east-1) | ~$23 (us-central1) |
+| **Per-node/mo** | ~$7 (us-east-1) | ~$23 (us-central1) |
 | **ARM Docker** | native (no `--platform`) | native (no `--platform`) |
 | **SSH** | PEM key + `ubuntu@<ip>` | `gcloud compute ssh` or OS Login |
 | **Firewall** | Security Group | Firewall rule + network tag |
 | **Static IP** | Elastic IP | Reserved address |
 | **Billing stop** | Delete or stop instance (EBS still charged when stopped) | Delete or stop (disk still charged when stopped) |
-
-Both use the same `deploy.sh`, `docker-compose.yml`, and OS setup steps.
 
 ## Free Egress Allowances
 
@@ -107,36 +111,40 @@ packages/relay-check/ # local-only: SSH health daemon + CLI (`INSTANCES=...`) �
 
 ### Prerequisites
 
-Add SSH aliases to `~/.ssh/config` for each instance (adjust `HostName` and `IdentityFile` per provider):
+Add an SSH alias to `~/.ssh/config` for each instance. `deploy.sh` resolves every
+host as `zedra-relay-<instance>`, so the alias name is not optional:
 
 ```
-Host zedra-relay-ap1
-  HostName <AP1_PUBLIC_IP>
-  User <your-username>              # AWS: ubuntu; GCP: your Google username
-  IdentityFile ~/.ssh/<your-key>    # AWS: .pem file; GCP: google_compute_engine
+Host zedra-relay-sg1
+  HostName <SG1_ELASTIC_IP>
+  User ubuntu
+  IdentityFile ~/private/zedra-relay-aws.pem
 
 Host zedra-relay-us1
-  HostName <US1_PUBLIC_IP>
-  User <your-username>
-  IdentityFile ~/.ssh/<your-key>
+  HostName <US1_ELASTIC_IP>
+  User ubuntu
+  IdentityFile ~/private/zedra-relay-aws.pem
 
 Host zedra-relay-eu1
-  HostName <EU1_PUBLIC_IP>
-  User <your-username>
-  IdentityFile ~/.ssh/<your-key>
+  HostName <EU1_ELASTIC_IP>
+  User ubuntu
+  IdentityFile ~/private/zedra-relay-aws.pem
 ```
 
-> **GCP**: User is typically your Google account username (e.g. `thomasle`). `gcloud compute ssh INSTANCE_NAME --zone=ZONE` manages keys automatically — no `~/.ssh/config` entry needed.
-> **AWS**: User is `ubuntu` for Ubuntu AMIs.
+> **AWS**: user is `ubuntu` on Ubuntu AMIs. To reuse one key in a new region, import its
+> public half — `ssh-keygen -y -f key.pem > key.pub`, then
+> `aws ec2 import-key-pair --region <REGION> --key-name zedra-relay-aws --public-key-material fileb://key.pub`.
+> **GCP** (fallback): user is your Google account username, and
+> `gcloud compute ssh INSTANCE --zone=ZONE` manages keys for you.
 
 **Secrets (local):** copy `deploy/relay/.env.example` to `deploy/relay/.env` and set at least `DISCORD_WEBHOOK`. The root `.gitignore` ignores `.env` everywhere.
 
-> **How `.env` works:** `deploy.sh` merges your local `deploy/relay/.env` with injected `INSTANCE=<name>` and arch-specific `RELAY_IMAGE` / `MONITOR_IMAGE`, uploads to `/opt/zedra/deploy/relay/.env.local`, then copies to `.env` for Compose. `INSTANCE=` / `INSTANCES=` / image lines in your local file are ignored. The relay uses `INSTANCE` for hostname (`${INSTANCE}.relay.zedra.dev`). The **Docker** `relay-monitor` sidecar uses **`INSTANCE` only**. **Multi-host SSH checks from your laptop** use **`packages/relay-check`** (`INSTANCES=sg1,us1,eu1 bun monitor.ts` or `bun cli.ts`).
+> **How `.env` works:** `deploy.sh` merges your local `deploy/relay/.env` with injected `INSTANCE=<name>` and arch-specific `RELAY_IMAGE` / `MONITOR_IMAGE`, uploads to `/opt/zedra/deploy/relay/.env.local`, then copies to `.env` for Compose. `INSTANCE=` / `INSTANCES=` / image lines in your local file are ignored. The relay uses `INSTANCE` for hostname (`${INSTANCE}.relay.zedra.dev`). The **Docker** `relay-monitor` sidecar uses **`INSTANCE` only**. **Multi-host SSH checks from your laptop** use **`packages/relay-check`** (`bun cli.ts --instance sg1,us1,eu1`).
 
 ### Deploy one instance
 
 ```bash
-./deploy/relay/deploy.sh --instance ap1
+./deploy/relay/deploy.sh --instance sg1
 ```
 
 ### Deploy multiple instances
@@ -152,7 +160,7 @@ Use `--service relay` or `--service monitor` to rebuild and restart only one con
 
 ```bash
 # Redeploy only the iroh-relay container (e.g. after a relay binary update)
-./deploy/relay/deploy.sh --instance ap1 --service relay
+./deploy/relay/deploy.sh --instance sg1 --service relay
 
 # Redeploy only the relay-monitor container (e.g. after changing alert thresholds or monitor code)
 ./deploy/relay/deploy.sh --instance sg1,us1,eu1 --service monitor
@@ -167,7 +175,7 @@ When `--service` is set:
 Use `--skip-deploy` to detect target platforms, build the arch-suffixed images, and print the plan without uploading images or restarting Compose.
 
 ```bash
-./deploy/relay/deploy.sh --instance ap1,us1,eu1,vn1 --skip-deploy
+./deploy/relay/deploy.sh --instance sg1,us1,eu1,vn1 --skip-deploy
 ./deploy/relay/deploy.sh --instance vn1 --service monitor --skip-deploy
 ```
 
@@ -186,9 +194,9 @@ When `--skip-deploy` is set, steps 4 and 5 are skipped.
 The deploy script supports mixed ARM/x64 remote batches. It builds and deploys one platform group at a time and uses arch-suffixed image tags so local images for different architectures can coexist. `--instance local` is only supported by itself.
 
 ```bash
-./deploy/relay/deploy.sh --instance ap1,us1,eu1
+./deploy/relay/deploy.sh --instance sg1,us1,eu1
 ./deploy/relay/deploy.sh --instance vn1
-./deploy/relay/deploy.sh --instance ap1,us1,eu1,vn1
+./deploy/relay/deploy.sh --instance sg1,us1,eu1,vn1
 ```
 
 ---
@@ -198,8 +206,8 @@ The deploy script supports mixed ARM/x64 remote batches. It builds and deploys o
 ### Provision instances
 
 ```bash
-# ap1 — Singapore
-gcloud compute instances create zedra-relay-ap1 \
+# sg1 — Singapore
+gcloud compute instances create zedra-relay-sg1 \
   --zone=asia-southeast1-b \
   --machine-type=t2a-standard-1 \
   --image-family=ubuntu-2404-lts-arm64 \
@@ -243,7 +251,7 @@ SSH (TCP 22) is already allowed by the default `default-allow-ssh` rule.
 ### Reserve static IPs
 
 ```bash
-gcloud compute addresses create zedra-relay-ap1-ip --region=asia-southeast1
+gcloud compute addresses create zedra-relay-sg1-ip --region=asia-southeast1
 gcloud compute addresses create zedra-relay-us1-ip --region=us-central1
 gcloud compute addresses create zedra-relay-eu1-ip --region=europe-west4
 ```
@@ -254,54 +262,45 @@ gcloud compute addresses create zedra-relay-eu1-ip --region=europe-west4
 
 ### Provision instances
 
+One `run-instances` per region — `<INSTANCE>` is the relay name (`sg1`, `us1`, `eu1`),
+`<AMI>` the current Ubuntu 24.04 arm64 image for that region (see the note below):
+
 ```bash
-# ap1 — Singapore (ap-southeast-1)
 aws ec2 run-instances \
-  --region ap-southeast-1 \
-  --image-id ami-0c1907b6d738188e5 \   # Ubuntu 24.04 arm64 — verify current AMI
-  --instance-type t4g.small \
-  --key-name zedra-relay-ap1 \
+  --region <REGION> \
+  --image-id <AMI> \
+  --instance-type t4g.micro \
+  --key-name zedra-relay-aws \
   --security-group-ids <SG_ID> \
-  --tag-specifications 'ResourceType=instance,Tags=[{Key=Name,Value=zedra-relay-ap1}]'
-
-# us1 — N. Virginia (us-east-1)
-aws ec2 run-instances \
-  --region us-east-1 \
-  --image-id ami-0a7a4e87939439934 \   # Ubuntu 24.04 arm64 — verify current AMI
-  --instance-type t4g.small \
-  --key-name zedra-relay-us1 \
-  --security-group-ids <SG_ID> \
-  --tag-specifications 'ResourceType=instance,Tags=[{Key=Name,Value=zedra-relay-us1}]'
-
-# eu1 — Frankfurt (eu-central-1)
-aws ec2 run-instances \
-  --region eu-central-1 \
-  --image-id ami-01e444924a2233b07 \   # Ubuntu 24.04 arm64 — verify current AMI
-  --instance-type t4g.small \
-  --key-name zedra-relay-eu1 \
-  --security-group-ids <SG_ID> \
-  --tag-specifications 'ResourceType=instance,Tags=[{Key=Name,Value=zedra-relay-eu1}]'
+  --block-device-mappings 'DeviceName=/dev/sda1,Ebs={VolumeSize=10,VolumeType=gp3,DeleteOnTermination=true}' \
+  --tag-specifications 'ResourceType=instance,Tags=[{Key=Name,Value=zedra-relay-<INSTANCE>}]'
 ```
+
+Production regions: `ap-southeast-1` (sg1), `us-east-1` (us1), `eu-central-1` (eu1).
 
 > **AMI IDs change per region and over time.** Find the current Ubuntu 24.04 arm64 AMI:
 > `aws ec2 describe-images --owners 099720109477 --filters "Name=name,Values=ubuntu/images/hvm-ssd-gp3/ubuntu-noble-24.04-arm64-server-*" --query 'sort_by(Images,&CreationDate)[-1].ImageId' --output text --region <REGION>`
 
 ### Security group inbound rules (per region)
 
+Group name `zedra-relay` in each region:
+
 ```
-TCP 22    — SSH (your IP only)
+TCP 22    — SSH (deploy laptop has no static IP, so 0.0.0.0/0)
 TCP 80    — HTTP / ACME
 TCP 443   — HTTPS / WebSocket relay
 UDP 7842  — QUIC addr discovery
+ICMP      — ping
 ```
 
 ### Elastic IPs (static)
 
+Required — the hostname is baked into the Let's Encrypt cert and clients cache the
+A record, so the IP must survive a stop/start:
+
 ```bash
-aws ec2 allocate-address --region ap-southeast-1
-aws ec2 allocate-address --region us-east-1
-aws ec2 allocate-address --region eu-central-1
-# Then associate each with its instance
+aws ec2 allocate-address --region <REGION> --domain vpc \
+  --tag-specifications 'ResourceType=elastic-ip,Tags=[{Key=Name,Value=zedra-relay-<INSTANCE>}]'
 aws ec2 associate-address --region <REGION> --instance-id <ID> --allocation-id <ALLOC_ID>
 ```
 
@@ -384,10 +383,13 @@ sudo systemctl restart docker
 Point each hostname to its public IP (A record, TTL 60):
 
 ```
-ap1.relay.zedra.dev  →  <AP1_IP>
-us1.relay.zedra.dev  →  <US1_IP>
-eu1.relay.zedra.dev  →  <EU1_IP>
+sg1.relay.zedra.dev  →  <SG1_ELASTIC_IP>
+us1.relay.zedra.dev  →  <US1_ELASTIC_IP>
+eu1.relay.zedra.dev  →  <EU1_ELASTIC_IP>
 ```
+
+Cloudflare hosts the zone. Keep the records **unproxied** (grey cloud) — the relay
+terminates its own TLS and needs raw TCP plus UDP 7842.
 
 ## iroh-relay Version
 
@@ -504,12 +506,12 @@ Run through this before and after every first-time deployment or infrastructure 
 - OS setup complete: Docker installed (official apt repo), sysctl tuned, fd limits raised, Docker daemon configured, SSH user in docker group
 - Verify sysctl applied on each instance:
   ```bash
-  ssh zedra-relay-ap1 "sysctl net.core.somaxconn vm.swappiness fs.file-max"
+  ssh zedra-relay-us1 "sysctl net.core.somaxconn vm.swappiness fs.file-max"
   # expect: 4096 / 10 / 200000
   ```
 - Verify Docker daemon config applied (`live-restore`, `default-ulimits`):
   ```bash
-  ssh zedra-relay-ap1 "docker info | grep -E 'Live Restore|logging'"
+  ssh zedra-relay-us1 "docker info | grep -E 'Live Restore|logging'"
   ```
 - Docker running locally and `docker info` succeeds
 - Outbound port 443 reachable from instance (needed for Let's Encrypt ACME challenge)
@@ -518,36 +520,36 @@ Run through this before and after every first-time deployment or infrastructure 
 
 - `generate_204` returns HTTP 204 on all instances:
   ```bash
-  curl -I http://ap1.relay.zedra.dev/generate_204
+  curl -I http://sg1.relay.zedra.dev/generate_204
   curl -I http://us1.relay.zedra.dev/generate_204
   curl -I http://eu1.relay.zedra.dev/generate_204
   ```
 - TLS certificate issued (first deploy only — ACME may take up to 60s):
   ```bash
-  curl -vI https://ap1.relay.zedra.dev/generate_204 2>&1 | grep -E "subject:|issuer:|expire"
+  curl -vI https://us1.relay.zedra.dev/generate_204 2>&1 | grep -E "subject:|issuer:|expire"
   ```
 - Both containers healthy and `init` process is PID 1:
   ```bash
-  ssh zedra-relay-ap1 "docker compose -f /opt/zedra/deploy/relay/docker-compose.yml ps"
-  ssh zedra-relay-ap1 "docker exec zedra-relay-relay-1 cat /proc/1/comm"  # expect: tini
+  ssh zedra-relay-us1 "docker compose -f /opt/zedra/deploy/relay/docker-compose.yml ps"
+  ssh zedra-relay-us1 "docker exec zedra-relay-relay-1 cat /proc/1/comm"  # expect: tini
   ```
 - Container fd limit is raised (not default 1024):
   ```bash
-  ssh zedra-relay-ap1 "docker exec zedra-relay-relay-1 sh -c 'ulimit -n'"
+  ssh zedra-relay-us1 "docker exec zedra-relay-relay-1 sh -c 'ulimit -n'"
   # expect: 100000
   ```
 - Relay logs clean (no errors, no panics):
   ```bash
-  ssh zedra-relay-ap1 "docker logs zedra-relay --tail=50"
+  ssh zedra-relay-us1 "docker logs zedra-relay --tail=50"
   ```
 - Monitor sending Discord heartbeat (check Discord channel for hourly summary)
 - Metrics endpoint reachable from inside the container:
   ```bash
-  ssh zedra-relay-ap1 "docker exec zedra-relay curl -sf http://localhost:9090/metrics | head -5"
+  ssh zedra-relay-us1 "docker exec zedra-relay curl -sf http://localhost:9090/metrics | head -5"
   ```
 - Cert volume persisting (not empty):
   ```bash
-  ssh zedra-relay-ap1 "docker volume inspect zedra-relay-certs"
+  ssh zedra-relay-us1 "docker volume inspect zedra-relay-certs"
   ```
 
 ### Ongoing health
@@ -556,7 +558,7 @@ Run through this before and after every first-time deployment or infrastructure 
 - Logrotate configured for `/var/log/zedra-relay/metrics.jsonl` (done by `deploy.sh`)
 - Cert auto-renewal working — Let's Encrypt renews ~30 days before expiry; confirm after first month:
   ```bash
-  ssh zedra-relay-ap1 "docker exec zedra-relay ls -la /data/certs/"
+  ssh zedra-relay-us1 "docker exec zedra-relay ls -la /data/certs/"
   ```
 - Review instance metrics after 24h of traffic:
   - **GCP**: Console → Compute Engine → instance → Monitoring
@@ -565,7 +567,7 @@ Run through this before and after every first-time deployment or infrastructure 
 ## Verify
 
 ```bash
-curl http://ap1.relay.zedra.dev/generate_204   # 204
+curl http://sg1.relay.zedra.dev/generate_204   # 204
 curl http://us1.relay.zedra.dev/generate_204   # 204
 curl http://eu1.relay.zedra.dev/generate_204   # 204
 ```
@@ -573,7 +575,7 @@ curl http://eu1.relay.zedra.dev/generate_204   # 204
 ## Logs
 
 ```bash
-ssh zedra-relay-ap1 "docker logs -f zedra-relay"
+ssh zedra-relay-us1 "docker logs -f zedra-relay"
 ssh zedra-relay-us1 "docker logs -f zedra-relay"
 ssh zedra-relay-eu1 "docker logs -f zedra-relay"
 ```
@@ -589,7 +591,7 @@ Both AWS and GCP bill **per second** (1-minute minimum) — charges stop when in
 ### Traffic assumptions
 
 - **70% relay rate** — Symmetric NAT is prevalent on mobile/corporate networks.
-- Traffic split: ap1 40%, us1 35%, eu1 25% (APAC-weighted user base).
+- Traffic split: sg1 40%, us1 35%, eu1 25% (APAC-weighted user base).
 - Blended egress rate: ~$0.09/GB (AWS) · ~$0.08/GB (GCP).
 
 ### Per-DAU monthly traffic model

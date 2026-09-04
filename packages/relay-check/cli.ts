@@ -125,10 +125,10 @@ if (args.help || args.h) {
 
 Examples:
   bun cli.ts --instance sg1,us1,eu1         real-time metrics, all instances
-  bun cli.ts --instance ap1                 real-time metrics, one instance
-  bun cli.ts --instance ap1 --cached        cached snapshot
+  bun cli.ts --instance sg1                 real-time metrics, one instance
+  bun cli.ts --instance sg1 --cached        cached snapshot
   bun cli.ts --instance sg1,us1 --history   last 24h table
-  bun cli.ts --instance ap1 --history 6     last 6h table`);
+  bun cli.ts --instance sg1 --history 6     last 6h table`);
   process.exit(0);
 }
 
