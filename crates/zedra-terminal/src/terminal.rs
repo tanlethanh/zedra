@@ -28,6 +28,8 @@ pub enum TerminalEvent {
         cols: u16,
         rows: u16,
     },
+    InteractionStarted,
+    UserOutboundInput,
     TitleChanged(Option<String>),
     OscEvent(OscEvent),
     OpenHyperlink(TerminalHyperlink),
@@ -46,6 +48,14 @@ pub enum TerminalEvent {
     },
     NativePasteMenuRequested {
         position: GpuiPoint<Pixels>,
+    },
+    /// Haptic feedback for one accepted pinch zoom step. The app maps this to
+    /// the platform bridge; the terminal crate never touches platform APIs.
+    PinchStepHaptic,
+    /// A pinch gesture settled (ended or cancelled) with a changed font size.
+    /// Emitted once per gesture; the app persists the size and forwards it.
+    PinchSettled {
+        font_size: u8,
     },
 }
 
@@ -419,7 +429,7 @@ impl Terminal {
                 self.send_terminal_event(TerminalEvent::TitleChanged(None));
             }
             AlacTermEvent::PtyWrite(text) => {
-                self.send_bytes_sync(text.into_bytes());
+                self.send_protocol_reply(text.into_bytes());
             }
             AlacTermEvent::TextAreaSizeRequest(format) => {
                 let window_size = alacritty_terminal::event::WindowSize {
@@ -428,7 +438,7 @@ impl Terminal {
                     cell_width: (self.size.cell_width / px(1.0)) as u16,
                     cell_height: (self.size.line_height / px(1.0)) as u16,
                 };
-                self.send_bytes_sync(format(window_size).into_bytes());
+                self.send_protocol_reply(format(window_size).into_bytes());
             }
             AlacTermEvent::ColorRequest(_index, _format) => {
                 // The host answers OSC 10/11/12 color queries inline at the PTY boundary
@@ -438,6 +448,15 @@ impl Terminal {
                 // garbage in their input area.
             }
             _ => {}
+        }
+    }
+
+    fn send_protocol_reply(&self, bytes: Vec<u8>) {
+        let Some(tx) = &self.input_tx else {
+            return;
+        };
+        if let Err(e) = tx.try_send(bytes) {
+            error!("failed to send bytes: {:?}", e);
         }
     }
 
@@ -691,15 +710,19 @@ impl Terminal {
         Some(Point::new(Line(line), Column(column)))
     }
 
-    pub fn send_bytes_sync(&self, bytes: Vec<u8>) {
-        if let Some(tx) = &self.input_tx {
-            if let Err(e) = tx.try_send(bytes) {
-                error!("failed to send bytes: {:?}", e);
-            }
+    pub fn send_bytes_sync(&self, bytes: Vec<u8>) -> bool {
+        let Some(tx) = &self.input_tx else {
+            return false;
+        };
+        if let Err(e) = tx.try_send(bytes) {
+            error!("failed to send bytes: {:?}", e);
+            return false;
         }
+        self.send_terminal_event(TerminalEvent::UserOutboundInput);
+        true
     }
 
-    pub fn paste_text(&self, text: &str) {
+    pub fn paste_text(&self, text: &str) -> bool {
         let bracketed = self.mode.contains(TermMode::BRACKETED_PASTE);
         let bytes = if bracketed {
             let text = text.replace('\x1b', "");
@@ -708,11 +731,15 @@ impl Terminal {
             text.replace("\r\n", "\r").replace('\n', "\r").into_bytes()
         };
 
-        if let Some(tx) = &self.input_tx {
-            if let Err(error) = tx.try_send(bytes) {
-                error!("failed to send pasted text: {:?}", error);
-            }
+        let Some(tx) = &self.input_tx else {
+            return false;
+        };
+        if let Err(error) = tx.try_send(bytes) {
+            error!("failed to send pasted text: {:?}", error);
+            return false;
         }
+        self.send_terminal_event(TerminalEvent::UserOutboundInput);
+        true
     }
 
     pub fn selection_range(&self) -> Option<Range<usize>> {
@@ -4902,5 +4929,49 @@ mod tests {
             key: key.to_string(),
             key_char: Some(key.to_string()),
         }
+    }
+
+    #[test]
+    fn user_keystroke_emits_outbound_input_signal() {
+        use tokio::sync::mpsc;
+        let (input_tx, mut input_rx) = mpsc::channel(4);
+        let mut terminal = Terminal::new(80, 4, px(10.0), px(20.0));
+        terminal.input_tx = Some(input_tx);
+        let mut events = terminal.subscribe_events();
+        terminal.handle_keystroke(&plain_keystroke("a"));
+        let sent = input_rx.try_recv().expect("keystroke enqueues bytes");
+        assert!(!sent.is_empty());
+        let event = events.try_recv().expect("keystroke signals outbound input");
+        assert!(matches!(event, TerminalEvent::UserOutboundInput));
+    }
+
+    #[test]
+    fn user_paste_emits_outbound_input_signal() {
+        use tokio::sync::mpsc;
+        let (input_tx, mut input_rx) = mpsc::channel(4);
+        let mut terminal = Terminal::new(80, 4, px(10.0), px(20.0));
+        terminal.input_tx = Some(input_tx);
+        let mut events = terminal.subscribe_events();
+        assert!(terminal.paste_text("hello"));
+        let sent = input_rx.try_recv().expect("paste enqueues bytes");
+        assert!(!sent.is_empty());
+        let event = events.try_recv().expect("paste signals outbound input");
+        assert!(matches!(event, TerminalEvent::UserOutboundInput));
+    }
+
+    #[test]
+    fn protocol_reply_does_not_emit_outbound_input_signal() {
+        use tokio::sync::mpsc;
+        let (input_tx, mut input_rx) = mpsc::channel(4);
+        let mut terminal = Terminal::new(80, 4, px(10.0), px(20.0));
+        terminal.input_tx = Some(input_tx);
+        let mut events = terminal.subscribe_events();
+        terminal.send_protocol_reply(b"reply".to_vec());
+        let sent = input_rx.try_recv().expect("protocol reply enqueues bytes");
+        assert!(!sent.is_empty());
+        assert!(
+            events.try_recv().is_err(),
+            "protocol replies must not trigger post-input reclaim"
+        );
     }
 }
