@@ -325,16 +325,20 @@ impl Terminal {
         self.input_tx.clone()
     }
 
-    pub async fn send_bytes(&mut self, bytes: Vec<u8>) {
-        if let Some(tx) = &self.input_tx {
-            if let Err(e) = tx.send(bytes).await {
-                error!("failed to send input: {:?}", e)
-            }
+    pub async fn send_bytes(&mut self, bytes: Vec<u8>) -> bool {
+        let Some(tx) = &self.input_tx else {
+            return false;
+        };
+        if let Err(e) = tx.send(bytes).await {
+            error!("failed to send input: {:?}", e);
+            return false;
         }
+        self.send_terminal_event(TerminalEvent::UserOutboundInput);
+        true
     }
 
-    pub async fn send_input(&mut self, text: String) {
-        self.send_bytes(text.into_bytes()).await;
+    pub async fn send_input(&mut self, text: String) -> bool {
+        self.send_bytes(text.into_bytes()).await
     }
 
     /// Feed bytes from PTY output buffer into the terminal emulator.
@@ -4977,5 +4981,37 @@ mod tests {
             events.try_recv().is_err(),
             "protocol replies must not trigger post-input reclaim"
         );
+    }
+
+    #[test]
+    fn user_async_send_bytes_emits_outbound_input_signal() {
+        use tokio::sync::mpsc;
+        futures::executor::block_on(async {
+            let (input_tx, mut input_rx) = mpsc::channel(4);
+            let mut terminal = Terminal::new(80, 4, px(10.0), px(20.0));
+            terminal.input_tx = Some(input_tx);
+            let mut events = terminal.subscribe_events();
+            assert!(terminal.send_bytes(b"test".to_vec()).await);
+            let sent = input_rx.recv().await.expect("bytes sent");
+            assert_eq!(sent, b"test");
+            let event = events.try_recv().expect("outbound signal emitted");
+            assert!(matches!(event, TerminalEvent::UserOutboundInput));
+        });
+    }
+
+    #[test]
+    fn user_async_send_input_emits_outbound_input_signal() {
+        use tokio::sync::mpsc;
+        futures::executor::block_on(async {
+            let (input_tx, mut input_rx) = mpsc::channel(4);
+            let mut terminal = Terminal::new(80, 4, px(10.0), px(20.0));
+            terminal.input_tx = Some(input_tx);
+            let mut events = terminal.subscribe_events();
+            assert!(terminal.send_input("text".to_string()).await);
+            let sent = input_rx.recv().await.expect("bytes sent");
+            assert_eq!(sent, b"text");
+            let event = events.try_recv().expect("outbound signal emitted");
+            assert!(matches!(event, TerminalEvent::UserOutboundInput));
+        });
     }
 }

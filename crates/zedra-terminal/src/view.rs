@@ -103,7 +103,6 @@ pub struct TerminalView {
     scroll_offset_px: f32,
     remote_scroll_offset_px: f32,
     keyboard_top_reveal_px: f32,
-    last_remote_size: Option<(u16, u16)>,
     /// Top-left origin of the painted terminal grid within the window.
     /// Used to turn touch scroll positions into terminal cell coordinates.
     grid_origin: Option<Point<Pixels>>,
@@ -197,7 +196,6 @@ impl TerminalView {
             scroll_offset_px: 0.0,
             remote_scroll_offset_px: 0.0,
             keyboard_top_reveal_px: 0.0,
-            last_remote_size: None,
             grid_origin: None,
             workdir: None,
             keyboard_inset: px(0.0),
@@ -402,15 +400,7 @@ impl TerminalView {
         self.terminal.read(cx).size().into_remote_size()
     }
 
-    /// Reattach may not produce a paint mismatch, so sync the host PTY once.
-    pub fn sync_remote_size_after_attach(&mut self, cx: &mut Context<Self>) {
-        let remote_size = self.terminal.read(cx).size().into_remote_size();
-        self.last_remote_size = Some(remote_size);
-        cx.emit(TerminalEvent::RequestResize {
-            cols: remote_size.0,
-            rows: remote_size.1,
-        });
-    }
+    pub fn sync_remote_size_after_attach(&mut self, _cx: &mut Context<Self>) {}
 
     /// This is called by TerminalElement when the actual bounds of the terminal
     /// do not match the expected bounds.
@@ -535,7 +525,6 @@ impl TerminalView {
 
     fn resize_remote_pty(&mut self, next: TerminalGridSize, cx: &mut Context<Self>) {
         let remote_size = next.remote_size();
-        self.last_remote_size = Some(remote_size);
         cx.emit(TerminalEvent::RequestResize {
             cols: remote_size.0,
             rows: remote_size.1,
@@ -811,7 +800,7 @@ impl TerminalView {
         self.outbound_input_signaled = false;
     }
 
-    fn take_pending_pinch_settle(&mut self) -> Option<TerminalFontSize> {
+    pub fn take_pending_pinch_settle(&mut self) -> Option<TerminalFontSize> {
         if !self.pinch_claimed {
             return None;
         }
@@ -1375,29 +1364,20 @@ mod tests {
     }
 
     #[test]
-    fn sync_remote_size_after_attach_forces_resize_event() {
+    fn sync_remote_size_after_attach_does_not_emit_uncoordinated_resize_event() {
         let mut cx = TestAppContext::single();
         let window = open_terminal_window(&mut cx);
         cx.run_until_parked();
 
         let root = window.root(&mut cx).unwrap();
         let mut events = cx.events(&root);
-        let expected_size = window
+        window
             .update(&mut cx, |terminal_view, _window, cx| {
-                let size = terminal_view.terminal.read(cx).size();
-                let expected_size = (size.columns as u16, size.rows as u16);
-                terminal_view.last_remote_size = Some(expected_size);
                 terminal_view.sync_remote_size_after_attach(cx);
-                expected_size
             })
             .unwrap();
 
-        match events.next().now_or_never().flatten() {
-            Some(TerminalEvent::RequestResize { cols, rows }) => {
-                assert_eq!((cols, rows), expected_size);
-            }
-            event => panic!("expected forced resize event, got {event:?}"),
-        }
+        assert!(events.next().now_or_never().flatten().is_none());
         cx.quit();
     }
 

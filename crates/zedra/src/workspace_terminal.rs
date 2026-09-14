@@ -245,6 +245,9 @@ impl WorkspaceTerminal {
             self.scroll_to_bottom_button_hide_generation.wrapping_add(1);
         self.reclaim_epoch.reset();
         self.terminal_view.update(cx, |terminal_view, cx| {
+            if let Some(settled) = terminal_view.take_pending_pinch_settle() {
+                crate::settings::set_terminal_font_size(settled.as_u8());
+            }
             terminal_view.deactivate(cx);
         });
         hide_native_floating_button(self.scroll_to_bottom_button_id);
@@ -792,7 +795,6 @@ impl WorkspaceTerminal {
             Ok((input_tx, output_rx)) => {
                 terminal_view.update(cx, |terminal_view, cx| {
                     terminal_view.attach_channel(input_tx, output_rx, cx);
-                    terminal_view.sync_remote_size_after_attach(cx);
                     info!("attached channel to terminal");
                 });
                 true
