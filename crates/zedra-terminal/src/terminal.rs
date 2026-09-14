@@ -466,6 +466,10 @@ impl Terminal {
         }
     }
 
+    pub fn outbound_input_sender(&self) -> tokio::sync::broadcast::Sender<TerminalEvent> {
+        self.event_tx.clone()
+    }
+
     /// Feed bytes from PTY output buffer into the OSC scanner
     /// and emit events to the event channel.
     pub fn feed_osc_bytes(&mut self, bytes: &[u8]) {

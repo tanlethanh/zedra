@@ -123,6 +123,7 @@ pub struct TerminalView {
     pub retains_focus_without_keyboard: bool,
     terminal_theme: TerminalTheme,
     font_size: TerminalFontSize,
+    metric_revision: u64,
     zoom_ratchet: TerminalZoomRatchet,
     pinch_claimed: bool,
     pinch_start_font_size: TerminalFontSize,
@@ -206,6 +207,7 @@ impl TerminalView {
             retains_focus_without_keyboard: false,
             terminal_theme: TerminalTheme::dark(),
             font_size: TerminalFontSize::DEFAULT,
+            metric_revision: 0,
             zoom_ratchet: TerminalZoomRatchet::new(TerminalFontSize::DEFAULT),
             pinch_claimed: false,
             pinch_start_font_size: TerminalFontSize::DEFAULT,
@@ -243,12 +245,27 @@ impl TerminalView {
 
     pub fn set_font_size(&mut self, font_size: TerminalFontSize, cx: &mut Context<Self>) {
         self.font_size = TerminalFontSize::new(font_size.as_u8());
+        self.metric_revision = self.metric_revision.wrapping_add(1);
         self.zoom_ratchet.set_font_size(self.font_size);
         cx.notify();
     }
 
     pub fn font_size(&self) -> TerminalFontSize {
         self.font_size
+    }
+
+    pub fn metric_revision(&self) -> u64 {
+        self.metric_revision
+    }
+
+    pub fn outbound_input_activity_callback(
+        &self,
+        cx: &App,
+    ) -> Option<std::sync::Arc<dyn Fn() + Send + Sync>> {
+        let tx = self.terminal.read(cx).outbound_input_sender();
+        Some(std::sync::Arc::new(move || {
+            let _ = tx.send(TerminalEvent::UserOutboundInput);
+        }))
     }
 
     pub fn set_terminal_id(&mut self, terminal_id: String) {
@@ -442,6 +459,7 @@ impl TerminalView {
             return;
         };
         self.font_size = font_size;
+        self.metric_revision = self.metric_revision.wrapping_add(1);
         self.apply_grid_size(next, cx);
     }
 
@@ -512,19 +530,11 @@ impl TerminalView {
             cx.notify();
         }
 
-        if !changed && self.last_remote_size == Some(next.remote_size()) {
-            return;
-        }
-
         self.resize_remote_pty(next, cx);
     }
 
     fn resize_remote_pty(&mut self, next: TerminalGridSize, cx: &mut Context<Self>) {
         let remote_size = next.remote_size();
-        if self.last_remote_size == Some(remote_size) {
-            return;
-        }
-
         self.last_remote_size = Some(remote_size);
         cx.emit(TerminalEvent::RequestResize {
             cols: remote_size.0,
@@ -1014,6 +1024,7 @@ impl Render for TerminalView {
                 self.focus_handle.clone(),
                 self.focus_handle.is_focused(window),
                 selection_active,
+                self.metric_revision,
             ))
     }
 }
@@ -2206,6 +2217,35 @@ mod tests {
             }
         }
         assert_eq!(settled, vec![13]);
+        cx.quit();
+    }
+
+    #[test]
+    fn metric_revision_increments_on_font_step_and_set_font_size() {
+        let mut cx = TestAppContext::single();
+        let window = open_terminal_window(&mut cx);
+        cx.run_until_parked();
+
+        let initial_rev = window
+            .update(&mut cx, |view, _, _| view.metric_revision())
+            .unwrap();
+        assert_eq!(initial_rev, 0);
+
+        window
+            .update(&mut cx, |view, _, cx| {
+                view.set_font_size(TerminalFontSize::new(14), cx);
+            })
+            .unwrap();
+        let after_set = window
+            .update(&mut cx, |view, _, _| view.metric_revision())
+            .unwrap();
+        assert_eq!(after_set, 1);
+
+        pinch_enter_sequence(window, &mut cx, &[0.04, 0.04, 0.03]);
+        let after_pinch = window
+            .update(&mut cx, |view, _, _| view.metric_revision())
+            .unwrap();
+        assert!(after_pinch > after_set);
         cx.quit();
     }
 }

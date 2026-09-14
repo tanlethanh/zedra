@@ -8,15 +8,18 @@
 ///
 /// Nothing in `zedra-session` is involved — the routing is entirely
 /// within the `zedra` crate.
-use std::sync::{Mutex, OnceLock};
+use std::sync::{Arc, Mutex, OnceLock};
 
 use tokio::sync::mpsc;
 use tracing::warn;
+
+pub type ActivityCallback = Arc<dyn Fn() + Send + Sync>;
 
 #[derive(Clone)]
 struct ActiveInput {
     terminal_id: String,
     sender: mpsc::Sender<Vec<u8>>,
+    on_activity: Option<ActivityCallback>,
 }
 
 static ACTIVE_INPUT: OnceLock<Mutex<Option<ActiveInput>>> = OnceLock::new();
@@ -25,16 +28,30 @@ fn slot() -> &'static Mutex<Option<ActiveInput>> {
     ACTIVE_INPUT.get_or_init(|| Mutex::new(None))
 }
 
-/// Register the input channel for the currently-active terminal.
-///
-/// Called by `WorkspaceView` whenever `active_terminal_id` changes.
 pub fn set_active_input(terminal_id: String, sender: mpsc::Sender<Vec<u8>>) {
+    set_active_input_with_activity(terminal_id, sender, None);
+}
+
+pub fn set_active_input_with_activity(
+    terminal_id: String,
+    sender: mpsc::Sender<Vec<u8>>,
+    on_activity: Option<ActivityCallback>,
+) {
     if let Ok(mut slot) = slot().lock() {
         *slot = Some(ActiveInput {
             terminal_id,
             sender,
+            on_activity,
         });
     }
+}
+
+pub fn register_active_input_with_activity(
+    terminal_id: String,
+    sender: mpsc::Sender<Vec<u8>>,
+    on_activity: Option<ActivityCallback>,
+) {
+    set_active_input_with_activity(terminal_id, sender, on_activity);
 }
 
 /// Clear the active input channel, but only if `terminal_id` still owns the slot.
@@ -63,7 +80,12 @@ pub fn send_to_active(data: Vec<u8>) -> bool {
     };
 
     match active.sender.try_send(data) {
-        Ok(()) => true,
+        Ok(()) => {
+            if let Some(cb) = &active.on_activity {
+                cb();
+            }
+            true
+        }
         Err(error) => {
             warn!(
                 terminal_id = active.terminal_id,
@@ -77,6 +99,7 @@ pub fn send_to_active(data: Vec<u8>) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::sync::atomic::{AtomicBool, Ordering};
     use tokio::sync::mpsc::error::TryRecvError;
 
     // Single test: the module holds one process-global slot, so parallel tests
@@ -87,16 +110,24 @@ mod tests {
 
         let (first_tx, mut first_rx) = mpsc::channel(1);
         let (second_tx, mut second_rx) = mpsc::channel(1);
+        let activity_fired = Arc::new(AtomicBool::new(false));
+        let activity_fired_clone = activity_fired.clone();
         set_active_input("first".to_string(), first_tx);
-        set_active_input("second".to_string(), second_tx);
+        set_active_input_with_activity(
+            "second".to_string(),
+            second_tx,
+            Some(Arc::new(move || {
+                activity_fired_clone.store(true, Ordering::SeqCst);
+            })),
+        );
 
-        // send_to_active reads the latest registered channel.
         assert!(send_to_active(b"\t".to_vec()));
         assert!(matches!(
             first_rx.try_recv(),
             Err(TryRecvError::Empty | TryRecvError::Disconnected)
         ));
         assert_eq!(second_rx.try_recv(), Ok(b"\t".to_vec()));
+        assert!(activity_fired.load(Ordering::SeqCst));
 
         // A stale close for a different terminal must not drop the active slot.
         clear_active_input("first");

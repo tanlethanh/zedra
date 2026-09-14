@@ -188,6 +188,7 @@ pub struct TerminalElement {
     focus_handle: FocusHandle,
     focused: bool,
     selection_active: bool,
+    metric_revision: u64,
 }
 
 impl TerminalElement {
@@ -203,6 +204,7 @@ impl TerminalElement {
         focus_handle: FocusHandle,
         focused: bool,
         selection_active: bool,
+        metric_revision: u64,
     ) -> Self {
         Self {
             content,
@@ -216,6 +218,7 @@ impl TerminalElement {
             focus_handle,
             focused,
             selection_active,
+            metric_revision,
         }
     }
 
@@ -756,9 +759,12 @@ impl Element for TerminalElement {
         if needs_reconcile {
             let view = self.view.clone();
             let actual_bounds = bounds.size;
+            let revision = self.metric_revision;
             window.defer(cx, move |_window, cx| {
                 let _ = view.update(cx, |view, cx| {
-                    view.reconcile_bounds_fallback(actual_bounds, cell_width, line_height, cx);
+                    if view.metric_revision() == revision {
+                        view.reconcile_bounds_fallback(actual_bounds, cell_width, line_height, cx);
+                    }
                 });
             });
         }

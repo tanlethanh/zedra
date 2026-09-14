@@ -239,6 +239,7 @@ impl WorkspaceTerminal {
     }
 
     pub fn deactivate(&mut self, cx: &mut Context<Self>) {
+        crate::active_terminal::clear_active_input(&self.terminal_id);
         self.scroll_to_bottom_button_hide_pending = false;
         self.scroll_to_bottom_button_hide_generation =
             self.scroll_to_bottom_button_hide_generation.wrapping_add(1);
@@ -698,6 +699,7 @@ impl WorkspaceTerminal {
         if self.terminal_id == TERMINAL_PENDING_ID {
             return;
         }
+        self.register_active_input(cx);
         if !self.reclaim_epoch.claim_activation() {
             return;
         }
@@ -731,8 +733,27 @@ impl WorkspaceTerminal {
         if self.terminal_id == TERMINAL_PENDING_ID {
             return;
         }
+        self.register_active_input(cx);
         let (cols, rows) = self.terminal_view.read(cx).remote_size(cx);
         self.resubmit_current_size_as_reconnect(cols, rows, cx);
+    }
+
+    fn register_active_input(&self, cx: &App) {
+        if self.terminal_id == TERMINAL_PENDING_ID {
+            return;
+        }
+        let Some(sender) = self.terminal_view.read(cx).input_sender(cx) else {
+            return;
+        };
+        let on_activity = self
+            .terminal_view
+            .read(cx)
+            .outbound_input_activity_callback(cx);
+        crate::active_terminal::set_active_input_with_activity(
+            self.terminal_id.clone(),
+            sender,
+            on_activity,
+        );
     }
 
     fn resubmit_current_size_as_reconnect(&mut self, cols: u16, rows: u16, cx: &mut Context<Self>) {
@@ -1044,6 +1065,7 @@ impl Render for WorkspaceTerminal {
 
 impl Drop for WorkspaceTerminal {
     fn drop(&mut self) {
+        crate::active_terminal::clear_active_input(&self.terminal_id);
         hide_native_floating_button(self.scroll_to_bottom_button_id);
         platform_bridge::remove_native_dictation_preview(self.dictation_preview_id);
     }
@@ -1196,5 +1218,33 @@ mod tests {
         assert!(epoch.claim_activation());
         assert!(epoch.claim_interaction());
         assert!(epoch.claim_post_input());
+    }
+
+    #[test]
+    fn workspace_key_bar_active_input_triggers_post_input_reclaim() {
+        let mut epoch = ReclaimEpochState::default();
+        let mut coordinator = TerminalResizeCoordinator::new();
+        let (tx, mut rx) = tokio::sync::mpsc::channel(1);
+        let called = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let called_clone = called.clone();
+        crate::active_terminal::set_active_input_with_activity(
+            "keybar-test".to_string(),
+            tx,
+            Some(std::sync::Arc::new(move || {
+                called_clone.store(true, std::sync::atomic::Ordering::SeqCst);
+            })),
+        );
+        assert!(crate::active_terminal::send_to_active(b"\r".to_vec()));
+        assert_eq!(rx.try_recv(), Ok(b"\r".to_vec()));
+        assert!(called.load(std::sync::atomic::Ordering::SeqCst));
+
+        assert!(epoch.claim_post_input());
+        let transition =
+            submit_coordinator_for_test(&mut coordinator, 80, 24, ResizeReason::PostInputReclaim);
+        assert_eq!(
+            transition.dispatch_request().map(|i| i.reason()),
+            Some(ResizeReason::PostInputReclaim)
+        );
+        crate::active_terminal::clear_active_input("keybar-test");
     }
 }
