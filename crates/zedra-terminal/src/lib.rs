@@ -6,6 +6,7 @@ mod selection;
 pub mod terminal;
 pub mod theme;
 pub mod view;
+pub mod zoom_ratchet;
 
 pub use element::{TerminalElement, TerminalElementLayout};
 pub use input::*;
@@ -14,6 +15,7 @@ pub use keys::*;
 pub use terminal::*;
 pub use theme::{AnsiPalette, TerminalTheme};
 pub use view::*;
+pub use zoom_ratchet::{TerminalFontSize, TerminalZoomRatchet, ZoomStep};
 
 use gpui::*;
 

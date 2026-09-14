@@ -15,9 +15,10 @@ use crate::TerminalTheme;
 use crate::element::TerminalElement;
 use crate::selection::TerminalSelectionDocument;
 use crate::terminal::{Terminal, TerminalContent, TerminalEvent};
+use crate::zoom_ratchet::{TerminalFontSize, TerminalZoomRatchet};
 
 const FALLBACK_CELL_WIDTH: f32 = 9.0;
-const TERMINAL_LINE_HEIGHT: f32 = 16.0;
+pub const TERMINAL_LINE_HEIGHT: f32 = TerminalFontSize::DEFAULT.line_height_f32();
 const TOUCH_SCROLL_SUPPRESSION_AFTER_SCROLL_TO_BOTTOM: Duration = Duration::from_millis(1000);
 
 /// Thread-safe buffer for receiving PTY output.
@@ -121,6 +122,13 @@ pub struct TerminalView {
     /// drop focus — the bar keeps sending keystrokes to this terminal.
     pub retains_focus_without_keyboard: bool,
     terminal_theme: TerminalTheme,
+    font_size: TerminalFontSize,
+    zoom_ratchet: TerminalZoomRatchet,
+    pinch_claimed: bool,
+    pinch_start_font_size: TerminalFontSize,
+    viewport: Size<Pixels>,
+    interaction_signaled: bool,
+    outbound_input_signaled: bool,
     _event_task: Task<()>,
     _subscriptions: Vec<Subscription>,
 }
@@ -191,9 +199,48 @@ impl TerminalView {
             is_alt_screen: false,
             retains_focus_without_keyboard: false,
             terminal_theme: TerminalTheme::dark(),
+            font_size: TerminalFontSize::DEFAULT,
+            zoom_ratchet: TerminalZoomRatchet::new(TerminalFontSize::DEFAULT),
+            pinch_claimed: false,
+            pinch_start_font_size: TerminalFontSize::DEFAULT,
+            viewport,
+            interaction_signaled: false,
+            outbound_input_signaled: false,
             _event_task: event_task,
             _subscriptions: vec![],
         }
+    }
+
+    pub fn new_with_font_size(
+        terminal_id: String,
+        window: &mut Window,
+        viewport: Size<Pixels>,
+        font_size: TerminalFontSize,
+        cx: &mut Context<Self>,
+    ) -> Self {
+        let initial_grid_size =
+            TerminalView::compute_grid_size_for_font_size(window, viewport, font_size);
+        let mut this = Self::new(terminal_id, window, viewport, cx);
+        this.set_font_size(font_size, cx);
+        this.terminal.update(cx, |terminal, _| {
+            terminal.resize(
+                initial_grid_size.columns,
+                initial_grid_size.rows,
+                initial_grid_size.cell_width,
+                initial_grid_size.line_height,
+            );
+        });
+        this
+    }
+
+    pub fn set_font_size(&mut self, font_size: TerminalFontSize, cx: &mut Context<Self>) {
+        self.font_size = TerminalFontSize::new(font_size.as_u8());
+        self.zoom_ratchet.set_font_size(self.font_size);
+        cx.notify();
+    }
+
+    pub fn font_size(&self) -> TerminalFontSize {
+        self.font_size
     }
 
     pub fn set_terminal_id(&mut self, terminal_id: String) {
@@ -238,7 +285,15 @@ impl TerminalView {
     }
 
     pub fn compute_grid_size(window: &mut Window, viewport: Size<Pixels>) -> TerminalGridSize {
-        let line_height = px(TERMINAL_LINE_HEIGHT);
+        Self::compute_grid_size_for_font_size(window, viewport, TerminalFontSize::DEFAULT)
+    }
+
+    pub fn compute_grid_size_for_font_size(
+        window: &mut Window,
+        viewport: Size<Pixels>,
+        font_size: TerminalFontSize,
+    ) -> TerminalGridSize {
+        let line_height = font_size.line_height();
         let cell_width = Self::measure_cell_width(window, line_height);
         Self::compute_grid_size_with_metrics(viewport, cell_width, line_height)
     }
@@ -340,6 +395,88 @@ impl TerminalView {
     ) {
         let next = Self::compute_grid_size_with_metrics(actual_bounds, cell_width, line_height);
         self.apply_grid_size(next, cx);
+    }
+
+    pub fn pinch_font_size(&self, cx: &App) -> TerminalFontSize {
+        let _ = cx;
+        self.font_size
+    }
+
+    pub fn is_pinch_active(&self, cx: &App) -> bool {
+        let _ = cx;
+        self.pinch_claimed
+    }
+
+    fn reject_degenerate_cell(cell_width: Pixels, line_height: Pixels) -> bool {
+        let width = (cell_width / px(1.0)) as f32;
+        let height = (line_height / px(1.0)) as f32;
+        !width.is_finite() || !height.is_finite() || width <= 0.0 || height <= 0.0
+    }
+
+    fn apply_font_size_step(
+        &mut self,
+        font_size: TerminalFontSize,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.font_size = font_size;
+        let line_height = font_size.line_height();
+        let cell_width = Self::measure_cell_width(window, line_height);
+        if Self::reject_degenerate_cell(cell_width, line_height) {
+            return;
+        }
+        let next = Self::compute_grid_size_with_metrics(self.viewport, cell_width, line_height);
+        self.apply_grid_size(next, cx);
+    }
+
+    fn handle_terminal_pinch(
+        &mut self,
+        event: &PinchEvent,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        match event.phase {
+            TouchPhase::Started => {
+                self.signal_interaction(cx);
+                if self.terminal.read(cx).selection_active() {
+                    self.pinch_claimed = false;
+                    return;
+                }
+                window.prevent_default();
+                self.pinch_claimed = true;
+                self.pinch_start_font_size = self.font_size;
+                self.zoom_ratchet.set_font_size(self.font_size);
+                self.zoom_ratchet.begin();
+            }
+            TouchPhase::Moved => {
+                if !self.pinch_claimed {
+                    return;
+                }
+                if self.terminal.read(cx).selection_active() {
+                    self.zoom_ratchet.end();
+                    return;
+                }
+                let steps = self.zoom_ratchet.push_delta(event.delta);
+                for step in steps {
+                    self.apply_font_size_step(step.to, window, cx);
+                    cx.emit(TerminalEvent::PinchStepHaptic);
+                }
+            }
+            TouchPhase::Ended => {
+                if !self.pinch_claimed {
+                    return;
+                }
+                self.pinch_claimed = false;
+                let settled = self.zoom_ratchet.font_size();
+                let changed = settled != self.pinch_start_font_size;
+                self.zoom_ratchet.end();
+                if changed {
+                    cx.emit(TerminalEvent::PinchSettled {
+                        font_size: settled.as_u8(),
+                    });
+                }
+            }
+        }
     }
 
     fn apply_grid_size(&mut self, next: TerminalGridSize, cx: &mut Context<Self>) {
@@ -526,6 +663,7 @@ impl TerminalView {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
+        self.signal_interaction(cx);
         let position = event.position();
 
         let hyperlink = self.terminal.read(cx).hyperlink_at(
@@ -570,6 +708,7 @@ impl TerminalView {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
+        self.signal_interaction(cx);
         let position = event.down.position;
         window.prevent_default();
 
@@ -619,7 +758,29 @@ impl TerminalView {
             terminal.clear_selection_range();
             terminal.paste_text(text);
         });
+        self.signal_user_outbound_input(cx);
         cx.notify();
+    }
+
+    fn signal_interaction(&mut self, cx: &mut Context<Self>) {
+        if self.interaction_signaled {
+            return;
+        }
+        self.interaction_signaled = true;
+        cx.emit(TerminalEvent::InteractionStarted);
+    }
+
+    pub fn signal_user_outbound_input(&mut self, cx: &mut Context<Self>) {
+        if self.outbound_input_signaled {
+            return;
+        }
+        self.outbound_input_signaled = true;
+        cx.emit(TerminalEvent::UserOutboundInput);
+    }
+
+    pub fn reset_reclaim_epoch(&mut self) {
+        self.interaction_signaled = false;
+        self.outbound_input_signaled = false;
     }
 }
 
@@ -650,6 +811,9 @@ impl Render for TerminalView {
             .bg(rgb(self.terminal_theme.background))
             .track_focus(&focus_handle)
             .manual_focus()
+            .on_pinch(cx.listener(|this, event: &PinchEvent, window, cx| {
+                this.handle_terminal_pinch(event, window, cx);
+            }))
             .on_press(cx.listener(|this, event: &PressEvent, window, cx| {
                 this.handle_terminal_press(event, window, cx);
             }))
@@ -657,6 +821,7 @@ impl Render for TerminalView {
                 this.handle_terminal_long_press(event, window, cx);
             }))
             .on_scroll_wheel(cx.listener(|this, event: &ScrollWheelEvent, _window, cx| {
+                this.signal_interaction(cx);
                 let previous_display_offset = this.display_offset(cx);
                 if this.should_ignore_touch_scroll(event) {
                     cx.notify();
@@ -815,7 +980,7 @@ impl Render for TerminalView {
 
 #[cfg(test)]
 mod tests {
-    use super::{TerminalView, keyboard_content_offset_px};
+    use super::{TERMINAL_LINE_HEIGHT, TerminalFontSize, TerminalView, keyboard_content_offset_px};
     use std::{path::Path, time::Duration};
 
     use crate::terminal::{Terminal, TerminalContent, TerminalEvent, TerminalHyperlinkTarget};
@@ -1005,6 +1170,34 @@ mod tests {
         });
     }
 
+    fn pinch_terminal(
+        window: WindowHandle<TerminalView>,
+        cx: &mut TestAppContext,
+        phase: TouchPhase,
+        delta: f32,
+    ) {
+        let mut window_cx = VisualTestContext::from_window(*window, cx);
+        window_cx.simulate_event(gpui::PinchEvent {
+            position: point(px(160.0), px(120.0)),
+            delta,
+            modifiers: Modifiers::default(),
+            phase,
+        });
+    }
+
+    fn pinch_enter_sequence(
+        window: WindowHandle<TerminalView>,
+        cx: &mut TestAppContext,
+        deltas: &[f32],
+    ) {
+        pinch_terminal(window, cx, TouchPhase::Started, 0.0);
+        cx.run_until_parked();
+        for delta in deltas {
+            pinch_terminal(window, cx, TouchPhase::Moved, *delta);
+            cx.run_until_parked();
+        }
+    }
+
     fn fill_terminal_history(window: WindowHandle<TerminalView>, cx: &mut TestAppContext) {
         window
             .update(cx, |terminal_view, _window, cx| {
@@ -1065,6 +1258,25 @@ mod tests {
                 }
                 target => panic!("expected file hyperlink, got {target:?}"),
             },
+            Some(TerminalEvent::InteractionStarted) => {
+                match events.next().now_or_never().flatten() {
+                    Some(TerminalEvent::OpenHyperlink(hyperlink)) => match hyperlink.target {
+                        TerminalHyperlinkTarget::File {
+                            path,
+                            relative_path,
+                            line,
+                            column,
+                        } => {
+                            assert_eq!(Path::new(&path), Path::new("/repo/sub/src/main.rs"));
+                            assert_eq!(Path::new(&relative_path), Path::new("src/main.rs"));
+                            assert_eq!(line, Some(12));
+                            assert_eq!(column, Some(3));
+                        }
+                        target => panic!("expected file hyperlink, got {target:?}"),
+                    },
+                    event => panic!("expected hyperlink event, got {event:?}"),
+                }
+            }
             event => panic!("expected hyperlink event, got {event:?}"),
         }
         cx.quit();
@@ -1300,6 +1512,14 @@ mod tests {
             Some(TerminalEvent::NativePasteMenuRequested { position: actual }) => {
                 assert_eq!(actual, position);
             }
+            Some(TerminalEvent::InteractionStarted) => {
+                match events.next().now_or_never().flatten() {
+                    Some(TerminalEvent::NativePasteMenuRequested { position: actual }) => {
+                        assert_eq!(actual, position);
+                    }
+                    event => panic!("expected native paste menu request, got {event:?}"),
+                }
+            }
             event => panic!("expected native paste menu request, got {event:?}"),
         }
         window
@@ -1515,6 +1735,14 @@ mod tests {
         match events.next().now_or_never().flatten() {
             Some(TerminalEvent::ScrollbackPositionChanged { display_offset, .. }) => {
                 assert!(display_offset > 0);
+            }
+            Some(TerminalEvent::InteractionStarted) => {
+                match events.next().now_or_never().flatten() {
+                    Some(TerminalEvent::ScrollbackPositionChanged { display_offset, .. }) => {
+                        assert!(display_offset > 0);
+                    }
+                    event => panic!("expected synchronous scrollback event, got {event:?}"),
+                }
             }
             event => panic!("expected synchronous scrollback event, got {event:?}"),
         }
@@ -1741,6 +1969,22 @@ mod tests {
     }
 
     #[test]
+    fn baseline_terminal_font_metrics_preserve_12_over_16_ratio() {
+        assert_eq!(crate::TERMINAL_FONT_SIZE, px(12.0));
+        assert_eq!(px(TERMINAL_LINE_HEIGHT), px(16.0));
+        assert_eq!(crate::TERMINAL_FONT_SIZE / px(TERMINAL_LINE_HEIGHT), 0.75);
+
+        let default_font_size = TerminalFontSize::DEFAULT;
+        assert_eq!(default_font_size.as_u8(), 12);
+        assert_eq!(default_font_size.logical_units(), px(12.0));
+        assert_eq!(default_font_size.line_height(), px(16.0));
+        assert_eq!(
+            default_font_size.logical_units() / default_font_size.line_height(),
+            0.75
+        );
+    }
+
+    #[test]
     fn keyboard_offset_ignores_manual_scrollback_and_alt_screen() {
         let mut content =
             content_for_keyboard_offset(b"one\r\ntwo\r\nthree\r\nfour\r\nfive\r\nsix\r\nseven\r\n");
@@ -1751,5 +1995,177 @@ mod tests {
         content.display_offset = 0;
         content.mode = TermMode::ALT_SCREEN;
         assert_eq!(keyboard_offset_for_content(&content), 0.0);
+    }
+
+    #[test]
+    fn claimed_pinch_produces_crisp_step_and_haptic_with_resize() {
+        let mut cx = TestAppContext::single();
+        let window = open_terminal_window(&mut cx);
+        cx.run_until_parked();
+
+        let root = window.root(&mut cx).unwrap();
+        let mut events = cx.events(&root);
+        pinch_enter_sequence(window, &mut cx, &[0.04, 0.04, 0.03]);
+
+        let font_size = window
+            .update(&mut cx, |terminal_view, _, cx| {
+                terminal_view.pinch_font_size(cx)
+            })
+            .unwrap();
+        assert_eq!(font_size, TerminalFontSize::new(13));
+        assert_eq!(font_size.logical_units(), px(13.0));
+
+        let mut saw_haptic = false;
+        let mut saw_resize = false;
+        while let Some(event) = events.next().now_or_never().flatten() {
+            match event {
+                TerminalEvent::PinchStepHaptic => saw_haptic = true,
+                TerminalEvent::RequestResize { .. } => saw_resize = true,
+                _ => {}
+            }
+        }
+        assert!(saw_haptic);
+        assert!(saw_resize);
+        cx.quit();
+    }
+
+    #[test]
+    fn pinch_emits_zero_pty_bytes_in_normal_alt_screen_and_mouse_modes() {
+        for with_mouse_tracking in [false, true] {
+            let mut cx = TestAppContext::single();
+            let window = open_terminal_window(&mut cx);
+            cx.run_until_parked();
+            let mut input_rx = if with_mouse_tracking {
+                attach_mouse_tracking_channel(window, &mut cx)
+            } else {
+                attach_terminal_channel(window, &mut cx).0
+            };
+            window
+                .update(&mut cx, |terminal_view, _, cx| {
+                    terminal_view.terminal.update(cx, |terminal, _| {
+                        terminal.advance_bytes(b"\x1b[?1049h");
+                    });
+                })
+                .unwrap();
+            cx.run_until_parked();
+
+            pinch_enter_sequence(window, &mut cx, &[0.04, 0.04, 0.03]);
+            pinch_terminal(window, &mut cx, TouchPhase::Ended, 0.0);
+            cx.run_until_parked();
+
+            assert!(input_rx.try_recv().is_err());
+            let font_size = window
+                .update(&mut cx, |terminal_view, _, cx| {
+                    terminal_view.pinch_font_size(cx)
+                })
+                .unwrap();
+            assert_eq!(font_size, TerminalFontSize::new(13));
+            cx.quit();
+        }
+    }
+
+    #[test]
+    fn active_selection_blocks_pinch_claim_and_mid_pinch_stops_zoom() {
+        let mut cx = TestAppContext::single();
+        let window = open_terminal_window(&mut cx);
+        cx.run_until_parked();
+        window
+            .update(&mut cx, |terminal_view, _, cx| {
+                terminal_view.terminal.update(cx, |terminal, _| {
+                    terminal.set_selection_range(0..4);
+                });
+            })
+            .unwrap();
+
+        pinch_enter_sequence(window, &mut cx, &[0.11]);
+        let font_size = window
+            .update(&mut cx, |terminal_view, _, cx| {
+                terminal_view.pinch_font_size(cx)
+            })
+            .unwrap();
+        assert_eq!(font_size, TerminalFontSize::DEFAULT);
+
+        window
+            .update(&mut cx, |terminal_view, _, cx| {
+                terminal_view.terminal.update(cx, |terminal, _| {
+                    terminal.clear_selection_range();
+                });
+            })
+            .unwrap();
+        pinch_enter_sequence(window, &mut cx, &[0.06]);
+        window
+            .update(&mut cx, |terminal_view, _, cx| {
+                terminal_view.terminal.update(cx, |terminal, _| {
+                    terminal.set_selection_range(0..4);
+                });
+            })
+            .unwrap();
+        pinch_terminal(window, &mut cx, TouchPhase::Moved, 0.11);
+        cx.run_until_parked();
+
+        let font_size = window
+            .update(&mut cx, |terminal_view, _, cx| {
+                let selection_active = terminal_view.terminal.read(cx).selection_active();
+                assert!(selection_active);
+                terminal_view.pinch_font_size(cx)
+            })
+            .unwrap();
+        assert_eq!(font_size, TerminalFontSize::DEFAULT);
+        cx.quit();
+    }
+
+    #[test]
+    fn pinch_preserves_bottom_follow_and_clamps_scrollback() {
+        let mut cx = TestAppContext::single();
+        let window = open_terminal_window(&mut cx);
+        cx.run_until_parked();
+        fill_terminal_history(window, &mut cx);
+        window
+            .update(&mut cx, |terminal_view, _, cx| {
+                terminal_view.scroll_to_bottom(cx);
+            })
+            .unwrap();
+        cx.run_until_parked();
+
+        pinch_enter_sequence(window, &mut cx, &[0.04, 0.04, 0.03]);
+        pinch_terminal(window, &mut cx, TouchPhase::Ended, 0.0);
+        cx.run_until_parked();
+
+        window
+            .update(&mut cx, |terminal_view, _, cx| {
+                let terminal = terminal_view.terminal.read(cx);
+                assert_eq!(terminal.display_offset(), 0);
+                assert!(
+                    terminal.display_offset() <= terminal.history_size(),
+                    "scrollback offset must remain within history bounds"
+                );
+                assert_eq!(terminal_view.pinch_font_size(cx), TerminalFontSize::new(13));
+            })
+            .unwrap();
+        cx.quit();
+    }
+
+    #[test]
+    fn pinch_settles_exactly_once_on_end_without_double_persist() {
+        let mut cx = TestAppContext::single();
+        let window = open_terminal_window(&mut cx);
+        cx.run_until_parked();
+
+        let root = window.root(&mut cx).unwrap();
+        let mut events = cx.events(&root);
+        pinch_enter_sequence(window, &mut cx, &[0.04, 0.04, 0.03]);
+        pinch_terminal(window, &mut cx, TouchPhase::Ended, 0.0);
+        cx.run_until_parked();
+        pinch_terminal(window, &mut cx, TouchPhase::Moved, 0.50);
+        cx.run_until_parked();
+
+        let mut settled = Vec::new();
+        while let Some(event) = events.next().now_or_never().flatten() {
+            if let TerminalEvent::PinchSettled { font_size } = event {
+                settled.push(font_size);
+            }
+        }
+        assert_eq!(settled, vec![13]);
+        cx.quit();
     }
 }
