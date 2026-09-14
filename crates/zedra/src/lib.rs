@@ -44,6 +44,7 @@ pub mod sheet_demo_view;
 pub mod sheet_host_view;
 pub mod terminal_card;
 pub mod terminal_panel;
+pub mod terminal_resize_coordinator;
 pub mod terminal_state;
 pub mod transport_badge;
 
