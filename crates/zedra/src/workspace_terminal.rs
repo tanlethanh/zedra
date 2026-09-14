@@ -1,3 +1,4 @@
+use std::num::NonZeroU16;
 use std::time::Duration;
 
 use gpui::{prelude::FluentBuilder as _, *};
@@ -19,6 +20,10 @@ use crate::platform_bridge::{
 };
 use crate::settings::{ThemeStateEvent, theme_state as theme_entity};
 use crate::telemetry::view_telemetry;
+use crate::terminal_resize_coordinator::{
+    CoordinatorTransition, DeliveryOutcome, ResizeIntent, ResizeReason, TerminalGeometry,
+    TerminalResizeCoordinator,
+};
 use crate::terminal_state::TerminalState;
 use crate::ui::any_drawer_open;
 use crate::workspace_state::{WorkspaceState, WorkspaceStateEvent};
@@ -27,6 +32,32 @@ pub const TERMINAL_PENDING_ID: &str = "___PENDING___";
 const SCROLL_TO_BOTTOM_BUTTON_THRESHOLD_LINES: usize = 10;
 const SCROLL_TO_BOTTOM_BUTTON_DISMISS_DELAY: Duration = Duration::from_millis(160);
 const NATIVE_PASTE_MENU_TAP_GAP: f32 = 28.0;
+
+fn workspace_resize_geometry(cols: u16, rows: u16) -> Option<TerminalGeometry> {
+    u32::from(cols)
+        .try_into()
+        .ok()
+        .and_then(NonZeroU16::new)
+        .zip(u32::from(rows).try_into().ok().and_then(NonZeroU16::new))
+        .and_then(|(columns, rows)| TerminalGeometry::new(columns.get(), rows.get()).ok())
+}
+
+#[cfg(test)]
+fn coordinator_geometry_for_test(cols: u16, rows: u16) -> TerminalGeometry {
+    TerminalGeometry::new(cols, rows).expect("test geometry must be nonzero")
+}
+
+#[cfg(test)]
+fn submit_coordinator_for_test(
+    coordinator: &mut TerminalResizeCoordinator,
+    cols: u16,
+    rows: u16,
+    reason: ResizeReason,
+) -> CoordinatorTransition {
+    coordinator
+        .submit(coordinator_geometry_for_test(cols, rows), reason)
+        .expect("test should not exhaust coordinator counters")
+}
 
 fn native_paste_menu_anchor(position: Point<Pixels>) -> Point<Pixels> {
     // Keep the edit menu visibly separated from the long-press finger.
@@ -48,6 +79,8 @@ pub struct WorkspaceTerminal {
     session_handle: SessionHandle,
     terminal_view: Entity<TerminalView>,
     preview: Entity<FilePreviewView>,
+    resize_coordinator: TerminalResizeCoordinator,
+    resize_task: Option<Task<()>>,
     /// Tracks whether the active terminal is in alt-screen mode (vim, opencode, etc.).
     /// Updated via AltScreenChanged event — never read via terminal_view.read(cx) in render
     /// to avoid creating a GPUI dependency that causes re-render cascades.
@@ -64,7 +97,57 @@ pub struct WorkspaceTerminal {
     /// Non-input focus target. Moving focus here drops the terminal keyboard without
     /// clearing focus entirely (which the terminal input would immediately re-grab).
     container_focus: FocusHandle,
+    reclaim_epoch: ReclaimEpochState,
     _subscriptions: Vec<Subscription>,
+}
+
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+struct ReclaimEpochState {
+    activation_sent: bool,
+    interaction_sent: bool,
+    post_input_sent: bool,
+}
+
+impl ReclaimEpochState {
+    fn reset(&mut self) {
+        *self = Self::default();
+    }
+
+    fn claim_activation(&mut self) -> bool {
+        if self.activation_sent {
+            return false;
+        }
+        self.activation_sent = true;
+        true
+    }
+
+    fn claim_interaction(&mut self) -> bool {
+        if self.interaction_sent {
+            return false;
+        }
+        self.interaction_sent = true;
+        true
+    }
+
+    fn claim_post_input(&mut self) -> bool {
+        if self.post_input_sent {
+            return false;
+        }
+        self.post_input_sent = true;
+        true
+    }
+
+    fn activation_sent(&self) -> bool {
+        self.activation_sent
+    }
+
+    fn interaction_sent(&self) -> bool {
+        self.interaction_sent
+    }
+
+    fn post_input_sent(&self) -> bool {
+        self.post_input_sent
+    }
 }
 
 impl WorkspaceTerminal {
@@ -159,6 +242,10 @@ impl WorkspaceTerminal {
         self.scroll_to_bottom_button_hide_pending = false;
         self.scroll_to_bottom_button_hide_generation =
             self.scroll_to_bottom_button_hide_generation.wrapping_add(1);
+        self.reclaim_epoch.reset();
+        self.terminal_view.update(cx, |terminal_view, _| {
+            terminal_view.reset_reclaim_epoch();
+        });
         hide_native_floating_button(self.scroll_to_bottom_button_id);
         platform_bridge::hide_native_dictation_preview(self.dictation_preview_id);
         self.set_scroll_to_bottom_button_visible(false, false, cx);
@@ -211,22 +298,26 @@ impl WorkspaceTerminal {
         let attach_sub = cx.subscribe(&workspace_state, |this, _ws, event, cx| match event {
             WorkspaceStateEvent::SyncComplete => {
                 info!("received SyncComplete event, attempt to attach input/output channel");
-                Self::attach_channel_to_terminal_view(
+                if Self::attach_channel_to_terminal_view(
                     this.session_handle.clone(),
                     this.terminal_id.clone(),
                     this.terminal_view.clone(),
                     cx,
-                );
+                ) {
+                    this.on_channel_attached(cx);
+                }
             }
             WorkspaceStateEvent::TerminalCreated { id } => {
                 if this.terminal_id == *id {
                     info!("received TerminalCreated event, attempt to attach input/output channel");
-                    Self::attach_channel_to_terminal_view(
+                    if Self::attach_channel_to_terminal_view(
                         this.session_handle.clone(),
                         this.terminal_id.clone(),
                         this.terminal_view.clone(),
                         cx,
-                    );
+                    ) {
+                        this.on_channel_attached(cx);
+                    }
                 }
             }
             WorkspaceStateEvent::TerminalOpened { id } => {
@@ -240,8 +331,17 @@ impl WorkspaceTerminal {
         });
 
         let initial_viewport = Self::viewport_without_keyboard(initial_viewport);
-        let terminal_view =
-            cx.new(|cx| TerminalView::new(terminal_id.clone(), window, initial_viewport, cx));
+        let initial_font_size =
+            zedra_terminal::TerminalFontSize::new(crate::settings::terminal_font_size());
+        let terminal_view = cx.new(|cx| {
+            TerminalView::new_with_font_size(
+                terminal_id.clone(),
+                window,
+                initial_viewport,
+                initial_font_size,
+                cx,
+            )
+        });
         let workdir = workspace_state.read(cx).workdir.clone();
         terminal_view.update(cx, |terminal_view, _cx| {
             terminal_view.set_workdir(Some(workdir.clone()));
@@ -252,13 +352,19 @@ impl WorkspaceTerminal {
             cx.subscribe(&terminal_view, |this, _terminal, event, cx| match event {
                 TerminalEvent::PreeditChanged => {}
                 TerminalEvent::RequestResize { cols, rows } => {
-                    Self::resize_remote_terminal(
-                        this.session_handle.clone(),
-                        this.terminal_id.clone(),
-                        *cols,
-                        *rows,
-                        cx,
-                    );
+                    this.submit_resize_request(*cols, *rows, ResizeReason::Layout, cx);
+                }
+                TerminalEvent::PinchStepHaptic => {
+                    platform_bridge::trigger_haptic(HapticFeedback::SelectionChanged);
+                }
+                TerminalEvent::PinchSettled { font_size } => {
+                    crate::settings::set_terminal_font_size(*font_size);
+                }
+                TerminalEvent::InteractionStarted => {
+                    this.on_terminal_interaction(cx);
+                }
+                TerminalEvent::UserOutboundInput => {
+                    this.on_user_outbound_input(cx);
                 }
                 TerminalEvent::TitleChanged(title) => {
                     let id = this.terminal_id.clone();
@@ -488,6 +594,9 @@ impl WorkspaceTerminal {
             session_handle,
             terminal_view,
             preview,
+            resize_coordinator: TerminalResizeCoordinator::new(),
+            resize_task: None,
+            reclaim_epoch: ReclaimEpochState::default(),
             is_alt_screen: false,
             last_synced_keyboard_inset: px(0.0),
             scroll_to_bottom_button_id: native_floating_button_id(),
@@ -507,21 +616,145 @@ impl WorkspaceTerminal {
         self.terminal_view.read(cx).input_sender(cx)
     }
 
+    #[cfg(all(
+        debug_assertions,
+        feature = "devtool",
+        any(target_os = "ios", target_os = "android")
+    ))]
+    pub fn resize_debug_state(&self, cx: &App) -> serde_json::Value {
+        let snapshot = self.resize_coordinator.snapshot();
+        let (columns, rows) = self.terminal_view.read(cx).remote_size(cx);
+        let view = self.terminal_view.read(cx);
+        serde_json::json!({
+            "terminal_id": self.terminal_id,
+            "font_size": view.font_size().as_u8(),
+            "columns": columns,
+            "rows": rows,
+            "pinch_active": view.is_pinch_active(cx),
+            "coordinator_generation": snapshot.generation().value(),
+            "desired": snapshot.desired().map(|intent| {
+                serde_json::json!({
+                    "columns": intent.geometry().columns(),
+                    "rows": intent.geometry().rows(),
+                    "reason": format!("{:?}", intent.reason()),
+                    "reclaim_epoch": intent.reclaim_epoch().value(),
+                    "request_id": intent.request_id().value(),
+                })
+            }),
+            "in_flight": snapshot.in_flight().map(|intent| {
+                serde_json::json!({
+                    "columns": intent.geometry().columns(),
+                    "rows": intent.geometry().rows(),
+                    "reason": format!("{:?}", intent.reason()),
+                    "request_id": intent.request_id().value(),
+                })
+            }),
+            "pending": snapshot.pending().map(|intent| {
+                serde_json::json!({
+                    "columns": intent.geometry().columns(),
+                    "rows": intent.geometry().rows(),
+                    "reason": format!("{:?}", intent.reason()),
+                    "request_id": intent.request_id().value(),
+                })
+            }),
+            "last_successful": snapshot.last_successful_geometry().map(|geometry| {
+                serde_json::json!({
+                    "columns": geometry.columns(),
+                    "rows": geometry.rows(),
+                })
+            }),
+            "activation_sent": self.reclaim_epoch.activation_sent(),
+            "interaction_sent": self.reclaim_epoch.interaction_sent(),
+            "post_input_sent": self.reclaim_epoch.post_input_sent(),
+        })
+    }
+
     pub fn set_terminal_id(&mut self, terminal_id: String, cx: &mut Context<Self>) {
         self.terminal_id = terminal_id.clone();
         self.deactivate(cx);
         self.terminal_view.update(cx, |terminal_view, _cx| {
             terminal_view.set_terminal_id(terminal_id);
         });
+        if self.terminal_id == TERMINAL_PENDING_ID {
+            return;
+        }
 
+        match self.resize_coordinator.replace_terminal() {
+            Ok(transition) => {
+                self.apply_resize_transition(transition, cx);
+                let (cols, rows) = self.terminal_view.read(cx).remote_size(cx);
+                self.submit_resize_request(cols, rows, ResizeReason::ReconnectReclaim, cx);
+            }
+            Err(error) => {
+                warn!(
+                    terminal_id = self.terminal_id.as_str(),
+                    "resize coordinator exhausted generations on terminal replacement: {}", error
+                );
+            }
+        }
+    }
+
+    pub fn activate(&mut self, cx: &mut Context<Self>) {
+        if self.terminal_id == TERMINAL_PENDING_ID {
+            return;
+        }
+        if !self.reclaim_epoch.claim_activation() {
+            return;
+        }
         let (cols, rows) = self.terminal_view.read(cx).remote_size(cx);
-        Self::resize_remote_terminal(
-            self.session_handle.clone(),
-            self.terminal_id.clone(),
-            cols,
-            rows,
-            cx,
-        );
+        self.submit_resize_request(cols, rows, ResizeReason::ActivationReclaim, cx);
+    }
+
+    pub fn on_terminal_interaction(&mut self, cx: &mut Context<Self>) {
+        if self.terminal_id == TERMINAL_PENDING_ID {
+            return;
+        }
+        if !self.reclaim_epoch.claim_interaction() {
+            return;
+        }
+        let (cols, rows) = self.terminal_view.read(cx).remote_size(cx);
+        self.submit_resize_request(cols, rows, ResizeReason::InteractionReclaim, cx);
+    }
+
+    pub fn on_user_outbound_input(&mut self, cx: &mut Context<Self>) {
+        if self.terminal_id == TERMINAL_PENDING_ID {
+            return;
+        }
+        if !self.reclaim_epoch.claim_post_input() {
+            return;
+        }
+        let (cols, rows) = self.terminal_view.read(cx).remote_size(cx);
+        self.submit_resize_request(cols, rows, ResizeReason::PostInputReclaim, cx);
+    }
+
+    pub fn on_channel_attached(&mut self, cx: &mut Context<Self>) {
+        if self.terminal_id == TERMINAL_PENDING_ID {
+            return;
+        }
+        let (cols, rows) = self.terminal_view.read(cx).remote_size(cx);
+        self.resubmit_current_size_as_reconnect(cols, rows, cx);
+    }
+
+    fn resubmit_current_size_as_reconnect(&mut self, cols: u16, rows: u16, cx: &mut Context<Self>) {
+        if self.terminal_id == TERMINAL_PENDING_ID {
+            return;
+        }
+        let Some(geometry) = workspace_resize_geometry(cols, rows) else {
+            warn!(
+                terminal_id = self.terminal_id.as_str(),
+                cols, rows, "resize: ignoring invalid geometry after attach/reconnect"
+            );
+            return;
+        };
+        match self.resize_coordinator.reconnect(geometry) {
+            Ok(transition) => self.apply_resize_transition(transition, cx),
+            Err(error) => {
+                warn!(
+                    terminal_id = self.terminal_id.as_str(),
+                    "resize coordinator exhausted generations on reconnect: {}", error
+                );
+            }
+        }
     }
 
     fn attach_channel_to_terminal_view(
@@ -610,37 +843,83 @@ impl WorkspaceTerminal {
         .detach();
     }
 
-    fn resize_remote_terminal(
-        session_handle: SessionHandle,
-        terminal_id: String,
+    fn submit_resize_request(
+        &mut self,
         cols: u16,
         rows: u16,
+        reason: ResizeReason,
         cx: &mut Context<Self>,
     ) {
-        if terminal_id == TERMINAL_PENDING_ID {
+        if self.terminal_id == TERMINAL_PENDING_ID {
             return;
         }
-
-        cx.spawn(async move |this, cx| {
-            match session_handle
-                .terminal_resize(&terminal_id, cols, rows)
-                .await
-            {
-                Ok(_) => {
-                    info!(terminal_id, cols, rows, "resized remote terminal");
-                    if let Err(e) = this.update(cx, |_, cx| cx.notify()) {
-                        warn!("failed to notify from terminal resize task: {}", e);
-                    }
-                }
-                Err(error) => {
-                    warn!(
-                        terminal_id,
-                        cols, rows, "failed to resize remote terminal: {}", error
-                    );
-                }
+        let Some(geometry) = workspace_resize_geometry(cols, rows) else {
+            warn!(
+                terminal_id = self.terminal_id.as_str(),
+                cols, rows, "resize: ignoring invalid geometry"
+            );
+            return;
+        };
+        match self.resize_coordinator.submit(geometry, reason) {
+            Ok(transition) => self.apply_resize_transition(transition, cx),
+            Err(error) => {
+                warn!(
+                    terminal_id = self.terminal_id.as_str(),
+                    "resize coordinator exhausted counters: {}", error
+                );
             }
-        })
-        .detach();
+        }
+    }
+
+    fn apply_resize_transition(
+        &mut self,
+        transition: CoordinatorTransition,
+        cx: &mut Context<Self>,
+    ) {
+        // Generation invalidation frees the blocked slot; dropping the stale task
+        // aborts the obsolete RPC so its completion cannot corrupt the new state.
+        if transition.abort_request().is_some() {
+            self.resize_task = None;
+        }
+        let Some(intent) = transition.dispatch_request().cloned() else {
+            return;
+        };
+        self.spawn_resize_dispatch(intent, cx);
+    }
+
+    fn spawn_resize_dispatch(&mut self, intent: ResizeIntent, cx: &mut Context<Self>) {
+        let session_handle = self.session_handle.clone();
+        let terminal_id = self.terminal_id.clone();
+        let cols = intent.geometry().columns();
+        let rows = intent.geometry().rows();
+        self.resize_task = Some(cx.spawn(async move |this, cx| {
+            let result = session_handle
+                .terminal_resize(&terminal_id, cols, rows)
+                .await;
+            let outcome = if result.is_ok() {
+                DeliveryOutcome::Succeeded
+            } else {
+                DeliveryOutcome::Failed
+            };
+            if let Err(error) = &result {
+                warn!(
+                    terminal_id,
+                    cols, rows, "failed to resize remote terminal: {}", error
+                );
+            } else {
+                info!(terminal_id, cols, rows, "resized remote terminal");
+            }
+            let dispatch = this
+                .update(cx, |this, cx| {
+                    let transition = this.resize_coordinator.complete(&intent, outcome);
+                    this.apply_resize_transition(transition, cx);
+                    cx.notify();
+                })
+                .ok();
+            if dispatch.is_none() {
+                warn!("failed to notify from terminal resize task");
+            }
+        }));
     }
 }
 
@@ -767,5 +1046,155 @@ impl Drop for WorkspaceTerminal {
     fn drop(&mut self) {
         hide_native_floating_button(self.scroll_to_bottom_button_id);
         platform_bridge::remove_native_dictation_preview(self.dictation_preview_id);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use crate::terminal_resize_coordinator::{
+        DeliveryOutcome, ResizeReason, TerminalResizeCoordinator,
+    };
+
+    use super::{ReclaimEpochState, coordinator_geometry_for_test, submit_coordinator_for_test};
+
+    #[test]
+    fn workspace_reconnect_resends_equal_size_after_attach() {
+        let mut coordinator = TerminalResizeCoordinator::new();
+        let size = coordinator_geometry_for_test(80, 24);
+        let first = submit_coordinator_for_test(&mut coordinator, 80, 24, ResizeReason::Layout);
+        let layout = first
+            .dispatch_request()
+            .cloned()
+            .expect("layout dispatches");
+        let _ = coordinator.complete(&layout, DeliveryOutcome::Succeeded);
+        let reconnect = coordinator.reconnect(size).expect("reconnect dispatches");
+        assert_eq!(
+            reconnect
+                .dispatch_request()
+                .expect("equal-size reclaim dispatches")
+                .geometry(),
+            size
+        );
+    }
+
+    #[test]
+    fn workspace_rapid_alternating_sizes_converge_to_final_geometry() {
+        let mut coordinator = TerminalResizeCoordinator::new();
+        let first = submit_coordinator_for_test(&mut coordinator, 80, 24, ResizeReason::Layout);
+        let in_flight = first
+            .dispatch_request()
+            .cloned()
+            .expect("initial layout dispatches");
+        let _ = submit_coordinator_for_test(&mut coordinator, 60, 20, ResizeReason::PinchStep);
+        let _ = submit_coordinator_for_test(&mut coordinator, 70, 22, ResizeReason::Layout);
+        let _ = submit_coordinator_for_test(&mut coordinator, 50, 16, ResizeReason::PinchStep);
+        let after_release = coordinator.complete(&in_flight, DeliveryOutcome::Succeeded);
+        let final_intent = after_release
+            .dispatch_request()
+            .cloned()
+            .expect("final size dispatches");
+        assert_eq!(
+            final_intent.geometry(),
+            coordinator_geometry_for_test(50, 16)
+        );
+        let _ = coordinator.complete(&final_intent, DeliveryOutcome::Succeeded);
+        assert_eq!(
+            coordinator.snapshot().last_successful_geometry(),
+            Some(coordinator_geometry_for_test(50, 16))
+        );
+        assert!(coordinator.snapshot().pending().is_none());
+    }
+
+    #[test]
+    fn workspace_replacement_invalidates_old_resize_before_new_id() {
+        let mut coordinator = TerminalResizeCoordinator::new();
+        let first = submit_coordinator_for_test(&mut coordinator, 80, 24, ResizeReason::Layout);
+        let in_flight = first
+            .dispatch_request()
+            .cloned()
+            .expect("initial layout dispatches");
+        let replacement = coordinator
+            .replace_terminal()
+            .expect("replacement invalidates");
+        assert_eq!(replacement.abort_request(), Some(&in_flight));
+        assert!(replacement.dispatch_request().is_none());
+        let stale = coordinator.complete(&in_flight, DeliveryOutcome::Succeeded);
+        assert!(stale.dispatch_request().is_none());
+        let next = submit_coordinator_for_test(&mut coordinator, 80, 24, ResizeReason::Layout);
+        assert!(next.dispatch_request().is_some());
+    }
+
+    #[test]
+    fn workspace_activation_reclaims_without_typing() {
+        let mut epoch = ReclaimEpochState::default();
+        let mut coordinator = TerminalResizeCoordinator::new();
+        assert!(epoch.claim_activation());
+        let transition =
+            submit_coordinator_for_test(&mut coordinator, 80, 24, ResizeReason::ActivationReclaim);
+        let intent = transition
+            .dispatch_request()
+            .cloned()
+            .expect("activation reclaims immediately");
+        assert_eq!(intent.reason(), ResizeReason::ActivationReclaim);
+        assert!(!epoch.claim_activation());
+        println!(
+            "safe-reclaim activation dispatch geometry={:?} reason={:?}",
+            intent.geometry(),
+            intent.reason()
+        );
+    }
+
+    #[test]
+    fn workspace_first_touch_reclaims_with_interaction_reason() {
+        let mut epoch = ReclaimEpochState::default();
+        let mut coordinator = TerminalResizeCoordinator::new();
+        assert!(epoch.claim_interaction());
+        let transition =
+            submit_coordinator_for_test(&mut coordinator, 80, 24, ResizeReason::InteractionReclaim);
+        let intent = transition
+            .dispatch_request()
+            .cloned()
+            .expect("first touch reclaims");
+        assert_eq!(intent.reason(), ResizeReason::InteractionReclaim);
+        assert!(!epoch.claim_interaction());
+        println!(
+            "safe-reclaim interaction dispatch geometry={:?} reason={:?}",
+            intent.geometry(),
+            intent.reason()
+        );
+    }
+
+    #[test]
+    fn workspace_first_keystroke_reclaims_once_per_epoch() {
+        let mut epoch = ReclaimEpochState::default();
+        let mut coordinator = TerminalResizeCoordinator::new();
+        assert!(epoch.claim_post_input());
+        let transition =
+            submit_coordinator_for_test(&mut coordinator, 80, 24, ResizeReason::PostInputReclaim);
+        let intent = transition
+            .dispatch_request()
+            .cloned()
+            .expect("first keystroke reclaims");
+        assert_eq!(intent.reason(), ResizeReason::PostInputReclaim);
+        assert!(!epoch.claim_post_input());
+        epoch.reset();
+        assert!(epoch.claim_post_input());
+        println!(
+            "safe-reclaim post-input dispatch geometry={:?} reason={:?}",
+            intent.geometry(),
+            intent.reason()
+        );
+    }
+
+    #[test]
+    fn workspace_deactivation_resets_reclaim_epoch() {
+        let mut epoch = ReclaimEpochState::default();
+        assert!(epoch.claim_activation());
+        assert!(epoch.claim_interaction());
+        assert!(epoch.claim_post_input());
+        epoch.reset();
+        assert!(epoch.claim_activation());
+        assert!(epoch.claim_interaction());
+        assert!(epoch.claim_post_input());
     }
 }

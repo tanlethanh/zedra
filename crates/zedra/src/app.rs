@@ -169,10 +169,11 @@ impl ZedraApp {
             any(target_os = "ios", target_os = "android")
         ))]
         {
-            let workspaces = workspaces.downgrade();
-            let web_client_workspaces = workspaces.clone();
+            let workspaces_tunnel = workspaces.downgrade();
+            let web_client_workspaces = workspaces_tunnel.clone();
+            let resize_state_workspaces = workspaces_tunnel.clone();
             cx.register_devtool_action("web-tunnel", move |params, _window, cx| {
-                let Some(workspaces) = workspaces.upgrade() else {
+                let Some(workspaces) = workspaces_tunnel.upgrade() else {
                     return serde_json::json!({"ok": false, "error": "workspaces dropped"});
                 };
                 let url = params
@@ -241,6 +242,27 @@ impl ZedraApp {
                     );
                 });
                 serde_json::json!({"ok": true, "slug": slug})
+            });
+
+            // Structured resize/pinch observability for the stepped pinch-zoom plan
+            // (`devtool.sh call terminal-resize-state`). Reports geometry, font size,
+            // pinch state, coordinator in-flight/pending/last-successful, and reclaim
+            // epoch flags. Never includes terminal text or user data.
+            cx.register_devtool_action("terminal-resize-state", move |params, _window, cx| {
+                let Some(workspaces) = resize_state_workspaces.upgrade() else {
+                    return serde_json::json!({"ok": false, "error": "workspaces dropped"});
+                };
+                let Some(workspace) = workspaces.read(cx).active().cloned() else {
+                    return serde_json::json!({"ok": false, "error": "no active workspace"});
+                };
+                let terminal_id = params
+                    .get("terminal_id")
+                    .and_then(|v| v.as_str())
+                    .map(str::to_string);
+                let state = workspace
+                    .read(cx)
+                    .terminal_resize_debug_state(terminal_id.as_deref(), cx);
+                serde_json::json!({"ok": true, "state": state})
             });
         }
 

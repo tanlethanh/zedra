@@ -2974,6 +2974,7 @@ impl Workspace {
                 prev.update(cx, |t, cx| t.deactivate(cx));
             }
         }
+        entity.update(cx, |terminal, cx| terminal.activate(cx));
         self.content.update(cx, |c, cx| {
             c.set_terminal_subtitle(id, cx);
             c.set_main_view(entity.into(), cx);
@@ -3215,6 +3216,30 @@ impl Workspace {
             .iter()
             .find(|t| t.read(cx).terminal_id() == id)
             .cloned()
+    }
+
+    #[cfg(all(
+        debug_assertions,
+        feature = "devtool",
+        any(target_os = "ios", target_os = "android")
+    ))]
+    pub fn terminal_resize_debug_state(
+        &self,
+        terminal_id: Option<&str>,
+        cx: &App,
+    ) -> serde_json::Value {
+        let terminal = terminal_id
+            .and_then(|id| {
+                self.terminals
+                    .iter()
+                    .find(|t| t.read(cx).terminal_id() == id)
+                    .cloned()
+            })
+            .or_else(|| self.terminals.first().cloned());
+        match terminal {
+            Some(terminal) => terminal.read(cx).resize_debug_state(cx),
+            None => serde_json::json!({"error": "no terminal"}),
+        }
     }
 
     fn add_to_chat_targets(&self, cx: &mut Context<Self>) -> Vec<AddToChatTarget> {
