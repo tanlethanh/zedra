@@ -243,8 +243,8 @@ impl WorkspaceTerminal {
         self.scroll_to_bottom_button_hide_generation =
             self.scroll_to_bottom_button_hide_generation.wrapping_add(1);
         self.reclaim_epoch.reset();
-        self.terminal_view.update(cx, |terminal_view, _| {
-            terminal_view.reset_reclaim_epoch();
+        self.terminal_view.update(cx, |terminal_view, cx| {
+            terminal_view.deactivate(cx);
         });
         hide_native_floating_button(self.scroll_to_bottom_button_id);
         platform_bridge::hide_native_dictation_preview(self.dictation_preview_id);

@@ -9,7 +9,6 @@ use alacritty_terminal::vte::ansi::{Color as AlacColor, CursorShape, NamedColor}
 use gpui::*;
 use itertools::Itertools;
 
-use crate::MONO_FONT_FAMILY;
 use crate::input::TerminalInputHandler;
 use crate::selection::TerminalSelectionDocument;
 use crate::terminal::*;
@@ -596,20 +595,7 @@ impl Element for TerminalElement {
         // Surface identity for native-selection occlusion checks; Normal
         // behavior so it never blocks other elements.
         let hitbox = window.insert_hitbox(bounds, HitboxBehavior::Normal);
-        // Use JetBrains Mono NL - embedded monospace font (loaded once at app init)
-        let font = Font {
-            family: MONO_FONT_FAMILY.into(),
-            features: FontFeatures::default(),
-            fallbacks: Some(FontFallbacks::from_fonts(vec![
-                "Noto Sans Symbols 2".to_string(),
-                "Apple Symbols".to_string(),
-                "Menlo".to_string(),
-                "Droid Sans Mono".to_string(),
-                "monospace".to_string(),
-            ])),
-            weight: FontWeight::NORMAL,
-            style: FontStyle::Normal,
-        };
+        let font = crate::terminal_font();
 
         // Use configured line height
         let line_height = self.size.line_height;

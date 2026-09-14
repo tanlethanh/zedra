@@ -2480,5 +2480,6 @@ latest-wins resize coordination, and three-phase safe resize reclaim
 - **Direct PTY / Remote Shell**:
   Every `terminal_resize` RPC sends `SIGWINCH` directly to the foreground process. Passive touch (`InteractionReclaim`) and activation (`ActivationReclaim`) immediately reclaim mobile dimensions.
 - **Tmux Sessions (`window-size latest`)**:
-  When Zedra attaches to a shared tmux session open on desktop, tmux tracks the client window size. Passive touch reclaims the Zedra remote PTY geometry without sending synthetic input bytes. On the first real user keystroke (`PostInputReclaim`), tmux registers client activity and adjusts its `window-size latest` view to the mobile geometry.
+  When Zedra attaches to a shared tmux session open on desktop, tmux tracks the active client window size. Safe resize reclaim and post-input convergence are a **best-effort transport separation across independent input and resize RPC channels**—not a strict synchronous host processing barrier.
+  Passive touch reclaims the Zedra remote PTY geometry without sending synthetic noise. On the first real user keystroke (`PostInputReclaim`), tmux registers client activity and adjusts its `window-size latest` view to the mobile geometry as a best-effort sequence.
   Zero synthetic bytes, mouse reports, or tmux commands are ever injected by Zedra.

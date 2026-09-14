@@ -2502,9 +2502,9 @@ impl Workspace {
 
         let session_handle = self.session.handle().clone();
         let initial_viewport = self.mainview_viewport(window, cx);
-        let initial_grid_size = TerminalView::compute_grid_size(window, initial_viewport);
-        let cols = initial_grid_size.columns;
-        let rows = initial_grid_size.rows;
+        let (cols, rows) = TerminalView::compute_grid_size(window, initial_viewport)
+            .map(|size| (size.columns, size.rows))
+            .unwrap_or((0, 0));
 
         let workspace_terminal =
             self.create_terminal_entity(TERMINAL_PENDING_ID.to_string(), window, cx);
@@ -2679,9 +2679,9 @@ impl Workspace {
     ) {
         let session_handle = self.session.handle().clone();
         let initial_viewport = self.mainview_viewport(window, cx);
-        let initial_grid_size = TerminalView::compute_grid_size(window, initial_viewport);
-        let cols = initial_grid_size.columns;
-        let rows = initial_grid_size.rows;
+        let (cols, rows) = TerminalView::compute_grid_size(window, initial_viewport)
+            .map(|size| (size.columns, size.rows))
+            .unwrap_or((0, 0));
         let workspace_terminal =
             self.create_terminal_entity(TERMINAL_PENDING_ID.to_string(), window, cx);
         let pending_entity_id = workspace_terminal.entity_id();

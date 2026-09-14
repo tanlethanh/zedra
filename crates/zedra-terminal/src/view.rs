@@ -140,7 +140,13 @@ impl TerminalView {
         viewport: Size<Pixels>,
         cx: &mut Context<Self>,
     ) -> Self {
-        let initial_grid_size = TerminalView::compute_grid_size(window, viewport);
+        let initial_grid_size =
+            TerminalView::compute_grid_size(window, viewport).unwrap_or(TerminalGridSize {
+                columns: 0,
+                rows: 0,
+                cell_width: px(FALLBACK_CELL_WIDTH),
+                line_height: TerminalFontSize::DEFAULT.line_height(),
+            });
 
         let terminal = cx.new(|_cx| {
             Terminal::new(
@@ -221,15 +227,17 @@ impl TerminalView {
         let initial_grid_size =
             TerminalView::compute_grid_size_for_font_size(window, viewport, font_size);
         let mut this = Self::new(terminal_id, window, viewport, cx);
-        this.set_font_size(font_size, cx);
-        this.terminal.update(cx, |terminal, _| {
-            terminal.resize(
-                initial_grid_size.columns,
-                initial_grid_size.rows,
-                initial_grid_size.cell_width,
-                initial_grid_size.line_height,
-            );
-        });
+        if let Some(initial_grid_size) = initial_grid_size {
+            this.set_font_size(font_size, cx);
+            this.terminal.update(cx, |terminal, _| {
+                terminal.resize(
+                    initial_grid_size.columns,
+                    initial_grid_size.rows,
+                    initial_grid_size.cell_width,
+                    initial_grid_size.line_height,
+                );
+            });
+        }
         this
     }
 
@@ -284,7 +292,10 @@ impl TerminalView {
         )))
     }
 
-    pub fn compute_grid_size(window: &mut Window, viewport: Size<Pixels>) -> TerminalGridSize {
+    pub fn compute_grid_size(
+        window: &mut Window,
+        viewport: Size<Pixels>,
+    ) -> Option<TerminalGridSize> {
         Self::compute_grid_size_for_font_size(window, viewport, TerminalFontSize::DEFAULT)
     }
 
@@ -292,20 +303,14 @@ impl TerminalView {
         window: &mut Window,
         viewport: Size<Pixels>,
         font_size: TerminalFontSize,
-    ) -> TerminalGridSize {
+    ) -> Option<TerminalGridSize> {
         let line_height = font_size.line_height();
         let cell_width = Self::measure_cell_width(window, line_height);
         Self::compute_grid_size_with_metrics(viewport, cell_width, line_height)
     }
 
     fn measure_cell_width(window: &mut Window, line_height: Pixels) -> Pixels {
-        let font = Font {
-            family: crate::MONO_FONT_FAMILY.into(),
-            features: FontFeatures::default(),
-            fallbacks: None,
-            weight: FontWeight::NORMAL,
-            style: FontStyle::Normal,
-        };
+        let font = crate::terminal_font();
         let font_size = line_height * 0.75;
         let text_system = window.text_system();
         let font_id = text_system.resolve_font(&font);
@@ -319,18 +324,24 @@ impl TerminalView {
         viewport: Size<Pixels>,
         cell_width: Pixels,
         line_height: Pixels,
-    ) -> TerminalGridSize {
-        let width = viewport.width.max(px(0.0));
-        let height = viewport.height.max(px(0.0));
-        let columns = (width / cell_width).floor() as usize;
-        let rows = (height / line_height).floor() as usize;
+    ) -> Option<TerminalGridSize> {
+        if Self::reject_degenerate_cell(cell_width, line_height) {
+            return None;
+        }
+        let width = (viewport.width / px(1.0)) as f32;
+        let height = (viewport.height / px(1.0)) as f32;
+        if !width.is_finite() || !height.is_finite() || width <= 0.0 || height <= 0.0 {
+            return None;
+        }
+        let columns = (width / (cell_width / px(1.0)) as f32).floor() as usize;
+        let rows = (height / (line_height / px(1.0)) as f32).floor() as usize;
 
-        TerminalGridSize {
+        Some(TerminalGridSize {
             columns,
             rows,
             cell_width,
             line_height,
-        }
+        })
     }
 
     pub fn is_channel_attached(&self, cx: &mut Context<Self>) -> bool {
@@ -393,7 +404,11 @@ impl TerminalView {
         line_height: Pixels,
         cx: &mut Context<Self>,
     ) {
-        let next = Self::compute_grid_size_with_metrics(actual_bounds, cell_width, line_height);
+        let Some(next) =
+            Self::compute_grid_size_with_metrics(actual_bounds, cell_width, line_height)
+        else {
+            return;
+        };
         self.apply_grid_size(next, cx);
     }
 
@@ -419,13 +434,14 @@ impl TerminalView {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        self.font_size = font_size;
         let line_height = font_size.line_height();
         let cell_width = Self::measure_cell_width(window, line_height);
-        if Self::reject_degenerate_cell(cell_width, line_height) {
+        let Some(next) =
+            Self::compute_grid_size_with_metrics(self.viewport, cell_width, line_height)
+        else {
             return;
-        }
-        let next = Self::compute_grid_size_with_metrics(self.viewport, cell_width, line_height);
+        };
+        self.font_size = font_size;
         self.apply_grid_size(next, cx);
     }
 
@@ -437,13 +453,16 @@ impl TerminalView {
     ) {
         match event.phase {
             TouchPhase::Started => {
-                self.signal_interaction(cx);
+                self.handle_terminal_pointer_down(cx);
                 if self.terminal.read(cx).selection_active() {
                     self.pinch_claimed = false;
                     return;
                 }
                 window.prevent_default();
                 self.pinch_claimed = true;
+                self.scroll_offset_px = 0.0;
+                self.remote_scroll_offset_px = 0.0;
+                self.keyboard_top_reveal_px = 0.0;
                 self.pinch_start_font_size = self.font_size;
                 self.zoom_ratchet.set_font_size(self.font_size);
                 self.zoom_ratchet.begin();
@@ -463,14 +482,7 @@ impl TerminalView {
                 }
             }
             TouchPhase::Ended => {
-                if !self.pinch_claimed {
-                    return;
-                }
-                self.pinch_claimed = false;
-                let settled = self.zoom_ratchet.font_size();
-                let changed = settled != self.pinch_start_font_size;
-                self.zoom_ratchet.end();
-                if changed {
+                if let Some(settled) = self.take_pending_pinch_settle() {
                     cx.emit(TerminalEvent::PinchSettled {
                         font_size: settled.as_u8(),
                     });
@@ -657,13 +669,17 @@ impl TerminalView {
         self.workdir = workdir;
     }
 
+    fn handle_terminal_pointer_down(&mut self, cx: &mut Context<Self>) {
+        self.signal_interaction(cx);
+    }
+
     fn handle_terminal_press(
         &mut self,
         event: &PressEvent,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        self.signal_interaction(cx);
+        self.handle_terminal_pointer_down(cx);
         let position = event.position();
 
         let hyperlink = self.terminal.read(cx).hyperlink_at(
@@ -708,7 +724,7 @@ impl TerminalView {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        self.signal_interaction(cx);
+        self.handle_terminal_pointer_down(cx);
         let position = event.down.position;
         window.prevent_default();
 
@@ -754,11 +770,13 @@ impl TerminalView {
     }
 
     pub fn paste_text_from_native_menu(&mut self, text: &str, cx: &mut Context<Self>) {
-        self.terminal.update(cx, |terminal, _| {
+        let enqueued = self.terminal.update(cx, |terminal, _| {
             terminal.clear_selection_range();
-            terminal.paste_text(text);
+            terminal.paste_text(text)
         });
-        self.signal_user_outbound_input(cx);
+        if enqueued {
+            self.signal_user_outbound_input(cx);
+        }
         cx.notify();
     }
 
@@ -781,6 +799,25 @@ impl TerminalView {
     pub fn reset_reclaim_epoch(&mut self) {
         self.interaction_signaled = false;
         self.outbound_input_signaled = false;
+    }
+
+    fn take_pending_pinch_settle(&mut self) -> Option<TerminalFontSize> {
+        if !self.pinch_claimed {
+            return None;
+        }
+        self.pinch_claimed = false;
+        let settled = self.zoom_ratchet.font_size();
+        self.zoom_ratchet.end();
+        (settled != self.pinch_start_font_size).then_some(settled)
+    }
+
+    pub fn deactivate(&mut self, cx: &mut Context<Self>) {
+        if let Some(settled) = self.take_pending_pinch_settle() {
+            cx.emit(TerminalEvent::PinchSettled {
+                font_size: settled.as_u8(),
+            });
+        }
+        self.reset_reclaim_epoch();
     }
 }
 
@@ -813,6 +850,9 @@ impl Render for TerminalView {
             .manual_focus()
             .on_pinch(cx.listener(|this, event: &PinchEvent, window, cx| {
                 this.handle_terminal_pinch(event, window, cx);
+            }))
+            .on_pointer_down(cx.listener(|this, _event: &PointerDownEvent, _window, cx| {
+                this.handle_terminal_pointer_down(cx);
             }))
             .on_press(cx.listener(|this, event: &PressEvent, window, cx| {
                 this.handle_terminal_press(event, window, cx);
