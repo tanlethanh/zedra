@@ -2402,3 +2402,83 @@ fails and exits. `zedra codex resume` prompts instead. No model call is needed:
    non-resume arguments forward unchanged.
 7. From the app, tap a session open in a desktop terminal: the terminal shows
    the same prompt. Tap one open nowhere: codex resumes with no prompt.
+
+## 28. Terminal Pinch Zoom & Safe Resize Reclaim
+
+Verifies discrete stepped pinch zoom (9-24pt), UIKit touch arbitration,
+latest-wins resize coordination, and three-phase safe resize reclaim
+(activation, first interaction, first user input) across simulator and physical iOS devices.
+
+### Setup
+
+1. Build and run with devtool and debug enabled:
+   `./scripts/run-ios.sh sim --devtool --debug` (or `device --devtool --debug`).
+2. Start log capture: `./scripts/ios-log.sh daemon start`.
+3. Bridge devtool: `./scripts/devtool.sh bridge-ios`.
+4. Verify bridge: `./scripts/devtool.sh ping`.
+
+### 1. Stepped Pinch Zoom & Haptic Step Sequence
+
+1. Open a workspace terminal in Zedra.
+2. Inspect initial geometry and font size:
+   `./scripts/devtool.sh call terminal-resize-state`
+   Expected: `"font_size": 12`, `"pinch_active": false`, initial `columns`/`rows`.
+3. Perform a two-finger pinch outward on the terminal surface.
+   Expected:
+   - UIKit `TouchPinchArbitrator` claims the gesture once scale delta exceeds threshold (`Started`), quarantining survivor touches and preventing default scroll.
+   - For each discrete 1pt integer font size change (`12 -> 13 -> 14`), a crisp selection haptic fires (`platform_bridge::trigger_haptic(SelectionChanged)`).
+   - The Alacritty grid reflows synchronously at each step without intermediate rendering blur or viewport jitter.
+   - Log shows `[ratchet-trace] accepted step` and `terminal grid resized columns=... rows=...`.
+4. Release the pinch at font size 14.
+   Expected:
+   - Exactly one `PinchSettled { font_size: 14 }` event fires on gesture end.
+   - `terminal-resize-state` shows `"font_size": 14`, `"pinch_active": false`.
+   - Settings persists the new size to disk (`settings.json` has `"terminal_font_size": 14`).
+5. Terminate and restart the app (`./scripts/run-ios.sh sim`).
+   Expected: newly constructed terminal view opens with font size 14 restored from settings (`TerminalView::new_with_font_size`).
+
+### 2. Selection Gesture Non-Interference
+
+1. Long press on output text in the terminal to trigger word selection.
+2. Expected: selection highlight appears with native edit menu handles; `selection_active()` is true.
+3. While selection is active, place two fingers on the terminal and pinch.
+   Expected: pinch gesture is ignored (`pinch_claimed` remains false); selection range remains intact without accidental zoom or font changes.
+4. Clear selection by tapping an empty cell, then pinch again.
+   Expected: pinch zoom functions normally.
+
+### 3. Latest-Wins Resize Coordination (A -> B -> C)
+
+1. Rapidly alternate terminal orientation or pinch sizes while remote RPCs are in flight.
+2. Expected:
+   - At most one resize RPC in flight and at most one latest pending intent queued.
+   - Obsolete intermediate requests are replaced in-flight.
+   - Log markers:
+     `fake-rpc dispatch A=... state=...`
+     `fake-rpc blocked A, replaced B with C state=...`
+     `fake-rpc release A, dispatch C=... state=...`
+   - Terminal converges cleanly on final geometry C without out-of-order race conditions.
+
+### 4. Safe Resize Reclaim (Activation, First Touch, First Keystroke)
+
+1. Open or switch to a terminal in the workspace (`Workspace::switch_terminal`).
+   Expected: `ActivationReclaim` fires immediately with the latest mobile grid without typing;
+   log marker `safe-reclaim activation dispatch geometry=... reason=ActivationReclaim`.
+2. Tap or touch the terminal surface (scroll or tap).
+   Expected: first touch triggers `InteractionReclaim` (fired once per activation epoch; does not toggle focus or keyboard);
+   log marker `safe-reclaim interaction dispatch geometry=... reason=InteractionReclaim`.
+   Subsequent touches in the same epoch do NOT emit additional reclaim events.
+3. Type the first user character on the software or hardware keyboard (or paste / tap key bar accessory).
+   Expected: first accepted outbound keystroke enqueues bytes and triggers `PostInputReclaim`;
+   log marker `safe-reclaim post-input dispatch geometry=... reason=PostInputReclaim`.
+   Subsequent keystrokes in the same epoch do NOT trigger additional reclaims.
+4. Deactivate the terminal by switching away to another tab or backgrounding the app.
+   Expected: `reclaim_epoch.reset()` clears the activation, interaction, and post-input flags.
+   Returning to the terminal starts a clean new activation epoch.
+
+### 5. Tmux Caveat: Direct PTY vs `window-size latest`
+
+- **Direct PTY / Remote Shell**:
+  Every `terminal_resize` RPC sends `SIGWINCH` directly to the foreground process. Passive touch (`InteractionReclaim`) and activation (`ActivationReclaim`) immediately reclaim mobile dimensions.
+- **Tmux Sessions (`window-size latest`)**:
+  When Zedra attaches to a shared tmux session open on desktop, tmux tracks the client window size. Passive touch reclaims the Zedra remote PTY geometry without sending synthetic input bytes. On the first real user keystroke (`PostInputReclaim`), tmux registers client activity and adjusts its `window-size latest` view to the mobile geometry.
+  Zero synthetic bytes, mouse reports, or tmux commands are ever injected by Zedra.
